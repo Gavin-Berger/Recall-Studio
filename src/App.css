@@ -62,6 +62,9 @@ h1 {
   text-transform: uppercase;
 }
 
+.online {
+  color: #4ade80;
+}
 .card strong {
   display: block;
   font-size: 24px;

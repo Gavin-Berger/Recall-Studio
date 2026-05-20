@@ -98,3 +98,65 @@ button {
 button.secondary {
   background: rgba(255, 255, 255, 0.09);
 }
+.timeline-card {
+  margin-top: 28px;
+  margin-bottom: 32px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 22px;
+  padding: 24px;
+}
+
+.timeline-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 20px;
+}
+
+.timeline-header h2 {
+  margin: 0;
+  font-size: 24px;
+}
+
+.timeline-header span {
+  color: #a1a1aa;
+  font-size: 14px;
+}
+
+.timeline-events {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  max-height: 420px;
+  overflow-y: auto;
+}
+
+.timeline-event {
+  display: flex;
+  gap: 18px;
+  padding: 14px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.timeline-time {
+  min-width: 110px;
+  color: #f87171;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.timeline-content strong {
+  display: block;
+  margin-bottom: 6px;
+}
+
+.timeline-content p {
+  margin: 0;
+  color: #b8b8c0;
+}
+
+.empty-state {
+  color: #a1a1aa;
+}

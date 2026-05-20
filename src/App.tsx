@@ -8,6 +8,16 @@ type ConnectionStatus = {
   last_message: string | null;
 };
 
+type RecallEvent = {
+  protocol: string;
+  source: string;
+  event_type: string;
+  timestamp_ms: number;
+  title: string;
+  description: string;
+  payload: string | null;
+};
+
 function App() {
   const [connection, setConnection] = useState<ConnectionStatus>({
     connected: false,
@@ -15,18 +25,27 @@ function App() {
     last_message: null,
   });
 
+  const [events, setEvents] = useState<RecallEvent[]>([]);
+
   useEffect(() => {
     const interval = setInterval(async () => {
       try {
         const status = await invoke<ConnectionStatus>("get_connection_status");
+        const recentEvents = await invoke<RecallEvent[]>("get_recent_events");
+
         setConnection(status);
+        setEvents([...recentEvents].reverse());
       } catch (error) {
-        console.error("Failed to get connection status:", error);
+        console.error("Frontend polling failed:", error);
       }
     }, 1000);
 
     return () => clearInterval(interval);
   }, []);
+
+  const formatTime = (timestamp: number) => {
+    return new Date(timestamp).toLocaleTimeString();
+  };
 
   return (
     <main className="app-shell">
@@ -62,6 +81,35 @@ function App() {
           <span className="label">Storage</span>
           <strong>Local First</strong>
           <p>All session data will be stored on this machine.</p>
+        </div>
+      </section>
+
+      <section className="timeline-card">
+        <div className="timeline-header">
+          <h2>Live Session Activity</h2>
+          <span>{events.length} Events</span>
+        </div>
+
+        <div className="timeline-events">
+          {events.length === 0 ? (
+            <p className="empty-state">No events received yet.</p>
+          ) : (
+            events.map((event, index) => (
+              <div
+                className="timeline-event"
+                key={`${event.timestamp_ms}-${index}`}
+              >
+                <div className="timeline-time">
+                  {formatTime(event.timestamp_ms)}
+                </div>
+
+                <div className="timeline-content">
+                  <strong>{event.title}</strong>
+                  <p>{event.description}</p>
+                </div>
+              </div>
+            ))
+          )}
         </div>
       </section>
 

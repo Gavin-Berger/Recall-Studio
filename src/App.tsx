@@ -16,6 +16,7 @@ type RecallEvent = {
   title: string;
   description: string;
   payload: string | null;
+  session_id: string | null;
 };
 
 type SessionStatus = {
@@ -108,6 +109,10 @@ function App() {
     return `Started at ${formatTime(session.started_at_ms)}.`;
   };
 
+  const trackedEventCount = events.filter(
+    (event) => event.event_type !== "heartbeat",
+  ).length;
+
   return (
     <main className="app-shell">
       <section className="hero">
@@ -145,9 +150,9 @@ function App() {
         </div>
 
         <div className="card">
-          <span className="label">Storage</span>
-          <strong>Local First</strong>
-          <p>All session data will be stored on this machine.</p>
+          <span className="label">Tracked Events</span>
+          <strong>{trackedEventCount}</strong>
+          <p>Production events captured for session reconstruction.</p>
         </div>
       </section>
 
@@ -173,6 +178,10 @@ function App() {
                 <div className="timeline-content">
                   <strong>{event.title}</strong>
                   <p>{event.description}</p>
+
+                  {event.session_id && (
+                    <small>Attached to {event.session_id}</small>
+                  )}
                 </div>
               </div>
             ))

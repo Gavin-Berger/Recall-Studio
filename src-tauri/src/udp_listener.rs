@@ -1,4 +1,5 @@
 use crate::protocol::RecallEvent;
+use crate::session::SessionState;
 use serde::Serialize;
 use std::{
     net::UdpSocket,
@@ -39,9 +40,26 @@ fn push_event(events: &Arc<Mutex<Vec<RecallEvent>>>, event: RecallEvent) {
     println!("EVENT QUEUE UPDATED -> {} events", recent_events.len());
 }
 
+fn assign_session_if_active(event: &mut RecallEvent, session: &Arc<Mutex<SessionState>>) {
+    if event.event_type == "heartbeat" {
+        return;
+    }
+
+    let session_state = session.lock().expect("Session state lock failed");
+    event.session_id = session_state.active_session_id();
+
+    if let Some(session_id) = &event.session_id {
+        println!(
+            "EVENT ASSIGNED TO SESSION -> event_type: {}, session_id: {}",
+            event.event_type, session_id
+        );
+    }
+}
+
 pub fn start_udp_listener(
     state: Arc<Mutex<ConnectionState>>,
     events: Arc<Mutex<Vec<RecallEvent>>>,
+    session: Arc<Mutex<SessionState>>,
 ) {
     thread::spawn(move || {
         let socket = UdpSocket::bind("127.0.0.1:9000")
@@ -61,7 +79,7 @@ pub fn start_udp_listener(
                     let parsed_event = serde_json::from_str::<RecallEvent>(&message);
 
                     match parsed_event {
-                        Ok(event) => {
+                        Ok(mut event) => {
                             println!(
                                 "PARSED RecallEvent -> type: {}, title: {}",
                                 event.event_type, event.title
@@ -85,6 +103,7 @@ pub fn start_udp_listener(
                                 );
                             }
 
+                            assign_session_if_active(&mut event, &session);
                             push_event(&events, event);
                         }
                         Err(error) => {

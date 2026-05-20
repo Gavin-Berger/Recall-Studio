@@ -49,6 +49,17 @@ fn start_session(state: State<'_, AppState>) -> SessionStatus {
     let mut session = state.session.lock().expect("Session state lock failed");
     let status = session.start();
 
+    if status.active {
+        let mut recent_events = state
+            .recent_events
+            .lock()
+            .expect("Recent events lock failed");
+
+        recent_events.clear();
+
+        println!("EVENT QUEUE CLEARED -> new session started");
+    }
+
     println!(
         "COMMAND start_session called -> active: {}, session_id: {:?}",
         status.active, status.session_id
@@ -97,7 +108,11 @@ pub fn run() {
     println!("Starting Recall Studio backend...");
     println!("Starting UDP listener...");
 
-    start_udp_listener(connection_state.clone(), recent_events.clone());
+    start_udp_listener(
+        connection_state.clone(),
+        recent_events.clone(),
+        session_state.clone(),
+    );
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())

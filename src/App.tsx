@@ -18,6 +18,13 @@ type RecallEvent = {
   payload: string | null;
 };
 
+type SessionStatus = {
+  active: boolean;
+  session_id: string | null;
+  started_at_ms: number | null;
+  ended_at_ms: number | null;
+};
+
 function App() {
   const [connection, setConnection] = useState<ConnectionStatus>({
     connected: false,
@@ -27,11 +34,17 @@ function App() {
 
   const [events, setEvents] = useState<RecallEvent[]>([]);
 
+  const [session, setSession] = useState<SessionStatus>({
+    active: false,
+    session_id: null,
+    started_at_ms: null,
+    ended_at_ms: null,
+  });
+
   useEffect(() => {
-    const interval = setInterval(async () => {
+    const pollBackend = async () => {
       try {
         const status = await invoke<ConnectionStatus>("get_connection_status");
-        console.log("connection status:", status);
         setConnection(status);
       } catch (error) {
         console.error("Failed to get connection status:", error);
@@ -39,17 +52,60 @@ function App() {
 
       try {
         const recentEvents = await invoke<RecallEvent[]>("get_recent_events");
-        console.log("recent events:", recentEvents);
         setEvents([...recentEvents].reverse());
       } catch (error) {
         console.error("Failed to get recent events:", error);
       }
-    }, 1000);
+
+      try {
+        const sessionStatus = await invoke<SessionStatus>("get_session_status");
+        setSession(sessionStatus);
+      } catch (error) {
+        console.error("Failed to get session status:", error);
+      }
+    };
+
+    pollBackend();
+
+    const interval = setInterval(pollBackend, 1000);
 
     return () => clearInterval(interval);
   }, []);
+
+  const handleStartSession = async () => {
+    try {
+      const sessionStatus = await invoke<SessionStatus>("start_session");
+      setSession(sessionStatus);
+    } catch (error) {
+      console.error("Failed to start session:", error);
+    }
+  };
+
+  const handleStopSession = async () => {
+    try {
+      const sessionStatus = await invoke<SessionStatus>("stop_session");
+      setSession(sessionStatus);
+    } catch (error) {
+      console.error("Failed to stop session:", error);
+    }
+  };
+
   const formatTime = (timestamp: number) => {
-    return new Date(timestamp).toLocaleTimeString();
+    const date = new Date(Number(timestamp));
+
+    if (Number.isNaN(date.getTime())) {
+      return "--:--:--";
+    }
+
+    return date.toLocaleTimeString();
+  };
+
+  const formatSessionStart = () => {
+    if (!session.started_at_ms) {
+      return "No session is currently being tracked.";
+    }
+
+    return `Started at ${formatTime(session.started_at_ms)}.`;
   };
 
   return (
@@ -71,15 +127,21 @@ function App() {
           </strong>
           <p>
             {connection.connected
-              ? "Receiving heartbeat from the Max for Live device."
+              ? "Receiving structured Recall Protocol events."
               : "Waiting for heartbeat from the Ableton device."}
           </p>
         </div>
 
         <div className="card">
           <span className="label">Active Session</span>
-          <strong>Not Started</strong>
-          <p>No session is currently being tracked.</p>
+          <strong className={session.active ? "online" : "offline"}>
+            {session.active ? "Tracking" : "Not Started"}
+          </strong>
+          <p>
+            {session.active && session.session_id
+              ? `Capturing activity for ${session.session_id}. ${formatSessionStart()}`
+              : "No session is currently being tracked."}
+          </p>
         </div>
 
         <div className="card">
@@ -119,7 +181,18 @@ function App() {
       </section>
 
       <section className="actions">
-        <button>Start Session</button>
+        <button onClick={handleStartSession} disabled={session.active}>
+          Start Session
+        </button>
+
+        <button
+          className="secondary"
+          onClick={handleStopSession}
+          disabled={!session.active}
+        >
+          Stop Session
+        </button>
+
         <button className="secondary">Import Recording</button>
         <button className="secondary">Settings</button>
       </section>

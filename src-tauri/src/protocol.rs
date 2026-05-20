@@ -5,7 +5,7 @@ pub struct RecallEvent {
     pub protocol: String,
     pub source: String,
     pub event_type: String,
-    pub timestamp_ms: u128,
+    pub timestamp_ms: u64,
     pub title: String,
     pub description: String,
     pub payload: Option<String>,

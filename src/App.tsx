@@ -31,18 +31,23 @@ function App() {
     const interval = setInterval(async () => {
       try {
         const status = await invoke<ConnectionStatus>("get_connection_status");
-        const recentEvents = await invoke<RecallEvent[]>("get_recent_events");
-
+        console.log("connection status:", status);
         setConnection(status);
+      } catch (error) {
+        console.error("Failed to get connection status:", error);
+      }
+
+      try {
+        const recentEvents = await invoke<RecallEvent[]>("get_recent_events");
+        console.log("recent events:", recentEvents);
         setEvents([...recentEvents].reverse());
       } catch (error) {
-        console.error("Frontend polling failed:", error);
+        console.error("Failed to get recent events:", error);
       }
     }, 1000);
 
     return () => clearInterval(interval);
   }, []);
-
   const formatTime = (timestamp: number) => {
     return new Date(timestamp).toLocaleTimeString();
   };

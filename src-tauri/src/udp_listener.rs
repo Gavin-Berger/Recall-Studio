@@ -9,22 +9,22 @@ use std::{
 
 #[derive(Debug, Clone)]
 pub struct ConnectionState {
-    pub last_heartbeat_ms: Option<u128>,
+    pub last_heartbeat_ms: Option<u64>,
     pub last_message: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
 pub struct ConnectionStatus {
     pub connected: bool,
-    pub last_heartbeat_ms: Option<u128>,
+    pub last_heartbeat_ms: Option<u64>,
     pub last_message: Option<String>,
 }
 
-fn now_ms() -> u128 {
+fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("System time error")
-        .as_millis()
+        .as_millis() as u64
 }
 
 fn push_event(events: &Arc<Mutex<Vec<RecallEvent>>>, event: RecallEvent) {
@@ -35,6 +35,8 @@ fn push_event(events: &Arc<Mutex<Vec<RecallEvent>>>, event: RecallEvent) {
     if recent_events.len() > 100 {
         recent_events.remove(0);
     }
+
+    println!("EVENT QUEUE UPDATED -> {} events", recent_events.len());
 }
 
 pub fn start_udp_listener(
@@ -47,39 +49,48 @@ pub fn start_udp_listener(
 
         println!("Recall Studio UDP listener running on 127.0.0.1:9000");
 
-        let mut buffer = [0u8; 2048];
+        let mut buffer = [0u8; 4096];
 
         loop {
             match socket.recv_from(&mut buffer) {
                 Ok((size, addr)) => {
                     let message = String::from_utf8_lossy(&buffer[..size]).to_string();
 
-                    println!("Received UDP message from {}: {}", addr, message);
+                    println!("RAW UDP RECEIVED from {}: {}", addr, message);
 
-                    if message.contains("/recall/heartbeat") {
-                        let timestamp = now_ms();
+                    let parsed_event = serde_json::from_str::<RecallEvent>(&message);
 
-                        {
-                            let mut connection =
-                                state.lock().expect("Connection state lock failed");
+                    match parsed_event {
+                        Ok(event) => {
+                            println!(
+                                "PARSED RecallEvent -> type: {}, title: {}",
+                                event.event_type, event.title
+                            );
 
-                            connection.last_heartbeat_ms = Some(timestamp);
-                            connection.last_message = Some(message.clone());
+                            if event.protocol != "recall.v1" {
+                                eprintln!("Unsupported protocol: {}", event.protocol);
+                                continue;
+                            }
+
+                            if event.event_type == "heartbeat" {
+                                let mut connection =
+                                    state.lock().expect("Connection state lock failed");
+
+                                connection.last_heartbeat_ms = Some(now_ms());
+                                connection.last_message = Some(event.title.clone());
+
+                                println!(
+                                    "HEARTBEAT UPDATED -> last_heartbeat_ms: {:?}",
+                                    connection.last_heartbeat_ms
+                                );
+                            }
+
+                            push_event(&events, event);
                         }
-
-                        push_event(
-                            &events,
-                            RecallEvent {
-                                protocol: "recall.v1".to_string(),
-                                source: "max_for_live".to_string(),
-                                event_type: "heartbeat".to_string(),
-                                timestamp_ms: timestamp,
-                                title: "Heartbeat Received".to_string(),
-                                description:
-                                    "Max for Live device heartbeat received.".to_string(),
-                                payload: Some(message),
-                            },
-                        );
+                        Err(error) => {
+                            eprintln!("FAILED TO PARSE UDP MESSAGE AS RecallEvent -> {}", error);
+                            eprintln!("BAD MESSAGE WAS -> {}", message);
+                        }
                     }
                 }
                 Err(error) => {

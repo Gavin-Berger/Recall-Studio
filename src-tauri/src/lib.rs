@@ -12,17 +12,33 @@ struct AppState {
 }
 
 #[tauri::command]
-fn get_connection_status(state: State<AppState>) -> ConnectionStatus {
-    get_status(state.connection.clone())
+fn get_connection_status(state: State<'_, AppState>) -> ConnectionStatus {
+    let status = get_status(state.connection.clone());
+
+    println!(
+        "COMMAND get_connection_status called -> connected: {}, last_heartbeat_ms: {:?}, last_message: {:?}",
+        status.connected,
+        status.last_heartbeat_ms,
+        status.last_message
+    );
+
+    status
 }
 
 #[tauri::command]
-fn get_recent_events(state: State<AppState>) -> Vec<RecallEvent> {
-    state
+fn get_recent_events(state: State<'_, AppState>) -> Vec<RecallEvent> {
+    let recent_events = state
         .recent_events
         .lock()
         .expect("Recent events lock failed")
-        .clone()
+        .clone();
+
+    println!(
+        "COMMAND get_recent_events called -> {} events",
+        recent_events.len()
+    );
+
+    recent_events
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -34,6 +50,8 @@ pub fn run() {
 
     let recent_events = Arc::new(Mutex::new(Vec::<RecallEvent>::new()));
 
+    println!("Starting Recall Studio backend...");
+    println!("Starting UDP listener...");
     start_udp_listener(connection_state.clone(), recent_events.clone());
 
     tauri::Builder::default()

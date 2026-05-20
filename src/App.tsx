@@ -26,6 +26,11 @@ type SessionStatus = {
   ended_at_ms: number | null;
 };
 
+type StorageStatus = {
+  initialized: boolean;
+  db_path: string | null;
+};
+
 function App() {
   const [connection, setConnection] = useState<ConnectionStatus>({
     connected: false,
@@ -40,6 +45,11 @@ function App() {
     session_id: null,
     started_at_ms: null,
     ended_at_ms: null,
+  });
+
+  const [storage, setStorage] = useState<StorageStatus>({
+    initialized: false,
+    db_path: null,
   });
 
   useEffect(() => {
@@ -63,6 +73,13 @@ function App() {
         setSession(sessionStatus);
       } catch (error) {
         console.error("Failed to get session status:", error);
+      }
+
+      try {
+        const storageStatus = await invoke<StorageStatus>("get_storage_status");
+        setStorage(storageStatus);
+      } catch (error) {
+        console.error("Failed to get storage status:", error);
       }
     };
 
@@ -150,16 +167,22 @@ function App() {
         </div>
 
         <div className="card">
-          <span className="label">Tracked Events</span>
-          <strong>{trackedEventCount}</strong>
-          <p>Production events captured for session reconstruction.</p>
+          <span className="label">Storage</span>
+          <strong className={storage.initialized ? "online" : "offline"}>
+            {storage.initialized ? "Ready" : "Not Ready"}
+          </strong>
+          <p>
+            {storage.initialized
+              ? "Local session database initialized."
+              : "Waiting for local storage setup."}
+          </p>
         </div>
       </section>
 
       <section className="timeline-card">
         <div className="timeline-header">
           <h2>Live Session Activity</h2>
-          <span>{events.length} Events</span>
+          <span>{trackedEventCount} Tracked Events</span>
         </div>
 
         <div className="timeline-events">

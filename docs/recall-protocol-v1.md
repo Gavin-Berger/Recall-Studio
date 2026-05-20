@@ -1,0 +1,12 @@
+heartbeat
+device_loaded
+live_set_snapshot
+transport_play
+transport_stop
+tempo_changed
+track_selected
+device_selected
+parameter_changed
+clip_launched
+session_snapshot_started
+session_snapshot_completed

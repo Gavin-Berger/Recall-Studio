@@ -1,3 +1,4 @@
+use crate::protocol::RecallEvent;
 use serde::Serialize;
 use std::{
     net::UdpSocket,
@@ -26,7 +27,20 @@ fn now_ms() -> u128 {
         .as_millis()
 }
 
-pub fn start_udp_listener(state: Arc<Mutex<ConnectionState>>) {
+fn push_event(events: &Arc<Mutex<Vec<RecallEvent>>>, event: RecallEvent) {
+    let mut recent_events = events.lock().expect("Recent events lock failed");
+
+    recent_events.push(event);
+
+    if recent_events.len() > 100 {
+        recent_events.remove(0);
+    }
+}
+
+pub fn start_udp_listener(
+    state: Arc<Mutex<ConnectionState>>,
+    events: Arc<Mutex<Vec<RecallEvent>>>,
+) {
     thread::spawn(move || {
         let socket = UdpSocket::bind("127.0.0.1:9000")
             .expect("Failed to bind UDP listener on 127.0.0.1:9000");
@@ -43,9 +57,29 @@ pub fn start_udp_listener(state: Arc<Mutex<ConnectionState>>) {
                     println!("Received UDP message from {}: {}", addr, message);
 
                     if message.contains("/recall/heartbeat") {
-                        let mut connection = state.lock().expect("Connection state lock failed");
-                        connection.last_heartbeat_ms = Some(now_ms());
-                        connection.last_message = Some(message);
+                        let timestamp = now_ms();
+
+                        {
+                            let mut connection =
+                                state.lock().expect("Connection state lock failed");
+
+                            connection.last_heartbeat_ms = Some(timestamp);
+                            connection.last_message = Some(message.clone());
+                        }
+
+                        push_event(
+                            &events,
+                            RecallEvent {
+                                protocol: "recall.v1".to_string(),
+                                source: "max_for_live".to_string(),
+                                event_type: "heartbeat".to_string(),
+                                timestamp_ms: timestamp,
+                                title: "Heartbeat Received".to_string(),
+                                description:
+                                    "Max for Live device heartbeat received.".to_string(),
+                                payload: Some(message),
+                            },
+                        );
                     }
                 }
                 Err(error) => {

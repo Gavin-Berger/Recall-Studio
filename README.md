@@ -45,7 +45,6 @@ The long-term goal is to give producers a structured session memory system simil
 
 The current focus is the direct connection between:
 
-````text
 Max for Live Device
 → Recall Studio Native App
 
@@ -101,17 +100,17 @@ Ableton Live
 Max for Live
 High-Level Architecture
 Ableton Live
-    ↓
+↓
 Max for Live Device
-    ↓ UDP localhost
+↓ UDP localhost
 Recall Studio Rust Backend
-    ↓
+↓
 Recall Protocol Parser
-    ↓
+↓
 Session Ownership Layer
-    ↓
+↓
 SQLite Local Storage
-    ↓
+↓
 React Timeline UI
 System Responsibilities
 Max for Live Device
@@ -170,26 +169,26 @@ Why: Recall Studio should preserve session history on the producer’s machine w
 Project Structure
 Recall-Studio/
 ├── src/
-│   ├── App.tsx
-│   └── App.css
+│ ├── App.tsx
+│ └── App.css
 │
 ├── src-tauri/
-│   ├── src/
-│   │   ├── main.rs
-│   │   ├── lib.rs
-│   │   ├── protocol.rs
-│   │   ├── udp_listener.rs
-│   │   ├── session.rs
-│   │   └── storage.rs
-│   │
-│   ├── Cargo.toml
-│   ├── Cargo.lock
-│   └── tauri.conf.json
+│ ├── src/
+│ │ ├── main.rs
+│ │ ├── lib.rs
+│ │ ├── protocol.rs
+│ │ ├── udp_listener.rs
+│ │ ├── session.rs
+│ │ └── storage.rs
+│ │
+│ ├── Cargo.toml
+│ ├── Cargo.lock
+│ └── tauri.conf.json
 │
 ├── m4l/
-│   └── RecallStudioBridge/
-│       ├── RecallStudioBridge.amxd
-│       └── recall_m4l_bridge.js
+│ └── RecallStudioBridge/
+│ ├── RecallStudioBridge.amxd
+│ └── recall_m4l_bridge.js
 │
 ├── send-heartbeat.cjs
 ├── package.json
@@ -200,7 +199,7 @@ main.rs
 Minimal Tauri entry point.
 
 fn main() {
-    recall_studio_lib::run()
+recall_studio_lib::run()
 }
 
 Why: the main file should stay small. The real backend wiring belongs in lib.rs.
@@ -224,14 +223,14 @@ protocol.rs
 Defines the Recall Protocol event model.
 
 pub struct RecallEvent {
-    pub protocol: String,
-    pub source: String,
-    pub event_type: String,
-    pub timestamp_ms: u64,
-    pub title: String,
-    pub description: String,
-    pub payload: Option<String>,
-    pub session_id: Option<String>,
+pub protocol: String,
+pub source: String,
+pub event_type: String,
+pub timestamp_ms: u64,
+pub title: String,
+pub description: String,
+pub payload: Option<String>,
+pub session_id: Option<String>,
 }
 
 Why: every event from Max for Live or a development sender must follow a predictable structure before the app can parse, store, and review session activity reliably.
@@ -294,14 +293,14 @@ Recall Studio receives structured JSON events.
 Example:
 
 {
-  "protocol": "recall.v1",
-  "source": "max_for_live",
-  "event_type": "tempo_changed",
-  "timestamp_ms": 1779251337349,
-  "title": "Tempo Changed",
-  "description": "Tempo changed to 140 BPM.",
-  "payload": "{\"bpm\":140,\"previous_bpm\":128}",
-  "session_id": null
+"protocol": "recall.v1",
+"source": "max_for_live",
+"event_type": "tempo_changed",
+"timestamp_ms": 1779251337349,
+"title": "Tempo Changed",
+"description": "Tempo changed to 140 BPM.",
+"payload": "{\"bpm\":140,\"previous_bpm\":128}",
+"session_id": null
 }
 
 The native app assigns session_id when a session is active.
@@ -561,8 +560,8 @@ Recommended structure:
 
 m4l/
 └── RecallStudioBridge/
-    ├── RecallStudioBridge.amxd
-    └── recall_m4l_bridge.js
+├── RecallStudioBridge.amxd
+└── recall_m4l_bridge.js
 
 During development, Ableton can load the device from this repo folder.
 
@@ -656,11 +655,10 @@ exportable producer logs
 
 The foundation is the direct Ableton telemetry bridge. Everything else builds on top of that.
 
-
 Commit it with:
 
 ```bash
 git add README.md
 git commit -m "Document technical roadmap for Recall Studio completion"
 git push
-````
+```

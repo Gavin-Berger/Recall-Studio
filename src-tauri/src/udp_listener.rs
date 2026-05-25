@@ -1,5 +1,6 @@
 use crate::protocol::RecallEvent;
 use crate::session::SessionState;
+use crate::storage::StorageState;
 use serde::Serialize;
 use std::{
     net::UdpSocket,
@@ -56,10 +57,31 @@ fn assign_session_if_active(event: &mut RecallEvent, session: &Arc<Mutex<Session
     }
 }
 
+fn persist_event_if_session_owned(event: &RecallEvent, storage: &Arc<Mutex<StorageState>>) {
+    if event.session_id.is_none() {
+        return;
+    }
+
+    let storage_state = storage.lock().expect("Storage state lock failed");
+
+    match storage_state.save_event(event) {
+        Ok(_) => {
+            println!(
+                "EVENT PERSISTED -> event_type: {}, session_id: {:?}",
+                event.event_type, event.session_id
+            );
+        }
+        Err(error) => {
+            eprintln!("FAILED TO PERSIST EVENT -> {}", error);
+        }
+    }
+}
+
 pub fn start_udp_listener(
     state: Arc<Mutex<ConnectionState>>,
     events: Arc<Mutex<Vec<RecallEvent>>>,
     session: Arc<Mutex<SessionState>>,
+    storage: Arc<Mutex<StorageState>>,
 ) {
     thread::spawn(move || {
         let socket = UdpSocket::bind("127.0.0.1:9000")
@@ -104,6 +126,7 @@ pub fn start_udp_listener(
                             }
 
                             assign_session_if_active(&mut event, &session);
+                            persist_event_if_session_owned(&event, &storage);
                             push_event(&events, event);
                         }
                         Err(error) => {

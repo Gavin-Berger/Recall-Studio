@@ -49,10 +49,15 @@ fn get_recent_events(state: State<'_, AppState>) -> Vec<RecallEvent> {
 
 #[tauri::command]
 fn start_session(state: State<'_, AppState>) -> SessionStatus {
-    let mut session = state.session.lock().expect("Session state lock failed");
-    let status = session.start();
+    let (status, should_persist) = {
+        let mut session = state.session.lock().expect("Session state lock failed");
+        let was_active = session.status().active;
+        let status = session.start();
 
-    if status.active {
+        (status, !was_active)
+    };
+
+    if should_persist && status.active {
         let mut recent_events = state
             .recent_events
             .lock()
@@ -61,6 +66,13 @@ fn start_session(state: State<'_, AppState>) -> SessionStatus {
         recent_events.clear();
 
         println!("EVENT QUEUE CLEARED -> new session started");
+
+        let storage = state.storage.lock().expect("Storage state lock failed");
+
+        match storage.save_session_started(&status) {
+            Ok(_) => println!("SESSION PERSISTED -> session_id: {:?}", status.session_id),
+            Err(error) => eprintln!("FAILED TO PERSIST SESSION START -> {}", error),
+        }
     }
 
     println!(
@@ -73,8 +85,25 @@ fn start_session(state: State<'_, AppState>) -> SessionStatus {
 
 #[tauri::command]
 fn stop_session(state: State<'_, AppState>) -> SessionStatus {
-    let mut session = state.session.lock().expect("Session state lock failed");
-    let status = session.stop();
+    let (status, should_persist) = {
+        let mut session = state.session.lock().expect("Session state lock failed");
+        let was_active = session.status().active;
+        let status = session.stop();
+
+        (status, was_active)
+    };
+
+    if should_persist {
+        let storage = state.storage.lock().expect("Storage state lock failed");
+
+        match storage.save_session_stopped(&status) {
+            Ok(_) => println!(
+                "SESSION STOP PERSISTED -> session_id: {:?}",
+                status.session_id
+            ),
+            Err(error) => eprintln!("FAILED TO PERSIST SESSION STOP -> {}", error),
+        }
+    }
 
     println!(
         "COMMAND stop_session called -> active: {}, session_id: {:?}",
@@ -122,16 +151,13 @@ pub fn run() {
     let session_state = Arc::new(Mutex::new(SessionState::new()));
 
     let storage_state = Arc::new(Mutex::new(StorageState::new()));
+
+    let connection_state_for_setup = connection_state.clone();
+    let recent_events_for_setup = recent_events.clone();
+    let session_state_for_setup = session_state.clone();
     let storage_state_for_setup = storage_state.clone();
 
     println!("Starting Recall Studio backend...");
-    println!("Starting UDP listener...");
-
-    start_udp_listener(
-        connection_state.clone(),
-        recent_events.clone(),
-        session_state.clone(),
-    );
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
@@ -147,13 +173,23 @@ pub fn run() {
 
             initialize_database(&db_path).expect("Failed to initialize Recall Studio database");
 
-            let mut storage = storage_state_for_setup
-                .lock()
-                .expect("Storage state lock failed");
+            {
+                let mut storage = storage_state_for_setup
+                    .lock()
+                    .expect("Storage state lock failed");
 
-            storage.configure(db_path.clone());
+                storage.configure(db_path.clone());
+            }
 
             println!("SQLite database initialized at {:?}", db_path);
+            println!("Starting UDP listener...");
+
+            start_udp_listener(
+                connection_state_for_setup.clone(),
+                recent_events_for_setup.clone(),
+                session_state_for_setup.clone(),
+                storage_state_for_setup.clone(),
+            );
 
             Ok(())
         })

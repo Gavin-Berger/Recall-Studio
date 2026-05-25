@@ -2,7 +2,9 @@
 
 Recall Studio is a native desktop application for Ableton Live producers that captures structured session activity, stores local session history, and helps producers review what happened during a creative session.
 
-Recall Studio brings version-control thinking to music production. Instead of only saving the final Ableton project file, the app tracks what changed, when it changed, and how the session evolved. The goal is to give producers a structured memory system for creative decisions, sound design changes, workflow history, and session review.
+Recall Studio brings a scientific, version-control-inspired layer to music production. Instead of only saving the final Ableton project file, the app tracks what changed, when it changed, and how the session evolved over time.
+
+The goal is to give producers a structured memory system for creative decisions, sound design changes, workflow history, and session review.
 
 This project is not a generic AI chatbot. The core idea is a hybrid creative telemetry and session memory platform that connects Ableton Live, a Max for Live device, a native desktop app, local storage, and future AI-assisted session review.
 
@@ -37,9 +39,9 @@ The long-term goal is to give producers a structured session memory system simil
 
 ---
 
-## Current Focus
+## Current Development Focus
 
-The current development focus is the direct connection between:
+The current focus is the direct connection between:
 
 ```text
 Max for Live Device

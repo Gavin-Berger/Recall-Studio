@@ -525,6 +525,62 @@ button {
   font-family: "JetBrains Mono", "SFMono-Regular", Consolas, monospace;
 }
 
+.instrument-reference-card {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px solid rgba(77, 184, 255, 0.18);
+  border-left: 3px solid var(--accent-device);
+  border-radius: 8px;
+  background:
+    linear-gradient(90deg, rgba(77, 184, 255, 0.09), transparent 62%),
+    rgba(255, 255, 255, 0.025);
+}
+
+.instrument-reference-card div:first-child {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.instrument-reference-card span,
+.instrument-reference-card small {
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.instrument-reference-card strong {
+  color: var(--text);
+  font-size: 0.88rem;
+}
+
+.instrument-reference-card p {
+  margin: 0;
+  color: #c6d7e9;
+  font-size: 0.82rem;
+  line-height: 1.45;
+}
+
+.instrument-reference-card__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.instrument-reference-card__chips span {
+  padding: 5px 7px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.18);
+  letter-spacing: 0;
+  text-transform: none;
+}
+
 .timeline-event--session .timeline-event__body {
   border-left-color: var(--accent-session);
 }
@@ -999,6 +1055,18 @@ body {
   white-space: nowrap;
 }
 
+.focus-card small {
+  display: inline-block;
+  margin-top: 8px;
+  padding: 4px 7px;
+  border: 1px solid rgba(255, 111, 174, 0.22);
+  border-radius: 999px;
+  color: #ffc5de;
+  background: rgba(255, 111, 174, 0.08);
+  font-size: 0.68rem;
+  font-weight: 800;
+}
+
 .timeline-filter {
   display: inline-flex;
   align-items: center;
@@ -1097,6 +1165,28 @@ body {
 .replay3d-hud div,
 .replay3d-inspector {
   border-color: rgba(77, 184, 255, 0.24);
+}
+
+.replay3d-inspector button {
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+}
+
+.replay3d-instrument {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.replay3d-instrument p {
+  margin: 4px 0 0;
+  color: #c6d7e9;
+  font-size: 0.78rem;
+  line-height: 1.35;
 }
 
 .session-row:hover,

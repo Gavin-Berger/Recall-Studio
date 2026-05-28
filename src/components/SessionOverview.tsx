@@ -4,6 +4,7 @@ import type {
   SessionStats,
   SessionViewMode,
 } from "../types/recall";
+import { findAbletonInstrumentReference } from "../utils/abletonInstruments";
 import { TelemetryStat } from "./TelemetryStat";
 
 type SessionOverviewProps = {
@@ -45,6 +46,7 @@ export function SessionOverview({
     latestTrack?.trackName ?? latestTrack?.metadata?.track ?? "No track selected";
   const focusDevice =
     latestDevice?.deviceName ?? latestDevice?.metadata?.device ?? "No device activity";
+  const focusInstrument = findAbletonInstrumentReference(String(focusDevice));
 
   return (
     <aside className="session-overview">
@@ -76,6 +78,7 @@ export function SessionOverview({
         <div className="focus-card focus-card--device">
           <span>Active Device</span>
           <strong>{String(focusDevice)}</strong>
+          {focusInstrument && <small>{focusInstrument.family}</small>}
         </div>
       </div>
 

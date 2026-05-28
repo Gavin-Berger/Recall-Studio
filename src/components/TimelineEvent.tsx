@@ -1,4 +1,5 @@
 import type { RecallTimelineMoment } from "../types/recall";
+import { findAbletonInstrumentReference } from "../utils/abletonInstruments";
 
 type TimelineEventProps = {
   event: RecallTimelineMoment;
@@ -6,6 +7,9 @@ type TimelineEventProps = {
 
 export function TimelineEvent({ event }: TimelineEventProps) {
   const label = labelForEventType(event.type);
+  const instrument = findAbletonInstrumentReference(
+    event.deviceName ?? String(event.metadata?.device ?? ""),
+  );
 
   return (
     <article className={`timeline-event timeline-event--${event.type}`}>
@@ -24,6 +28,29 @@ export function TimelineEvent({ event }: TimelineEventProps) {
 
         {event.detail && (
           <p className="timeline-event__detail">{event.detail}</p>
+        )}
+
+        {instrument && (
+          <div className="instrument-reference-card">
+            <div>
+              <span>Ableton Instrument</span>
+              <strong>{instrument.name}</strong>
+            </div>
+
+            <p>{instrument.role}</p>
+
+            <div className="instrument-reference-card__chips">
+              <span>{instrument.family}</span>
+              <span>{instrument.engine}</span>
+              {instrument.focus.slice(0, 3).map((focus) => (
+                <span key={focus}>{focus}</span>
+              ))}
+            </div>
+
+            {instrument.performanceNote && (
+              <small>{instrument.performanceNote}</small>
+            )}
+          </div>
         )}
 
         {event.metadata && Object.keys(event.metadata).length > 0 && (

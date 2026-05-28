@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import type { RecallTimelineMoment } from "../types/recall";
+import { findAbletonInstrumentReference } from "../utils/abletonInstruments";
 
 type SessionReplay3DProps = {
   events: RecallTimelineMoment[];
@@ -48,6 +49,9 @@ export function SessionReplay3D({
   const meshEventIdsRef = useRef(new Map<string, string>());
   const [inspectedEvent, setInspectedEvent] =
     useState<RecallTimelineMoment | null>(null);
+  const inspectedInstrument = findAbletonInstrumentReference(
+    inspectedEvent?.deviceName ?? String(inspectedEvent?.metadata?.device ?? ""),
+  );
   const [scanPaused, setScanPaused] = useState(false);
 
   const sceneData = useMemo(() => buildReplayNodes(events), [events]);
@@ -365,14 +369,20 @@ export function SessionReplay3D({
       </div>
 
       {inspectedEvent && (
-        <button
-          type="button"
-          className="replay3d-inspector"
-          onClick={() => onSelectEvent(inspectedEvent.id)}
-        >
-          <span>{inspectedEvent.sessionTimecode}</span>
-          <strong>{inspectedEvent.summary}</strong>
-        </button>
+        <div className="replay3d-inspector">
+          <button type="button" onClick={() => onSelectEvent(inspectedEvent.id)}>
+            <span>{inspectedEvent.sessionTimecode}</span>
+            <strong>{inspectedEvent.summary}</strong>
+          </button>
+
+          {inspectedInstrument && (
+            <div className="replay3d-instrument">
+              <span>{inspectedInstrument.family}</span>
+              <strong>{inspectedInstrument.name}</strong>
+              <p>{inspectedInstrument.role}</p>
+            </div>
+          )}
+        </div>
       )}
     </div>
   );

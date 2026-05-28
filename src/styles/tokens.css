@@ -1,0 +1,60 @@
+:root {
+  --ink: #0b0b0a;
+  --ink-2: #11100e;
+  --paper: #f0e8d9;
+  --paper-strong: #fff9ec;
+  --muted: #9d9487;
+  --faint: #665f55;
+  --panel: #171511;
+  --panel-2: #1e1b16;
+  --panel-3: #26221b;
+  --line: #343029;
+  --line-soft: #29251f;
+
+  --oxide: #c56f4d;
+  --sage: #7f927e;
+  --brass: #c7a968;
+  --smoke: #8d918b;
+  --danger: #b45c50;
+
+  --track: #c7a968;
+  --device: #c56f4d;
+  --parameter: #d0bc79;
+  --clip: #9f9271;
+  --transport: #8d918b;
+  --session: #a56856;
+
+  --radius: 10px;
+  --radius-sm: 6px;
+  --shadow: 0 24px 70px rgba(0, 0, 0, 0.34);
+  --font-display: "Bahnschrift", "Aptos Display", "Segoe UI Variable Display", "Segoe UI", sans-serif;
+  --font-body: "Aptos", "Segoe UI Variable Text", "Segoe UI", sans-serif;
+  --font-mono: "Cascadia Code", "JetBrains Mono", "SFMono-Regular", Consolas, monospace;
+
+  color: var(--paper);
+  background: var(--ink);
+  font-family: var(--font-body);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  color: var(--paper);
+  background:
+    linear-gradient(180deg, #0b0b0a 0%, #11100e 48%, #090908 100%),
+    var(--ink);
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}
+
+button {
+  color: inherit;
+}

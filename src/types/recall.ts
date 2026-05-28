@@ -9,32 +9,47 @@ export type RecallEventType =
   | "transport"
   | "tempo"
   | "track"
+  | "group"
   | "device"
   | "parameter"
   | "clip"
+  | "scene"
+  | "mixer"
+  | "arrangement"
   | "session"
   | "file"
   | "creative_moment"
   | "unknown";
+
+export type RecallMetadataValue =
+  | string
+  | number
+  | boolean
+  | null
+  | string[];
 
 export type RecallTimelineMoment = {
   id: string;
   type: RecallEventType;
   rawEventType?: string;
   timelineRole?: "creative" | "transport" | "context" | "debug";
+  rawEvent?: unknown;
   timestamp: number;
   sessionTimecode: string;
   summary: string;
   detail?: string;
   trackName?: string;
+  groupName?: string;
+  groupPath?: string[];
   deviceName?: string;
   source?: string;
-  metadata?: Record<string, string | number | boolean | null>;
+  metadata?: Record<string, RecallMetadataValue>;
 };
 
 export type PlaybackState = {
   playing: boolean | null;
   tempo: number | null;
+  projectClock: string | null;
   arrangementPosition: string | null;
   rawSongTime: number | null;
   selectedTrack: string | null;

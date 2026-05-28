@@ -18,16 +18,16 @@ type ReplayNode = {
 };
 
 const EVENT_COLORS: Record<string, number> = {
-  track: 0x46b7ff,
-  device: 0xff6fae,
-  parameter: 0xf3cf4d,
-  transport: 0x6b8cff,
-  tempo: 0xffb35c,
-  clip: 0xb993ff,
-  session: 0xff8a5b,
-  file: 0xff8a5b,
-  creative_moment: 0x9ed7ff,
-  unknown: 0x9aa5b1,
+  track: 0xc79b58,
+  device: 0xb9825e,
+  parameter: 0xc8b66a,
+  transport: 0x9aa08f,
+  tempo: 0xd8a84f,
+  clip: 0x9c8f72,
+  session: 0xa66d54,
+  file: 0xa66d54,
+  creative_moment: 0x7f9f7a,
+  unknown: 0xaaa194,
 };
 
 const MAX_RENDERED_NODES = 180;
@@ -96,7 +96,7 @@ export function SessionReplay3D({
     mountElement.appendChild(renderer.domElement);
 
     const scene = new THREE.Scene();
-    scene.fog = new THREE.Fog(0x070a10, 28, 86);
+    scene.fog = new THREE.Fog(0x0b0b0a, 28, 86);
 
     const camera = new THREE.PerspectiveCamera(48, 1, 0.1, 120);
     camera.position.set(0, 14, 31);
@@ -116,25 +116,25 @@ export function SessionReplay3D({
       controls.update();
     }
 
-    const ambient = new THREE.AmbientLight(0x9fb7c9, 0.55);
+    const ambient = new THREE.AmbientLight(0xede7dc, 0.42);
     scene.add(ambient);
 
-    const keyLight = new THREE.PointLight(0x46b7ff, 1.15, 70);
+    const keyLight = new THREE.PointLight(0xd8a84f, 1.05, 70);
     keyLight.position.set(-18, 18, 18);
     scene.add(keyLight);
 
-    const magentaLight = new THREE.PointLight(0xff6fae, 0.65, 60);
-    magentaLight.position.set(22, 10, -14);
-    scene.add(magentaLight);
+    const fillLight = new THREE.PointLight(0x7f9f7a, 0.46, 60);
+    fillLight.position.set(22, 10, -14);
+    scene.add(fillLight);
 
-    const grid = new THREE.GridHelper(52, 26, 0x263b57, 0x17212d);
+    const grid = new THREE.GridHelper(52, 26, 0x3a372f, 0x24231f);
     grid.position.y = -1.05;
     scene.add(grid);
 
     const scanMaterial = new THREE.MeshBasicMaterial({
-      color: 0x46b7ff,
+      color: 0xd8a84f,
       transparent: true,
-      opacity: 0.58,
+      opacity: 0.42,
       depthWrite: false,
     });
     const scanPlane = new THREE.Mesh(
@@ -172,9 +172,9 @@ export function SessionReplay3D({
       const currentSceneData = sceneDataRef.current;
 
       const laneMaterial = new THREE.MeshBasicMaterial({
-        color: 0x2d435f,
+        color: 0x3a372f,
         transparent: true,
-        opacity: 0.46,
+        opacity: 0.38,
       });
       const laneGeometry = new THREE.BoxGeometry(42, 0.045, 0.12);
 
@@ -185,9 +185,9 @@ export function SessionReplay3D({
         replayRoot.add(laneMesh);
 
         const railMaterial = new THREE.MeshBasicMaterial({
-          color: laneIndex % 2 === 0 ? 0x46b7ff : 0xff6fae,
+          color: laneIndex % 2 === 0 ? 0xd8a84f : 0x7f9f7a,
           transparent: true,
-          opacity: 0.22,
+          opacity: 0.2,
         });
         const rail = new THREE.Mesh(new THREE.BoxGeometry(1.8, 0.075, 0.2), railMaterial);
         rail.position.set(-21.5, -0.62, z);
@@ -230,9 +230,9 @@ export function SessionReplay3D({
       });
 
       const playheadMaterial = new THREE.MeshBasicMaterial({
-        color: 0x9ed7ff,
+        color: 0xd8a84f,
         transparent: true,
-        opacity: 0.7,
+        opacity: 0.62,
       });
       const playhead = new THREE.Mesh(
         new THREE.BoxGeometry(0.08, 0.12, 17),

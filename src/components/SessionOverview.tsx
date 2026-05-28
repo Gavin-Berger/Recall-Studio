@@ -5,7 +5,7 @@ import type {
   SessionViewMode,
 } from "../types/recall";
 import { findAbletonInstrumentReference } from "../utils/abletonInstruments";
-import { TelemetryStat } from "./TelemetryStat";
+import { RecallMark } from "./RecallMark";
 
 type SessionOverviewProps = {
   events: RecallTimelineMoment[];
@@ -49,29 +49,89 @@ export function SessionOverview({
   const focusInstrument = findAbletonInstrumentReference(String(focusDevice));
 
   return (
-    <aside className="session-overview">
-      <div className="panel-header">
+    <aside className="left-rail">
+      <header className="rail-brand">
+        <RecallMark />
         <div>
-          <p className="eyebrow">{viewMode === "live" ? "Now Recording" : "Saved Take"}</p>
-          <h2>Session Focus</h2>
+          <p>Recall Studio</p>
+          <h1>Session Memory</h1>
         </div>
-      </div>
+      </header>
 
-      <div className="session-title-block">
-        <p className="session-label">
-          {viewMode === "live" ? "Current Take" : "Recall Take"}
-        </p>
-        <h1>{viewMode === "live" ? "Live Capture" : "Saved Session"}</h1>
-        <span>
-          {viewMode === "live"
-            ? "Writing Ableton moves to local memory"
-            : "Reviewing a recorded production pass"}
-        </span>
-      </div>
+      <section className="rail-section">
+        <div className="section-kicker">Capture</div>
 
-      <div className="focus-stack">
+        <button
+          type="button"
+          className={`live-capture-card ${viewMode === "live" ? "is-active" : ""}`}
+          onClick={onSelectLiveSession}
+        >
+          <span className="capture-led is-live" />
+          <span>
+            <strong>Live Session</strong>
+            <small>Current Ableton stream</small>
+          </span>
+          <em>{stats.creativeEvents}</em>
+        </button>
+      </section>
+
+      <section className="rail-section">
+        <div className="session-history__header">
+          <span>Saved Sessions</span>
+          <button type="button" onClick={onStartNewSession}>
+            New
+          </button>
+        </div>
+
+        <details className="session-accordion" open>
+          <summary>Local history</summary>
+
+          <div className="session-history__list">
+            {sessions.length === 0 ? (
+              <p className="session-history__empty">No saved sessions yet.</p>
+            ) : (
+              sessions.map((session) => (
+                <div
+                  key={session.id}
+                  className={`session-row ${
+                    viewMode === "saved" && selectedSessionId === session.id
+                      ? "is-active"
+                      : ""
+                  }`}
+                >
+                  <button
+                    type="button"
+                    className="session-row__main"
+                    onClick={() => onSelectSavedSession(session.id)}
+                  >
+                    <span>
+                      <strong>{session.name}</strong>
+                      <small>{formatSessionDate(session.started_at_ms)}</small>
+                    </span>
+                    <em>{session.creative_event_count}</em>
+                  </button>
+
+                  <button
+                    type="button"
+                    className="session-row__delete"
+                    title="Delete local session history"
+                    aria-label={`Delete ${session.name}`}
+                    onClick={() => onDeleteSavedSession(session.id)}
+                  >
+                    X
+                  </button>
+                </div>
+              ))
+            )}
+          </div>
+        </details>
+      </section>
+
+      <section className="rail-section">
+        <div className="section-kicker">Focus</div>
+
         <div className="focus-card focus-card--track">
-          <span>Focus Track</span>
+          <span>Selected Track</span>
           <strong>{String(focusTrack)}</strong>
         </div>
 
@@ -80,80 +140,29 @@ export function SessionOverview({
           <strong>{String(focusDevice)}</strong>
           {focusInstrument && <small>{focusInstrument.family}</small>}
         </div>
-      </div>
+      </section>
 
-      <div className="session-history">
-        <div className="session-history__header">
-          <span>Local Takes</span>
-          <button type="button" onClick={onStartNewSession}>
-            New
-          </button>
-        </div>
+      <section className="rail-section rail-section--metrics">
+        <RailMetric label="Moments" value={stats.creativeEvents} />
+        <RailMetric label="Track" value={stats.trackEvents} />
+        <RailMetric label="Device" value={stats.deviceEvents} />
+        <RailMetric label="Tempo" value={stats.tempoEvents} />
+      </section>
 
-        <button
-          type="button"
-          className={`session-row ${viewMode === "live" ? "is-active" : ""}`}
-          onClick={onSelectLiveSession}
-        >
-          <span>
-            <strong>Live Capture</strong>
-            <small>Current Ableton stream</small>
-          </span>
-          <em>{stats.creativeEvents}</em>
-        </button>
-
-        <div className="session-history__list">
-          {sessions.length === 0 ? (
-            <p className="session-history__empty">No saved sessions yet.</p>
-          ) : (
-            sessions.map((session) => (
-              <div
-                key={session.id}
-                className={`session-row ${
-                  viewMode === "saved" && selectedSessionId === session.id
-                    ? "is-active"
-                    : ""
-                }`}
-              >
-                <button
-                  type="button"
-                  className="session-row__main"
-                  onClick={() => onSelectSavedSession(session.id)}
-                >
-                  <span>
-                    <strong>{session.name}</strong>
-                    <small>{formatSessionDate(session.started_at_ms)}</small>
-                  </span>
-                  <em>{session.creative_event_count}</em>
-                </button>
-
-                <button
-                  type="button"
-                  className="session-row__delete"
-                  title="Delete local session history"
-                  aria-label={`Delete ${session.name}`}
-                  onClick={() => onDeleteSavedSession(session.id)}
-                >
-                  Delete
-                </button>
-              </div>
-            ))
-          )}
-        </div>
-      </div>
-
-      <div className="stat-grid">
-        <TelemetryStat label="Moments" value={stats.creativeEvents} />
-        <TelemetryStat label="Transport" value={stats.transportEvents} />
-        <TelemetryStat label="Tempo" value={stats.tempoEvents} />
-        <TelemetryStat label="Track Moves" value={stats.trackEvents} />
-      </div>
-
-      <div className="session-memory-note">
+      <section className="rail-section session-memory-note">
         <span>Last Move</span>
         <p>{latestCreativeEvent?.summary ?? "Waiting for Ableton activity."}</p>
-      </div>
+      </section>
     </aside>
+  );
+}
+
+function RailMetric({ label, value }: { label: string; value: number }) {
+  return (
+    <div className="rail-metric">
+      <span>{label}</span>
+      <strong>{value}</strong>
+    </div>
   );
 }
 

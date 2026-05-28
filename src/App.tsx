@@ -5,19 +5,22 @@ import "./App.css";
 
 import { AppShell } from "./components/AppShell";
 import { ConnectionPanel } from "./components/ConnectionPanel";
+import { SessionDocument } from "./components/SessionDocument";
 import { SessionOverview } from "./components/SessionOverview";
 import { SessionTimeline } from "./components/SessionTimeline";
-import { TopSystemBar } from "./components/TopSystemBar";
+import { SignalStatusStrip } from "./components/SignalStatusStrip";
 import type {
   ConnectionStatus,
   PlaybackState,
   RecallEventType,
+  RecallMetadataValue,
   RecallTimelineMoment,
   SavedSession,
   SavedSessionMetadata,
   SessionStats,
   SessionViewMode,
 } from "./types/recall";
+import { isProducerTimelineEvent } from "./utils/producerEvents";
 import { getSessionElapsedTime } from "./utils/timecode";
 
 const BACKEND_CONNECTION_COMMAND = "get_connection_status";
@@ -32,6 +35,7 @@ const POLL_INTERVAL_MS = 1000;
 const EMPTY_PLAYBACK_STATE: PlaybackState = {
   playing: null,
   tempo: null,
+  projectClock: null,
   arrangementPosition: null,
   rawSongTime: null,
   selectedTrack: null,
@@ -49,6 +53,7 @@ function App() {
   const [savedEvents, setSavedEvents] = useState<RecallTimelineMoment[]>([]);
   const [savedSessions, setSavedSessions] = useState<SavedSessionMetadata[]>([]);
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
+  const [selectedEventId, setSelectedEventId] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<SessionViewMode>("live");
   const [eventCommandAvailable, setEventCommandAvailable] = useState(true);
   const liveSessionStartedAtRef = useRef<number | null>(null);
@@ -161,10 +166,21 @@ function App() {
   const rawEvents = viewMode === "live" ? liveEvents : savedEvents;
   const playbackState = useMemo(() => derivePlaybackState(rawEvents), [rawEvents]);
   const events = useMemo(() => buildCreativeTimeline(rawEvents), [rawEvents]);
+  const bridgeCaptureDuration = useMemo(
+    () => formatCaptureDuration(rawEvents, viewMode),
+    [rawEvents, viewMode],
+  );
 
   const latestEvent = useMemo(() => {
     return [...events].reverse().find((event) => event.type !== "heartbeat");
   }, [events]);
+  const selectedEvent = useMemo(() => {
+    if (!selectedEventId) {
+      return latestEvent;
+    }
+
+    return events.find((event) => event.id === selectedEventId) ?? latestEvent;
+  }, [events, latestEvent, selectedEventId]);
 
   const stats = useMemo<SessionStats>(() => {
     return {
@@ -198,6 +214,7 @@ function App() {
 
       setSavedEvents(normalizedEvents);
       setSelectedSessionId(sessionId);
+      setSelectedEventId(null);
       setViewMode("saved");
     } catch (error) {
       console.error("Failed to load saved session:", error);
@@ -207,6 +224,7 @@ function App() {
   function handleSelectLiveSession() {
     setViewMode("live");
     setSelectedSessionId(null);
+    setSelectedEventId(null);
   }
 
   async function handleStartNewSession() {
@@ -216,6 +234,7 @@ function App() {
       setLiveEvents([]);
       setSavedEvents([]);
       setSelectedSessionId(null);
+      setSelectedEventId(null);
       setViewMode("live");
 
       const sessions = await invoke<SavedSessionMetadata[]>(
@@ -243,6 +262,7 @@ function App() {
       if (selectedSessionId === sessionId) {
         setSavedEvents([]);
         setSelectedSessionId(null);
+        setSelectedEventId(null);
         setViewMode("live");
       }
 
@@ -264,13 +284,7 @@ function App() {
 
   return (
     <AppShell
-      topBar={
-        <TopSystemBar
-          connection={connection}
-          eventCount={stats.creativeEvents}
-        />
-      }
-      overview={
+      rail={
         <SessionOverview
           events={events}
           stats={stats}
@@ -283,29 +297,45 @@ function App() {
           onDeleteSavedSession={handleDeleteSavedSession}
         />
       }
-      timeline={<SessionTimeline events={events} viewMode={viewMode} />}
-      connection={
-        <ConnectionPanel
+      timeline={
+        <SessionTimeline
           connection={connection}
-          latestEvent={latestEvent}
-          heartbeatCount={stats.heartbeatEvents}
+          events={events}
           playback={playbackState}
+          selectedEventId={selectedEvent?.id ?? null}
+          stats={stats}
+          viewMode={viewMode}
+          onSelectEvent={setSelectedEventId}
         />
       }
-      footer={
-        <footer className="session-summary-strip">
-          <div>
-            <p className="eyebrow">Next Memory Layer</p>
-            <strong>AI-assisted session summary</strong>
-          </div>
-
-          <span>
-            Recall Studio is building a timecoded history of the session from
-            real Ableton telemetry. Once event capture is stable, this area can
-            summarize creative decisions, track focus, tempo movement, device
-            changes, and session structure.
-          </span>
-        </footer>
+      document={
+        <SessionDocument
+          events={events}
+          playback={playbackState}
+          stats={stats}
+          viewMode={viewMode}
+        />
+      }
+      inspector={
+        <ConnectionPanel
+          connection={connection}
+          events={events}
+          latestEvent={latestEvent}
+          selectedEvent={selectedEvent}
+          heartbeatCount={stats.heartbeatEvents}
+          playback={playbackState}
+          stats={stats}
+          bridgeCaptureDuration={bridgeCaptureDuration}
+        />
+      }
+      statusStrip={
+        <SignalStatusStrip
+          connection={connection}
+          playback={playbackState}
+          stats={stats}
+          latestEvent={latestEvent}
+          bridgeCaptureDuration={bridgeCaptureDuration}
+        />
       }
     />
   );
@@ -368,6 +398,45 @@ function normalizeBackendEvent(
     "data.device_name",
     "data.plugin",
     "data.plugin_name",
+  ]);
+
+  const groupName = readStringDeep(event, [
+    "group",
+    "group_name",
+    "groupName",
+    "track_group",
+    "trackGroup",
+    "parent_group",
+    "parentGroup",
+    "payload.group",
+    "payload.group_name",
+    "payload.groupName",
+    "payload.track_group",
+    "payload.trackGroup",
+    "payload.parent_group",
+    "payload.parentGroup",
+    "data.group",
+    "data.group_name",
+    "data.groupName",
+    "data.track_group",
+    "data.trackGroup",
+    "data.parent_group",
+    "data.parentGroup",
+  ]);
+
+  const groupPath = readStringArrayDeep(event, [
+    "group_path",
+    "groupPath",
+    "track_group_path",
+    "trackGroupPath",
+    "payload.group_path",
+    "payload.groupPath",
+    "payload.track_group_path",
+    "payload.trackGroupPath",
+    "data.group_path",
+    "data.groupPath",
+    "data.track_group_path",
+    "data.trackGroupPath",
   ]);
 
   const parameterName = readStringDeep(event, [
@@ -444,13 +513,44 @@ function normalizeBackendEvent(
     "currentSongTime",
     "beat_time",
     "beatTime",
+    "song_time_beats",
+    "songTimeBeats",
     "payload.current_song_time",
     "payload.currentSongTime",
     "payload.beat_time",
     "payload.beatTime",
+    "payload.song_time_beats",
+    "payload.songTimeBeats",
     "data.current_song_time",
     "data.beat_time",
+    "data.song_time_beats",
+    "data.songTimeBeats",
   ]);
+
+  const explicitProjectTimeSeconds = readNumberDeep(event, [
+    "song_time_seconds",
+    "songTimeSeconds",
+    "project_time_seconds",
+    "projectTimeSeconds",
+    "time_seconds",
+    "timeSeconds",
+    "payload.song_time_seconds",
+    "payload.songTimeSeconds",
+    "payload.project_time_seconds",
+    "payload.projectTimeSeconds",
+    "payload.time_seconds",
+    "payload.timeSeconds",
+    "data.song_time_seconds",
+    "data.songTimeSeconds",
+    "data.project_time_seconds",
+    "data.projectTimeSeconds",
+  ]);
+
+  const projectTimeSeconds =
+    explicitProjectTimeSeconds ??
+    (typeof songTime === "number"
+      ? convertAbletonBeatsToSeconds(songTime, bpm)
+      : undefined);
 
   const playing = readBooleanDeep(event, [
     "playing",
@@ -474,6 +574,7 @@ function normalizeBackendEvent(
     type,
     rawEventType,
     timelineRole: readTimelineRole(rawEventType, type),
+    rawEvent: event,
     timestamp,
     sessionTimecode: getSessionElapsedTime(
       timestamp,
@@ -482,6 +583,8 @@ function normalizeBackendEvent(
     summary: buildEventSummary({
       type,
       trackName,
+      groupName,
+      groupPath,
       deviceName,
       parameterName,
       clipName,
@@ -490,11 +593,14 @@ function normalizeBackendEvent(
       state,
       playing,
       songTime,
+      projectTimeSeconds,
       event,
     }),
     detail: buildEventDetail({
       type,
       trackName,
+      groupName,
+      groupPath,
       deviceName,
       parameterName,
       clipName,
@@ -503,13 +609,18 @@ function normalizeBackendEvent(
       state,
       playing,
       songTime,
+      projectTimeSeconds,
       event,
     }),
     trackName,
+    groupName,
+    groupPath,
     deviceName,
     source,
     metadata: buildMetadata(event, {
       trackName,
+      groupName,
+      groupPath,
       deviceName,
       parameterName,
       clipName,
@@ -518,6 +629,7 @@ function normalizeBackendEvent(
       state,
       playing,
       songTime,
+      projectTimeSeconds,
     }),
   };
 }
@@ -559,6 +671,10 @@ function buildCreativeTimeline(
       }
     }
 
+    if (!isProducerTimelineEvent(event)) {
+      continue;
+    }
+
     output.push(event);
 
     const playing = readMetadataBoolean(event, "playing");
@@ -578,11 +694,16 @@ function derivePlaybackState(events: RecallTimelineMoment[]): PlaybackState {
     const playing = readMetadataBoolean(event, "playing");
     const tempo = readMetadataNumber(event, "bpm");
     const rawSongTime = readMetadataNumber(event, "songTime");
+    const projectTimeSeconds = readMetadataNumber(event, "projectTimeSeconds");
     const selectedTrack = readMetadataString(event, "track");
 
     return {
       playing: typeof playing === "boolean" ? playing : state.playing,
       tempo: typeof tempo === "number" ? tempo : state.tempo,
+      projectClock:
+        typeof projectTimeSeconds === "number"
+          ? formatProjectClock(projectTimeSeconds)
+          : state.projectClock,
       arrangementPosition:
         typeof rawSongTime === "number"
           ? formatArrangementPosition(rawSongTime)
@@ -596,6 +717,28 @@ function derivePlaybackState(events: RecallTimelineMoment[]): PlaybackState {
           : state.lastUpdatedAt,
     };
   }, EMPTY_PLAYBACK_STATE);
+}
+
+function formatCaptureDuration(
+  events: RecallTimelineMoment[],
+  viewMode: SessionViewMode,
+): string {
+  if (events.length === 0) {
+    return "0:00";
+  }
+
+  const timestamps = events
+    .map((event) => event.timestamp)
+    .filter((timestamp) => Number.isFinite(timestamp));
+  const firstTimestamp = Math.min(...timestamps);
+  const lastTimestamp =
+    viewMode === "live" ? Date.now() : Math.max(...timestamps);
+
+  if (!Number.isFinite(firstTimestamp) || !Number.isFinite(lastTimestamp)) {
+    return "0:00";
+  }
+
+  return formatProjectClock((lastTimestamp - firstTimestamp) / 1000);
 }
 
 function readTimelineRole(
@@ -654,12 +797,16 @@ function readEventType(event: Record<string, unknown>): RecallEventType {
     return "tempo";
   }
 
-  if (
-    rawType.includes("clip") ||
-    rawType.includes("scene_launched") ||
-    rawType.includes("scene launched")
-  ) {
+  if (rawType.includes("scene_launched") || rawType.includes("scene launched")) {
+    return "scene";
+  }
+
+  if (rawType.includes("clip")) {
     return "clip";
+  }
+
+  if (rawType.includes("group") || rawType.includes("track bus")) {
+    return "group";
   }
 
   if (
@@ -670,6 +817,26 @@ function readEventType(event: Record<string, unknown>): RecallEventType {
     rawType.includes("track")
   ) {
     return "track";
+  }
+
+  if (
+    rawType.includes("mixer") ||
+    rawType.includes("volume") ||
+    rawType.includes("pan") ||
+    rawType.includes("send") ||
+    rawType.includes("solo") ||
+    rawType.includes("mute") ||
+    rawType.includes("arm")
+  ) {
+    return "mixer";
+  }
+
+  if (
+    rawType.includes("arrangement") ||
+    rawType.includes("locator") ||
+    rawType.includes("marker")
+  ) {
+    return "arrangement";
   }
 
   if (
@@ -755,6 +922,8 @@ function readTimestamp(event: Record<string, unknown>): number | null {
 function buildEventSummary(input: {
   type: RecallEventType;
   trackName?: string;
+  groupName?: string;
+  groupPath?: string[];
   deviceName?: string;
   parameterName?: string;
   clipName?: string;
@@ -763,6 +932,7 @@ function buildEventSummary(input: {
   state?: string;
   playing?: boolean;
   songTime?: number;
+  projectTimeSeconds?: number;
   event: Record<string, unknown>;
 }): string {
   const {
@@ -962,6 +1132,8 @@ function buildEventSummary(input: {
 function buildEventDetail(input: {
   type: RecallEventType;
   trackName?: string;
+  groupName?: string;
+  groupPath?: string[];
   deviceName?: string;
   parameterName?: string;
   clipName?: string;
@@ -970,6 +1142,7 @@ function buildEventDetail(input: {
   state?: string;
   playing?: boolean;
   songTime?: number;
+  projectTimeSeconds?: number;
   event: Record<string, unknown>;
 }): string | undefined {
   const {
@@ -983,6 +1156,7 @@ function buildEventDetail(input: {
     state,
     playing,
     songTime,
+    projectTimeSeconds,
     event,
   } = input;
 
@@ -1016,7 +1190,7 @@ function buildEventDetail(input: {
   }
 
   if (type === "transport" && typeof playing === "boolean") {
-    return `Arrangement playback ${playing ? "started" : "stopped"}${formatAtArrangementPosition(songTime)}.`;
+    return `Arrangement playback ${playing ? "started" : "stopped"}${formatAtProjectTime(projectTimeSeconds)}${formatAtArrangementPosition(songTime)}.`;
   }
 
   if (type === "transport" && state) {
@@ -1038,6 +1212,8 @@ function buildMetadata(
   event: Record<string, unknown>,
   known: {
     trackName?: string;
+    groupName?: string;
+    groupPath?: string[];
     deviceName?: string;
     parameterName?: string;
     clipName?: string;
@@ -1046,13 +1222,16 @@ function buildMetadata(
     state?: string;
     playing?: boolean;
     songTime?: number;
+    projectTimeSeconds?: number;
   },
-): Record<string, string | number | boolean | null> {
-  const metadata: Record<string, string | number | boolean | null> = {};
+): Record<string, RecallMetadataValue> {
+  const metadata: Record<string, RecallMetadataValue> = {};
 
   if (known.state) metadata.state = known.state;
   if (typeof known.bpm === "number") metadata.bpm = known.bpm;
   if (known.trackName) metadata.track = known.trackName;
+  if (known.groupName) metadata.group = known.groupName;
+  if (known.groupPath?.length) metadata.groupPath = known.groupPath;
   if (known.deviceName) metadata.device = known.deviceName;
   if (known.parameterName) metadata.parameter = known.parameterName;
   if (known.clipName) metadata.clip = known.clipName;
@@ -1061,6 +1240,10 @@ function buildMetadata(
   if (typeof known.songTime === "number") {
     metadata.arrangementPosition = formatArrangementPosition(known.songTime);
     metadata.songTime = known.songTime;
+  }
+  if (typeof known.projectTimeSeconds === "number") {
+    metadata.projectClock = formatProjectClock(known.projectTimeSeconds);
+    metadata.projectTimeSeconds = known.projectTimeSeconds;
   }
 
   const position = readStringDeep(event, [
@@ -1272,7 +1455,15 @@ function formatAtArrangementPosition(songTime?: number): string {
     return "";
   }
 
-  return ` at ${formatArrangementPosition(songTime)}`;
+  return ` (${formatArrangementPosition(songTime)})`;
+}
+
+function formatAtProjectTime(projectTimeSeconds?: number): string {
+  if (typeof projectTimeSeconds !== "number") {
+    return "";
+  }
+
+  return ` at ${formatProjectClock(projectTimeSeconds)}`;
 }
 
 function formatArrangementPosition(songTime: number): string {
@@ -1287,6 +1478,34 @@ function formatArrangementPosition(songTime: number): string {
   }
 
   return `Bar ${bar} Beat ${beat}`;
+}
+
+function convertAbletonBeatsToSeconds(
+  beats: number,
+  bpm?: number,
+): number {
+  if (typeof bpm === "number" && bpm > 0) {
+    return beats / (bpm / 60);
+  }
+
+  return beats;
+}
+
+function formatProjectClock(totalSeconds: number): string {
+  const safeSeconds = Math.max(0, Math.floor(totalSeconds));
+  const hours = Math.floor(safeSeconds / 3600);
+  const minutes = Math.floor((safeSeconds % 3600) / 60);
+  const seconds = safeSeconds % 60;
+
+  if (hours > 0) {
+    return `${hours}:${padTime(minutes)}:${padTime(seconds)}`;
+  }
+
+  return `${minutes}:${padTime(seconds)}`;
+}
+
+function padTime(value: number): string {
+  return value.toString().padStart(2, "0");
 }
 
 function readMetadataNumber(
@@ -1400,6 +1619,35 @@ function readStringDeep(
 
     if (typeof value === "number" && Number.isFinite(value)) {
       return String(value);
+    }
+  }
+
+  return undefined;
+}
+
+function readStringArrayDeep(
+  event: Record<string, unknown>,
+  keys: string[],
+): string[] | undefined {
+  for (const key of keys) {
+    const value = readDeepValue(event, key);
+
+    if (Array.isArray(value)) {
+      const strings = value.filter(
+        (item): item is string =>
+          typeof item === "string" && item.trim().length > 0,
+      );
+
+      if (strings.length > 0) {
+        return strings;
+      }
+    }
+
+    if (typeof value === "string" && value.trim().length > 0) {
+      return value
+        .split("/")
+        .map((part) => part.trim())
+        .filter(Boolean);
     }
   }
 

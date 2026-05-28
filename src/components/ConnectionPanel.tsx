@@ -19,7 +19,7 @@ export function ConnectionPanel({
       <div className="panel-header">
         <div>
           <p className="eyebrow">Signal</p>
-          <h2>Max Link</h2>
+          <h2>Live Bridge</h2>
         </div>
 
         <span className={`status-pill ${statusClass}`}>{statusLabel}</span>
@@ -31,8 +31,8 @@ export function ConnectionPanel({
         <div>
           <p className="signal-title">
             {connection.connected
-              ? "Receiving Ableton telemetry"
-              : "Listening for Max for Live"}
+              ? "Capture stream locked"
+              : "Waiting for Ableton bridge"}
           </p>
 
           <p className="signal-subtitle">UDP localhost · port 9000</p>
@@ -46,17 +46,17 @@ export function ConnectionPanel({
         </div>
 
         <div>
-          <span>Heartbeat events</span>
+          <span>Bridge pulses</span>
           <strong>{heartbeatCount}</strong>
         </div>
 
         <div>
-          <span>Last message</span>
+          <span>Last bridge signal</span>
           <strong>{connection.last_message ?? "None"}</strong>
         </div>
 
         <div>
-          <span>Latest moment</span>
+          <span>Latest move</span>
           <strong>{latestEvent?.type ?? "None"}</strong>
         </div>
 

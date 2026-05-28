@@ -41,30 +41,47 @@ export function SessionOverview({
     .reverse()
     .find((event) => event.type !== "heartbeat");
 
+  const focusTrack =
+    latestTrack?.trackName ?? latestTrack?.metadata?.track ?? "No track selected";
+  const focusDevice =
+    latestDevice?.deviceName ?? latestDevice?.metadata?.device ?? "No device activity";
+
   return (
     <aside className="session-overview">
       <div className="panel-header">
         <div>
-          <p className="eyebrow">{viewMode === "live" ? "Current" : "Archive"}</p>
-          <h2>Session Overview</h2>
+          <p className="eyebrow">{viewMode === "live" ? "Now Recording" : "Saved Take"}</p>
+          <h2>Session Focus</h2>
         </div>
       </div>
 
       <div className="session-title-block">
         <p className="session-label">
-          {viewMode === "live" ? "Active Memory" : "Saved Memory"}
+          {viewMode === "live" ? "Current Take" : "Recall Take"}
         </p>
-        <h1>{viewMode === "live" ? "Live Ableton Session" : "Saved Session"}</h1>
+        <h1>{viewMode === "live" ? "Live Capture" : "Saved Session"}</h1>
         <span>
           {viewMode === "live"
-            ? "Live telemetry capture running"
-            : "Inspecting saved creative history"}
+            ? "Writing Ableton moves to local memory"
+            : "Reviewing a recorded production pass"}
         </span>
+      </div>
+
+      <div className="focus-stack">
+        <div className="focus-card focus-card--track">
+          <span>Focus Track</span>
+          <strong>{String(focusTrack)}</strong>
+        </div>
+
+        <div className="focus-card focus-card--device">
+          <span>Active Device</span>
+          <strong>{String(focusDevice)}</strong>
+        </div>
       </div>
 
       <div className="session-history">
         <div className="session-history__header">
-          <span>Saved Sessions</span>
+          <span>Local Takes</span>
           <button type="button" onClick={onStartNewSession}>
             New
           </button>
@@ -76,8 +93,8 @@ export function SessionOverview({
           onClick={onSelectLiveSession}
         >
           <span>
-            <strong>Live Session</strong>
-            <small>Current UDP capture</small>
+            <strong>Live Capture</strong>
+            <small>Current Ableton stream</small>
           </span>
           <em>{stats.creativeEvents}</em>
         </button>
@@ -126,33 +143,11 @@ export function SessionOverview({
         <TelemetryStat label="Moments" value={stats.creativeEvents} />
         <TelemetryStat label="Transport" value={stats.transportEvents} />
         <TelemetryStat label="Tempo" value={stats.tempoEvents} />
-        <TelemetryStat label="Track Focus" value={stats.trackEvents} />
-      </div>
-
-      <div className="overview-callout">
-        <span>Last focused track</span>
-        <strong>
-          {String(
-            latestTrack?.trackName ??
-              latestTrack?.metadata?.track ??
-              "None yet",
-          )}
-        </strong>
-      </div>
-
-      <div className="overview-callout overview-callout--device">
-        <span>Last device activity</span>
-        <strong>
-          {String(
-            latestDevice?.deviceName ??
-              latestDevice?.metadata?.device ??
-              "None yet",
-          )}
-        </strong>
+        <TelemetryStat label="Track Moves" value={stats.trackEvents} />
       </div>
 
       <div className="session-memory-note">
-        <span>Latest session memory</span>
+        <span>Last Move</span>
         <p>{latestCreativeEvent?.summary ?? "Waiting for Ableton activity."}</p>
       </div>
     </aside>

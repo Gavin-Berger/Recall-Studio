@@ -268,6 +268,154 @@ button {
   font-size: 0.8rem;
 }
 
+.replay3d-shell {
+  position: relative;
+  min-height: 390px;
+  margin-bottom: 18px;
+  overflow: hidden;
+  border: 1px solid rgba(67, 245, 166, 0.16);
+  border-radius: var(--radius-md);
+  background:
+    linear-gradient(180deg, rgba(67, 245, 166, 0.06), transparent 38%),
+    linear-gradient(90deg, rgba(125, 211, 252, 0.055), transparent 55%),
+    #090d12;
+}
+
+.replay3d-shell::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  background:
+    repeating-linear-gradient(
+      0deg,
+      rgba(255, 255, 255, 0.035),
+      rgba(255, 255, 255, 0.035) 1px,
+      transparent 1px,
+      transparent 9px
+    );
+  opacity: 0.28;
+}
+
+.replay3d-stage {
+  position: absolute;
+  inset: 0;
+}
+
+.replay3d-stage canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.replay3d-hud {
+  position: absolute;
+  top: 14px;
+  left: 14px;
+  z-index: 2;
+  display: flex;
+  gap: 10px;
+}
+
+.replay3d-hud div,
+.replay3d-inspector {
+  border: 1px solid rgba(67, 245, 166, 0.22);
+  border-radius: 8px;
+  background: rgba(6, 10, 14, 0.68);
+  backdrop-filter: blur(10px);
+}
+
+.replay3d-hud div {
+  min-width: 110px;
+  padding: 10px 12px;
+}
+
+.replay3d-hud span,
+.replay3d-lanes span,
+.replay3d-inspector span {
+  display: block;
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.replay3d-hud strong {
+  display: block;
+  margin-top: 4px;
+  color: var(--accent-live);
+  font-size: 0.9rem;
+}
+
+.replay3d-lanes {
+  position: absolute;
+  right: 14px;
+  top: 58px;
+  z-index: 2;
+  display: grid;
+  gap: 6px;
+  justify-items: end;
+  max-width: 210px;
+}
+
+.replay3d-controls {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  z-index: 3;
+  display: flex;
+  gap: 8px;
+}
+
+.replay3d-controls button {
+  padding: 7px 10px;
+  border: 1px solid rgba(77, 184, 255, 0.28);
+  border-radius: 8px;
+  color: var(--text);
+  background: rgba(6, 10, 14, 0.66);
+  cursor: pointer;
+  font-size: 0.72rem;
+  font-weight: 800;
+  backdrop-filter: blur(10px);
+}
+
+.replay3d-controls button:hover {
+  border-color: rgba(77, 184, 255, 0.54);
+  background: rgba(77, 184, 255, 0.12);
+}
+
+.replay3d-lanes span {
+  max-width: 210px;
+  overflow: hidden;
+  padding: 5px 8px;
+  border: 1px solid rgba(125, 211, 252, 0.2);
+  border-radius: 999px;
+  background: rgba(6, 10, 14, 0.58);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.replay3d-inspector {
+  position: absolute;
+  left: 14px;
+  right: 14px;
+  bottom: 14px;
+  z-index: 2;
+  padding: 12px 14px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.replay3d-inspector strong {
+  display: block;
+  margin-top: 5px;
+  color: var(--text);
+  font-size: 0.94rem;
+  line-height: 1.35;
+}
+
 .timeline-stream {
   position: relative;
 }
@@ -744,4 +892,215 @@ button {
   padding: 10px;
   border: 1px dashed var(--border);
   border-radius: 8px;
+}
+
+/* Product polish layer: Jarvis-like professional palette and interaction states. */
+:root {
+  --bg: #070a10;
+  --surface: #0d121a;
+  --surface-soft: #121a24;
+  --surface-raised: #172231;
+  --border: #263445;
+
+  --text: #f4f8ff;
+  --muted: #9baaba;
+  --faint: #5d6b7a;
+
+  --accent-live: #4db8ff;
+  --accent-transport: #6a8dff;
+  --accent-tempo: #ffbf5c;
+  --accent-track: #30c7ff;
+  --accent-session: #ff8a5b;
+  --accent-device: #ff6fae;
+  --accent-parameter: #f2d45c;
+  --accent-clip: #b993ff;
+
+  --radius-lg: 12px;
+  --radius-md: 8px;
+}
+
+body {
+  background:
+    linear-gradient(180deg, #070a10 0%, #090d14 58%, #070a10 100%),
+    var(--bg);
+}
+
+.top-system-bar,
+.session-overview,
+.timeline-panel,
+.connection-panel,
+.session-summary-strip {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.04), transparent 38%),
+    rgba(13, 18, 26, 0.94);
+}
+
+.eyebrow,
+.top-system-meta .meta-live,
+.status-pill.is-online,
+.signal-orb.is-online,
+.event-count,
+.session-row em,
+.replay3d-hud strong {
+  color: var(--accent-live);
+}
+
+.top-system-meta .meta-live,
+.status-pill.is-online {
+  border-color: rgba(77, 184, 255, 0.32);
+  background: rgba(77, 184, 255, 0.08);
+}
+
+.signal-orb.is-online {
+  background: var(--accent-live);
+  box-shadow: 0 0 28px rgba(77, 184, 255, 0.3);
+}
+
+.focus-stack {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 18px;
+}
+
+.focus-card {
+  min-width: 0;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--accent-track);
+  border-radius: 8px;
+  background:
+    linear-gradient(90deg, rgba(48, 199, 255, 0.12), transparent 65%),
+    rgba(255, 255, 255, 0.025);
+}
+
+.focus-card--device {
+  border-left-color: var(--accent-device);
+  background:
+    linear-gradient(90deg, rgba(255, 111, 174, 0.11), transparent 65%),
+    rgba(255, 255, 255, 0.025);
+}
+
+.focus-card span {
+  display: block;
+  color: var(--muted);
+  font-size: 0.7rem;
+  font-weight: 900;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.focus-card strong {
+  display: block;
+  margin-top: 6px;
+  overflow: hidden;
+  color: var(--text);
+  font-size: 1.06rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.timeline-filter {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.03);
+  cursor: pointer;
+  font-size: 0.76rem;
+  font-weight: 800;
+}
+
+.timeline-filter:hover,
+.timeline-filter.is-active {
+  color: var(--text);
+  border-color: rgba(77, 184, 255, 0.45);
+  background: rgba(77, 184, 255, 0.1);
+}
+
+.timeline-filter span {
+  min-width: 22px;
+  padding: 2px 5px;
+  border-radius: 999px;
+  color: var(--accent-live);
+  background: rgba(0, 0, 0, 0.22);
+  font-family: "JetBrains Mono", "SFMono-Regular", Consolas, monospace;
+  font-size: 0.68rem;
+  text-align: center;
+}
+
+.timeline-filter-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: -4px 0 18px;
+}
+
+.timeline-event__body {
+  border-left-width: 5px;
+  border-radius: 8px;
+  transition:
+    border-color 150ms ease,
+    background 150ms ease,
+    transform 150ms ease;
+}
+
+.timeline-event:hover .timeline-event__body {
+  border-color: rgba(255, 255, 255, 0.16);
+  background: rgba(255, 255, 255, 0.045);
+  transform: translateX(2px);
+}
+
+.timeline-event--track .timeline-event__body {
+  background:
+    linear-gradient(90deg, rgba(48, 199, 255, 0.12), transparent 46%),
+    rgba(255, 255, 255, 0.025);
+}
+
+.timeline-event--parameter .timeline-event__body {
+  border-left-color: var(--accent-parameter);
+}
+
+.timeline-event--parameter .timeline-event__timecode::after {
+  border-color: var(--accent-parameter);
+  box-shadow: 0 0 18px rgba(242, 212, 92, 0.26);
+}
+
+.timeline-event--clip .timeline-event__body {
+  border-left-color: var(--accent-clip);
+}
+
+.timeline-event--clip .timeline-event__timecode::after {
+  border-color: var(--accent-clip);
+  box-shadow: 0 0 18px rgba(185, 147, 255, 0.26);
+}
+
+.replay3d-shell {
+  border-color: rgba(77, 184, 255, 0.18);
+  background:
+    linear-gradient(180deg, rgba(77, 184, 255, 0.075), transparent 38%),
+    linear-gradient(90deg, rgba(255, 111, 174, 0.045), transparent 58%),
+    #070b12;
+}
+
+.replay3d-shell--loading {
+  display: grid;
+  place-items: center;
+  color: var(--muted);
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.replay3d-hud div,
+.replay3d-inspector {
+  border-color: rgba(77, 184, 255, 0.24);
+}
+
+.session-row:hover,
+.session-row.is-active {
+  border-color: rgba(77, 184, 255, 0.42);
+  background: rgba(77, 184, 255, 0.08);
 }

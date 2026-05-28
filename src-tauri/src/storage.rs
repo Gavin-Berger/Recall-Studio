@@ -238,6 +238,34 @@ impl StorageState {
         })
     }
 
+    pub fn delete_session(&self, session_id: &str) -> Result<(), String> {
+        let mut connection = self.open_connection()?;
+        let transaction = connection
+            .transaction()
+            .map_err(|error| format!("Failed to start session delete transaction: {}", error))?;
+
+        transaction
+            .execute(
+                "DELETE FROM events WHERE session_id = ?1",
+                params![session_id],
+            )
+            .map_err(|error| format!("Failed to delete session events: {}", error))?;
+
+        let deleted_sessions = transaction
+            .execute("DELETE FROM sessions WHERE id = ?1", params![session_id])
+            .map_err(|error| format!("Failed to delete session: {}", error))?;
+
+        if deleted_sessions == 0 {
+            return Err(format!("Saved session not found: {}", session_id));
+        }
+
+        transaction
+            .commit()
+            .map_err(|error| format!("Failed to commit session delete: {}", error))?;
+
+        Ok(())
+    }
+
     pub fn save_session_started(&self, status: &SessionStatus) -> Result<(), String> {
         let Some(session_id) = status.session_id.as_deref() else {
             return Ok(());

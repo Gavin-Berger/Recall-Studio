@@ -15,6 +15,7 @@ type SessionOverviewProps = {
   onSelectLiveSession: () => void;
   onSelectSavedSession: (sessionId: string) => void;
   onStartNewSession: () => void;
+  onDeleteSavedSession: (sessionId: string) => void;
 };
 
 export function SessionOverview({
@@ -26,6 +27,7 @@ export function SessionOverview({
   onSelectLiveSession,
   onSelectSavedSession,
   onStartNewSession,
+  onDeleteSavedSession,
 }: SessionOverviewProps) {
   const latestTrack = [...events]
     .reverse()
@@ -85,22 +87,36 @@ export function SessionOverview({
             <p className="session-history__empty">No saved sessions yet.</p>
           ) : (
             sessions.map((session) => (
-              <button
-                type="button"
+              <div
                 key={session.id}
                 className={`session-row ${
                   viewMode === "saved" && selectedSessionId === session.id
                     ? "is-active"
                     : ""
                 }`}
-                onClick={() => onSelectSavedSession(session.id)}
               >
-                <span>
-                  <strong>{session.name}</strong>
-                  <small>{formatSessionDate(session.started_at_ms)}</small>
-                </span>
-                <em>{session.creative_event_count}</em>
-              </button>
+                <button
+                  type="button"
+                  className="session-row__main"
+                  onClick={() => onSelectSavedSession(session.id)}
+                >
+                  <span>
+                    <strong>{session.name}</strong>
+                    <small>{formatSessionDate(session.started_at_ms)}</small>
+                  </span>
+                  <em>{session.creative_event_count}</em>
+                </button>
+
+                <button
+                  type="button"
+                  className="session-row__delete"
+                  title="Delete local session history"
+                  aria-label={`Delete ${session.name}`}
+                  onClick={() => onDeleteSavedSession(session.id)}
+                >
+                  Delete
+                </button>
+              </div>
             ))
           )}
         </div>

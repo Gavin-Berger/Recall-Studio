@@ -1,7 +1,7 @@
 // recall_m4l_bridge.js
 //
 // Recall Studio - Max for Live bridge
-// v0.4.1: baseline + delta + selected-track focus collector.
+// v0.4.2: performance-safe delta capture + selected-track focus collector.
 //
 // Product goal:
 // Capture meaningful Ableton session activity without constantly transmitting
@@ -43,7 +43,7 @@ outlets = 2;
 var PROTOCOL = "recall.protocol.v1";
 var SOURCE = "max_for_live";
 var DEVICE_ID = "recall-m4l-bridge-dev";
-var BRIDGE_VERSION = "0.4.1";
+var BRIDGE_VERSION = "0.4.2";
 
 var sequence = 0;
 var bridgeRunning = false;
@@ -64,19 +64,28 @@ var MAX_DEEP_DEVICES_PER_TRACK = 16;
 var MAX_DEEP_PARAMETERS_PER_DEVICE = 16;
 
 // Timers.
+// Keep automatic capture cheap. Heavy LiveAPI scans can make Ableton feel sticky,
+// so deep structure snapshots stay manual and selected-track detail only runs
+// when the selected track actually changes.
+var HEARTBEAT_INTERVAL_MS = 2000;
+var TRANSPORT_INTERVAL_MS = 2000;
+var FOCUS_INTERVAL_MS = 4000;
+var AUTO_LIVE_SET_SNAPSHOT_INTERVAL_MS = 0;
+
 var heartbeatTask = new Task(heartbeat_tick, this);
 var transportTask = new Task(transport_tick, this);
 var focusTask = new Task(focus_tick, this);
 var liveSetTask = new Task(live_set_tick, this);
 
 // Fingerprint cache.
-var lastTransportFingerprint = "";
+var lastTransportSummaryFingerprint = "";
 var lastLiveSetFingerprint = "";
 var lastSelectedTrackFocusFingerprint = "";
 
 var lastPlayingState = null;
 var lastTempo = null;
 var lastSelectedTrackId = null;
+var lastFocusedTrackId = null;
 
 post("Recall Studio M4L bridge JavaScript loaded\n");
 
@@ -121,10 +130,13 @@ function start_bridge() {
     focusTask.cancel();
     liveSetTask.cancel();
 
-    heartbeatTask.schedule(1000);
-    transportTask.schedule(1500);
-    focusTask.schedule(2500);
-    liveSetTask.schedule(10000);
+    heartbeatTask.schedule(HEARTBEAT_INTERVAL_MS);
+    transportTask.schedule(TRANSPORT_INTERVAL_MS);
+    focusTask.schedule(FOCUS_INTERVAL_MS);
+
+    if (AUTO_LIVE_SET_SNAPSHOT_INTERVAL_MS > 0) {
+        liveSetTask.schedule(AUTO_LIVE_SET_SNAPSHOT_INTERVAL_MS);
+    }
 
     debug("bridge started");
 }
@@ -171,7 +183,7 @@ function heartbeat_tick() {
     }
 
     heartbeat();
-    heartbeatTask.schedule(1000);
+    heartbeatTask.schedule(HEARTBEAT_INTERVAL_MS);
 }
 
 function transport_tick() {
@@ -180,7 +192,7 @@ function transport_tick() {
     }
 
     send_transport_delta_if_changed();
-    transportTask.schedule(1500);
+    transportTask.schedule(TRANSPORT_INTERVAL_MS);
 }
 
 function focus_tick() {
@@ -188,8 +200,8 @@ function focus_tick() {
         return;
     }
 
-    send_selected_track_focus_if_changed();
-    focusTask.schedule(2500);
+    send_selected_track_focus_if_selected_track_changed();
+    focusTask.schedule(FOCUS_INTERVAL_MS);
 }
 
 function live_set_tick() {
@@ -198,7 +210,10 @@ function live_set_tick() {
     }
 
     send_live_set_snapshot_if_changed();
-    liveSetTask.schedule(10000);
+
+    if (AUTO_LIVE_SET_SNAPSHOT_INTERVAL_MS > 0) {
+        liveSetTask.schedule(AUTO_LIVE_SET_SNAPSHOT_INTERVAL_MS);
+    }
 }
 
 // ------------------------------------------------------------
@@ -358,13 +373,27 @@ function collect_transport_snapshot() {
 
 function send_transport_delta_if_changed() {
     var snapshot = collect_transport_snapshot();
-    var fp = fingerprint(snapshot);
+    var summaryFingerprint = fingerprint({
+        available: snapshot.available,
+        playing: snapshot.playing,
+        tempo: snapshot.tempo,
+        signature_numerator: snapshot.signature_numerator,
+        signature_denominator: snapshot.signature_denominator,
+        arrangement_overdub: snapshot.arrangement_overdub,
+        session_record: snapshot.session_record,
+        metronome: snapshot.metronome,
+        track_count: snapshot.track_count,
+        return_track_count: snapshot.return_track_count,
+        scene_count: snapshot.scene_count,
+        selected_track_id: snapshot.selected_track_id,
+        selected_track_name: snapshot.selected_track_name
+    });
 
-    if (fp === lastTransportFingerprint) {
+    if (summaryFingerprint === lastTransportSummaryFingerprint) {
         return;
     }
 
-    lastTransportFingerprint = fp;
+    lastTransportSummaryFingerprint = summaryFingerprint;
 
     if (snapshot.available) {
         if (lastPlayingState !== null && snapshot.playing !== lastPlayingState) {
@@ -656,6 +685,20 @@ function send_selected_track_focus_if_changed() {
         "Focused detail captured for the currently selected Ableton track.",
         snapshot
     );
+
+    if (snapshot.available && snapshot.id) {
+        lastFocusedTrackId = snapshot.id;
+    }
+}
+
+function send_selected_track_focus_if_selected_track_changed() {
+    var selectedTrackId = get_selected_track_id();
+
+    if (!selectedTrackId || selectedTrackId === lastFocusedTrackId) {
+        return;
+    }
+
+    send_selected_track_focus_if_changed();
 }
 
 function collect_focus_devices_for_track(trackIndex, limit) {

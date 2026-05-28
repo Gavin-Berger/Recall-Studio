@@ -24,6 +24,7 @@ const BACKEND_EVENTS_COMMAND = "get_recent_events";
 const BACKEND_LIST_SESSIONS_COMMAND = "list_saved_sessions";
 const BACKEND_LOAD_SESSION_COMMAND = "load_session_events";
 const BACKEND_START_NEW_SESSION_COMMAND = "start_new_session";
+const BACKEND_DELETE_SESSION_COMMAND = "delete_saved_session";
 
 const POLL_INTERVAL_MS = 1000;
 
@@ -215,6 +216,41 @@ function App() {
     }
   }
 
+  async function handleDeleteSavedSession(sessionId: string) {
+    const session = savedSessions.find((savedSession) => savedSession.id === sessionId);
+    const confirmed = window.confirm(
+      `Delete ${session?.name ?? "this session"} from local Recall Studio history? This cannot be undone.`,
+    );
+
+    if (!confirmed) {
+      return;
+    }
+
+    try {
+      await invoke(BACKEND_DELETE_SESSION_COMMAND, { sessionId });
+
+      if (selectedSessionId === sessionId) {
+        setSavedEvents([]);
+        setSelectedSessionId(null);
+        setViewMode("live");
+      }
+
+      const sessions = await invoke<SavedSessionMetadata[]>(
+        BACKEND_LIST_SESSIONS_COMMAND,
+      );
+
+      setSavedSessions(sessions);
+
+      if (session?.ended_at_ms === null) {
+        liveSessionStartedAtRef.current = null;
+        setLiveEvents([]);
+        setViewMode("live");
+      }
+    } catch (error) {
+      console.error("Failed to delete saved session:", error);
+    }
+  }
+
   return (
     <AppShell
       topBar={
@@ -233,6 +269,7 @@ function App() {
           onSelectLiveSession={handleSelectLiveSession}
           onSelectSavedSession={handleSelectSavedSession}
           onStartNewSession={handleStartNewSession}
+          onDeleteSavedSession={handleDeleteSavedSession}
         />
       }
       timeline={<SessionTimeline events={events} viewMode={viewMode} />}
@@ -339,6 +376,18 @@ function normalizeBackendEvent(
     "data.param_name",
   ]);
 
+  const clipName = readStringDeep(event, [
+    "clip",
+    "clip_name",
+    "clipName",
+    "payload.clip",
+    "payload.clip_name",
+    "payload.clipName",
+    "payload.name",
+    "data.clip",
+    "data.clip_name",
+  ]);
+
   const bpm = readNumberDeep(event, [
     "bpm",
     "tempo",
@@ -346,6 +395,19 @@ function normalizeBackendEvent(
     "payload.tempo",
     "data.bpm",
     "data.tempo",
+  ]);
+
+  const previousBpm = readNumberDeep(event, [
+    "previous_bpm",
+    "previousBpm",
+    "previous_tempo",
+    "previousTempo",
+    "payload.previous_bpm",
+    "payload.previousBpm",
+    "payload.previous_tempo",
+    "payload.previousTempo",
+    "data.previous_bpm",
+    "data.previous_tempo",
   ]);
 
   const state = readStringDeep(event, [
@@ -362,6 +424,28 @@ function normalizeBackendEvent(
     "data.state",
     "data.transport_state",
     "data.play_state",
+  ]);
+
+  const songTime = readNumberDeep(event, [
+    "current_song_time",
+    "currentSongTime",
+    "beat_time",
+    "beatTime",
+    "payload.current_song_time",
+    "payload.currentSongTime",
+    "payload.beat_time",
+    "payload.beatTime",
+    "data.current_song_time",
+    "data.beat_time",
+  ]);
+
+  const playing = readBooleanDeep(event, [
+    "playing",
+    "is_playing",
+    "payload.playing",
+    "payload.is_playing",
+    "data.playing",
+    "data.is_playing",
   ]);
 
   const source =
@@ -385,8 +469,12 @@ function normalizeBackendEvent(
       trackName,
       deviceName,
       parameterName,
+      clipName,
       bpm,
+      previousBpm,
       state,
+      playing,
+      songTime,
       event,
     }),
     detail: buildEventDetail({
@@ -394,8 +482,13 @@ function normalizeBackendEvent(
       trackName,
       deviceName,
       parameterName,
+      clipName,
       bpm,
+      previousBpm,
       state,
+      playing,
+      songTime,
+      event,
     }),
     trackName,
     deviceName,
@@ -404,8 +497,12 @@ function normalizeBackendEvent(
       trackName,
       deviceName,
       parameterName,
+      clipName,
       bpm,
+      previousBpm,
       state,
+      playing,
+      songTime,
     }),
   };
 }
@@ -457,6 +554,14 @@ function readEventType(event: Record<string, unknown>): RecallEventType {
   }
 
   if (
+    rawType.includes("clip") ||
+    rawType.includes("scene_launched") ||
+    rawType.includes("scene launched")
+  ) {
+    return "clip";
+  }
+
+  if (
     rawType.includes("selected_track") ||
     rawType.includes("track_selected") ||
     rawType.includes("track selected") ||
@@ -479,10 +584,19 @@ function readEventType(event: Record<string, unknown>): RecallEventType {
   if (
     rawType.includes("parameter") ||
     rawType.includes("param") ||
+    rawType.includes("automation") ||
     rawType.includes("cutoff") ||
     rawType.includes("macro")
   ) {
     return "parameter";
+  }
+
+  if (
+    rawType.includes("file") ||
+    rawType.includes(".als") ||
+    rawType.includes("project")
+  ) {
+    return "file";
   }
 
   if (
@@ -542,12 +656,27 @@ function buildEventSummary(input: {
   trackName?: string;
   deviceName?: string;
   parameterName?: string;
+  clipName?: string;
   bpm?: number;
+  previousBpm?: number;
   state?: string;
+  playing?: boolean;
+  songTime?: number;
   event: Record<string, unknown>;
 }): string {
-  const { type, trackName, deviceName, parameterName, bpm, state, event } =
-    input;
+  const {
+    type,
+    trackName,
+    deviceName,
+    parameterName,
+    clipName,
+    bpm,
+    previousBpm,
+    state,
+    playing,
+    songTime,
+    event,
+  } = input;
 
   const directSummary = readStringDeep(event, [
     "summary",
@@ -579,14 +708,48 @@ function buildEventSummary(input: {
       "data.message",
     ]) ?? "";
 
+  const rawEventType = readStringDeep(event, ["type", "event_type", "eventType"]);
   const normalizedTitle = rawTitle.toLowerCase();
+  const normalizedEventType = (rawEventType ?? "").toLowerCase();
 
-  if (normalizedTitle.includes("selected track focus snapshot")) {
-    if (trackName) {
-      return `${trackName} track was selected.`;
+  if (normalizedEventType === "transport_play") {
+    return `Playback started${formatAtSongTime(songTime)}.`;
+  }
+
+  if (normalizedEventType === "transport_stop") {
+    return `Playback stopped${formatAtSongTime(songTime)}.`;
+  }
+
+  if (normalizedEventType === "transport_snapshot") {
+    return buildTransportSnapshotSummary({
+      playing,
+      bpm,
+      songTime,
+      trackName,
+      event,
+    });
+  }
+
+  if (normalizedEventType === "tempo_changed") {
+    if (typeof bpm === "number" && typeof previousBpm === "number") {
+      return `Tempo changed from ${formatNumber(previousBpm)} to ${formatNumber(bpm)} BPM.`;
     }
 
-    return "Selected track focus was captured.";
+    if (typeof bpm === "number") {
+      return `Tempo changed to ${formatNumber(bpm)} BPM.`;
+    }
+  }
+
+  if (normalizedEventType === "selected_track_focus_snapshot") {
+    return buildTrackFocusSummary(event, trackName);
+  }
+
+  if (normalizedEventType === "live_set_snapshot") {
+    return buildLiveSetSummary(event, trackName, bpm, playing);
+  }
+
+  if (normalizedTitle.includes("selected track focus snapshot")) {
+    return buildTrackFocusSummary(event, trackName);
   }
 
   if (normalizedTitle.includes("track selected")) {
@@ -598,23 +761,29 @@ function buildEventSummary(input: {
   }
 
   if (normalizedTitle.includes("tempo changed")) {
+    if (typeof bpm === "number" && typeof previousBpm === "number") {
+      return `Tempo changed from ${formatNumber(previousBpm)} to ${formatNumber(bpm)} BPM.`;
+    }
+
     if (typeof bpm === "number") {
-      return `Tempo changed to ${bpm} BPM.`;
+      return `Tempo changed to ${formatNumber(bpm)} BPM.`;
     }
 
     return "Tempo changed.";
   }
 
   if (normalizedTitle.includes("transport snapshot")) {
-    if (state) {
-      return `Transport snapshot captured while playback was ${state}.`;
-    }
-
-    return "Transport state snapshot captured.";
+    return buildTransportSnapshotSummary({
+      playing,
+      bpm,
+      songTime,
+      trackName,
+      event,
+    });
   }
 
   if (normalizedTitle.includes("live set snapshot")) {
-    return "Live set structure snapshot captured.";
+    return buildLiveSetSummary(event, trackName, bpm, playing);
   }
 
   switch (type) {
@@ -622,6 +791,10 @@ function buildEventSummary(input: {
       return "Heartbeat received from Max for Live.";
 
     case "transport":
+      if (typeof playing === "boolean") {
+        return `Playback is ${playing ? "running" : "stopped"}${formatAtSongTime(songTime)}.`;
+      }
+
       if (state) {
         return `Transport changed to ${state}.`;
       }
@@ -629,8 +802,12 @@ function buildEventSummary(input: {
       return "Transport state changed.";
 
     case "tempo":
+      if (typeof bpm === "number" && typeof previousBpm === "number") {
+        return `Tempo changed from ${formatNumber(previousBpm)} to ${formatNumber(bpm)} BPM.`;
+      }
+
       if (typeof bpm === "number") {
-        return `Tempo changed to ${bpm} BPM.`;
+        return `Tempo changed to ${formatNumber(bpm)} BPM.`;
       }
 
       return "Tempo changed.";
@@ -654,22 +831,33 @@ function buildEventSummary(input: {
       return "Device activity was captured.";
 
     case "parameter":
-      if (deviceName && trackName && parameterName) {
-        return `${parameterName} was edited on ${deviceName} in ${trackName}.`;
+      return buildParameterSummary({
+        trackName,
+        deviceName,
+        parameterName,
+        event,
+      });
+
+    case "clip":
+      if (clipName && trackName) {
+        return `${clipName} was launched on ${trackName}.`;
       }
 
-      if (deviceName && trackName) {
-        return `${deviceName} was edited on ${trackName}.`;
+      if (clipName) {
+        return `${clipName} was launched.`;
       }
 
-      if (parameterName) {
-        return `${parameterName} was edited.`;
+      if (trackName) {
+        return `A clip was launched on ${trackName}.`;
       }
 
-      return "Parameter movement was captured.";
+      return "A clip was launched.";
 
     case "session":
-      return "Session structure snapshot captured.";
+      return buildLiveSetSummary(event, trackName, bpm, playing);
+
+    case "file":
+      return buildFileSummary(event);
 
     case "creative_moment":
       return "Creative session moment captured.";
@@ -688,13 +876,30 @@ function buildEventDetail(input: {
   trackName?: string;
   deviceName?: string;
   parameterName?: string;
+  clipName?: string;
   bpm?: number;
+  previousBpm?: number;
   state?: string;
+  playing?: boolean;
+  songTime?: number;
+  event: Record<string, unknown>;
 }): string | undefined {
-  const { type, trackName, deviceName, parameterName, bpm, state } = input;
+  const {
+    type,
+    trackName,
+    deviceName,
+    parameterName,
+    clipName,
+    bpm,
+    previousBpm,
+    state,
+    playing,
+    songTime,
+    event,
+  } = input;
 
   if (type === "track" && trackName) {
-    return "Producer focus changed inside Ableton.";
+    return buildTrackFocusDetail(event, trackName);
   }
 
   if (type === "device" && deviceName && trackName) {
@@ -706,19 +911,36 @@ function buildEventDetail(input: {
   }
 
   if (type === "parameter" && parameterName) {
-    return "A device or track control was adjusted during the session.";
+    return buildParameterDetail({
+      trackName,
+      deviceName,
+      parameterName,
+      event,
+    });
+  }
+
+  if (type === "tempo" && typeof bpm === "number" && typeof previousBpm === "number") {
+    return `${formatSignedNumber(bpm - previousBpm)} BPM change.`;
   }
 
   if (type === "tempo" && typeof bpm === "number") {
-    return "Tempo movement was captured as part of the session timeline.";
+    return "Project tempo value from Ableton Live.";
+  }
+
+  if (type === "transport" && typeof playing === "boolean") {
+    return `Transport state: ${playing ? "playing" : "stopped"}${formatAtSongTime(songTime)}.`;
   }
 
   if (type === "transport" && state) {
-    return "Playback state changed inside Ableton.";
+    return `Transport state: ${state}.`;
   }
 
   if (type === "session") {
-    return "Recall Studio captured the current Live Set structure.";
+    return buildLiveSetDetail(event);
+  }
+
+  if (type === "clip" && clipName) {
+    return trackName ? `Clip launch on ${trackName}.` : "Clip launch event from Ableton.";
   }
 
   return undefined;
@@ -730,8 +952,12 @@ function buildMetadata(
     trackName?: string;
     deviceName?: string;
     parameterName?: string;
+    clipName?: string;
     bpm?: number;
+    previousBpm?: number;
     state?: string;
+    playing?: boolean;
+    songTime?: number;
   },
 ): Record<string, string | number | boolean | null> {
   const metadata: Record<string, string | number | boolean | null> = {};
@@ -741,6 +967,10 @@ function buildMetadata(
   if (known.trackName) metadata.track = known.trackName;
   if (known.deviceName) metadata.device = known.deviceName;
   if (known.parameterName) metadata.parameter = known.parameterName;
+  if (known.clipName) metadata.clip = known.clipName;
+  if (typeof known.previousBpm === "number") metadata.previousBpm = known.previousBpm;
+  if (typeof known.playing === "boolean") metadata.playing = known.playing;
+  if (typeof known.songTime === "number") metadata.songTime = known.songTime;
 
   const position = readStringDeep(event, [
     "position",
@@ -785,6 +1015,302 @@ function buildMetadata(
   return metadata;
 }
 
+function buildTransportSnapshotSummary(input: {
+  playing?: boolean;
+  bpm?: number;
+  songTime?: number;
+  trackName?: string;
+  event: Record<string, unknown>;
+}): string {
+  const { playing, bpm, songTime, trackName, event } = input;
+  const parts: string[] = [];
+
+  if (typeof playing === "boolean") {
+    parts.push(`playback ${playing ? "running" : "stopped"}`);
+  }
+
+  if (typeof bpm === "number") {
+    parts.push(`${formatNumber(bpm)} BPM`);
+  }
+
+  if (typeof songTime === "number") {
+    parts.push(`song time ${formatNumber(songTime)} beats`);
+  }
+
+  const selectedTrack =
+    trackName ??
+    readStringDeep(event, [
+      "selected_track_name",
+      "payload.selected_track_name",
+      "data.selected_track_name",
+    ]);
+
+  if (selectedTrack) {
+    parts.push(`${selectedTrack} selected`);
+  }
+
+  if (parts.length === 0) {
+    return "Transport state changed.";
+  }
+
+  return `Transport state: ${parts.join(", ")}.`;
+}
+
+function buildTrackFocusSummary(
+  event: Record<string, unknown>,
+  trackName?: string,
+): string {
+  const name =
+    trackName ??
+    readStringDeep(event, ["name", "payload.name", "data.name"]) ??
+    "Selected track";
+  const deviceCount = readNumberDeep(event, [
+    "device_count",
+    "payload.device_count",
+    "data.device_count",
+  ]);
+  const clipCount = readArrayLength(event, ["clips", "payload.clips", "data.clips"]);
+  const armed = readBooleanDeep(event, ["arm", "payload.arm", "data.arm"]);
+  const muted = readBooleanDeep(event, ["muted", "payload.muted", "data.muted"]);
+  const solo = readBooleanDeep(event, ["solo", "payload.solo", "data.solo"]);
+  const details: string[] = [];
+
+  if (typeof deviceCount === "number") {
+    details.push(`${deviceCount} device${deviceCount === 1 ? "" : "s"}`);
+  }
+
+  if (typeof clipCount === "number") {
+    details.push(`${clipCount} clip${clipCount === 1 ? "" : "s"}`);
+  }
+
+  if (armed) details.push("armed");
+  if (muted) details.push("muted");
+  if (solo) details.push("soloed");
+
+  return details.length > 0
+    ? `${name} track was selected (${details.join(", ")}).`
+    : `${name} track was selected.`;
+}
+
+function buildTrackFocusDetail(
+  event: Record<string, unknown>,
+  trackName?: string,
+): string | undefined {
+  const devices = readObjectArray(event, ["devices", "payload.devices", "data.devices"])
+    .map((device) => readStringDeep(device, ["name", "class_name"]))
+    .filter((name): name is string => Boolean(name))
+    .slice(0, 4);
+
+  if (devices.length > 0) {
+    return `${trackName ?? "Selected track"} devices: ${devices.join(", ")}.`;
+  }
+
+  return "Track focus changed inside Ableton.";
+}
+
+function buildLiveSetSummary(
+  event: Record<string, unknown>,
+  trackName?: string,
+  bpm?: number,
+  playing?: boolean,
+): string {
+  const trackCount = readNumberDeep(event, [
+    "track_count",
+    "payload.track_count",
+    "data.track_count",
+    "counts.tracks",
+    "payload.counts.tracks",
+  ]);
+  const sceneCount = readNumberDeep(event, [
+    "scene_count",
+    "payload.scene_count",
+    "data.scene_count",
+    "counts.scenes",
+    "payload.counts.scenes",
+  ]);
+  const parts: string[] = [];
+
+  if (typeof trackCount === "number") {
+    parts.push(`${trackCount} track${trackCount === 1 ? "" : "s"}`);
+  }
+
+  if (typeof sceneCount === "number") {
+    parts.push(`${sceneCount} scene${sceneCount === 1 ? "" : "s"}`);
+  }
+
+  if (typeof bpm === "number") {
+    parts.push(`${formatNumber(bpm)} BPM`);
+  }
+
+  if (typeof playing === "boolean") {
+    parts.push(playing ? "playing" : "stopped");
+  }
+
+  if (trackName) {
+    parts.push(`${trackName} selected`);
+  }
+
+  return parts.length > 0
+    ? `Live Set state: ${parts.join(", ")}.`
+    : "Live Set state changed.";
+}
+
+function buildLiveSetDetail(event: Record<string, unknown>): string | undefined {
+  const tracks = readObjectArray(event, ["tracks", "payload.tracks", "data.tracks"])
+    .map((track) => readStringDeep(track, ["name"]))
+    .filter((name): name is string => Boolean(name))
+    .slice(0, 5);
+
+  if (tracks.length > 0) {
+    return `Tracks visible in this snapshot: ${tracks.join(", ")}.`;
+  }
+
+  return undefined;
+}
+
+function buildParameterSummary(input: {
+  trackName?: string;
+  deviceName?: string;
+  parameterName?: string;
+  event: Record<string, unknown>;
+}): string {
+  const { trackName, deviceName, parameterName, event } = input;
+  const value = readPrimitive(event, ["value", "payload.value", "data.value"]);
+  const valueText = value === undefined ? "" : ` to ${formatPrimitive(value)}`;
+
+  if (deviceName && trackName && parameterName) {
+    return `${parameterName} on ${deviceName} in ${trackName} was changed${valueText}.`;
+  }
+
+  if (deviceName && parameterName) {
+    return `${parameterName} on ${deviceName} was changed${valueText}.`;
+  }
+
+  if (parameterName) {
+    return `${parameterName} was changed${valueText}.`;
+  }
+
+  if (deviceName && trackName) {
+    return `${deviceName} was edited on ${trackName}.`;
+  }
+
+  return "A parameter was changed.";
+}
+
+function buildParameterDetail(input: {
+  trackName?: string;
+  deviceName?: string;
+  parameterName?: string;
+  event: Record<string, unknown>;
+}): string | undefined {
+  const { event } = input;
+  const minValue = readPrimitive(event, ["min_value", "min", "payload.min_value", "payload.min"]);
+  const maxValue = readPrimitive(event, ["max_value", "max", "payload.max_value", "payload.max"]);
+
+  if (minValue !== undefined && maxValue !== undefined) {
+    return `Range touched: ${formatPrimitive(minValue)} to ${formatPrimitive(maxValue)}.`;
+  }
+
+  return "Device or mixer control value changed in Ableton.";
+}
+
+function buildFileSummary(event: Record<string, unknown>): string {
+  const fileName = readStringDeep(event, ["file_name", "fileName", "payload.file_name"]);
+  const changeType = readStringDeep(event, ["change_type", "changeType", "payload.change_type"]);
+
+  if (fileName && changeType) {
+    return `${fileName} was ${changeType}.`;
+  }
+
+  if (fileName) {
+    return `${fileName} changed.`;
+  }
+
+  return "Ableton project file changed.";
+}
+
+function formatAtSongTime(songTime?: number): string {
+  if (typeof songTime !== "number") {
+    return "";
+  }
+
+  return ` at ${formatNumber(songTime)} beats`;
+}
+
+function formatNumber(value: number): string {
+  if (Number.isInteger(value)) {
+    return String(value);
+  }
+
+  return value.toFixed(2).replace(/\.?0+$/, "");
+}
+
+function formatSignedNumber(value: number): string {
+  const formatted = formatNumber(value);
+  return value > 0 ? `+${formatted}` : formatted;
+}
+
+function formatPrimitive(value: string | number | boolean | null): string {
+  if (typeof value === "number") {
+    return formatNumber(value);
+  }
+
+  return String(value);
+}
+
+function readPrimitive(
+  event: Record<string, unknown>,
+  keys: string[],
+): string | number | boolean | null | undefined {
+  for (const key of keys) {
+    const value = readDeepValue(event, key);
+
+    if (
+      typeof value === "string" ||
+      typeof value === "number" ||
+      typeof value === "boolean" ||
+      value === null
+    ) {
+      return value;
+    }
+  }
+
+  return undefined;
+}
+
+function readObjectArray(
+  event: Record<string, unknown>,
+  keys: string[],
+): Record<string, unknown>[] {
+  for (const key of keys) {
+    const value = readDeepValue(event, key);
+
+    if (Array.isArray(value)) {
+      return value.filter(
+        (item): item is Record<string, unknown> =>
+          Boolean(item) && typeof item === "object",
+      );
+    }
+  }
+
+  return [];
+}
+
+function readArrayLength(
+  event: Record<string, unknown>,
+  keys: string[],
+): number | undefined {
+  for (const key of keys) {
+    const value = readDeepValue(event, key);
+
+    if (Array.isArray(value)) {
+      return value.length;
+    }
+  }
+
+  return undefined;
+}
+
 function readStringDeep(
   event: Record<string, unknown>,
   keys: string[],
@@ -820,6 +1346,35 @@ function readNumberDeep(
 
       if (Number.isFinite(parsed)) {
         return parsed;
+      }
+    }
+  }
+
+  return undefined;
+}
+
+function readBooleanDeep(
+  event: Record<string, unknown>,
+  keys: string[],
+): boolean | undefined {
+  for (const key of keys) {
+    const value = readDeepValue(event, key);
+
+    if (typeof value === "boolean") {
+      return value;
+    }
+
+    if (typeof value === "number") {
+      return value === 1;
+    }
+
+    if (typeof value === "string") {
+      if (value === "1" || value.toLowerCase() === "true") {
+        return true;
+      }
+
+      if (value === "0" || value.toLowerCase() === "false") {
+        return false;
       }
     }
   }

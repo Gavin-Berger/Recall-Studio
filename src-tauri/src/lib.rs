@@ -211,6 +211,60 @@ fn start_new_session(state: State<'_, AppState>) -> Result<SessionStatus, String
     Ok(status)
 }
 
+#[tauri::command]
+fn delete_saved_session(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<SessionStatus, String> {
+    let current_status = {
+        let session = state.session.lock().expect("Session state lock failed");
+        session.status()
+    };
+
+    let deleted_active_session = current_status.session_id.as_deref() == Some(session_id.as_str());
+
+    {
+        let storage = state.storage.lock().expect("Storage state lock failed");
+        storage.delete_session(&session_id)?;
+    }
+
+    if !deleted_active_session {
+        println!(
+            "COMMAND delete_saved_session called -> deleted archived session_id: {}",
+            session_id
+        );
+
+        return Ok(current_status);
+    }
+
+    let next_status = {
+        let mut session = state.session.lock().expect("Session state lock failed");
+        session.stop();
+        session.start()
+    };
+
+    {
+        let mut recent_events = state
+            .recent_events
+            .lock()
+            .expect("Recent events lock failed");
+
+        recent_events.clear();
+    }
+
+    {
+        let storage = state.storage.lock().expect("Storage state lock failed");
+        storage.save_session_started(&next_status)?;
+    }
+
+    println!(
+        "COMMAND delete_saved_session called -> deleted active session_id: {}, new session_id: {:?}",
+        session_id, next_status.session_id
+    );
+
+    Ok(next_status)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let connection_state = Arc::new(Mutex::new(ConnectionState {
@@ -306,7 +360,8 @@ pub fn run() {
             get_storage_status,
             list_saved_sessions,
             load_session_events,
-            start_new_session
+            start_new_session,
+            delete_saved_session
         ])
         .run(tauri::generate_context!())
         .expect("error while running Recall Studio");

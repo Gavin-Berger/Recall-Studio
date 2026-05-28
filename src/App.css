@@ -414,14 +414,25 @@ button {
 }
 
 .timeline-event--device .timeline-event__body,
-.timeline-event--parameter .timeline-event__body {
+.timeline-event--parameter .timeline-event__body,
+.timeline-event--clip .timeline-event__body {
   border-left-color: var(--accent-device);
 }
 
 .timeline-event--device .timeline-event__timecode::after,
-.timeline-event--parameter .timeline-event__timecode::after {
+.timeline-event--parameter .timeline-event__timecode::after,
+.timeline-event--clip .timeline-event__timecode::after {
   border-color: var(--accent-device);
   box-shadow: 0 0 18px rgba(216, 180, 254, 0.28);
+}
+
+.timeline-event--file .timeline-event__body {
+  border-left-color: var(--accent-session);
+}
+
+.timeline-event--file .timeline-event__timecode::after {
+  border-color: var(--accent-session);
+  box-shadow: 0 0 18px rgba(248, 113, 113, 0.28);
 }
 
 .timeline-event--creative_moment .timeline-event__body {
@@ -655,6 +666,43 @@ button {
 .session-row.is-active {
   border-color: rgba(67, 245, 166, 0.34);
   background: rgba(67, 245, 166, 0.08);
+}
+
+.session-history__list .session-row {
+  padding: 0;
+  overflow: hidden;
+  cursor: default;
+}
+
+.session-row__main {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-width: 0;
+  flex: 1;
+  gap: 12px;
+  padding: 10px;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+}
+
+.session-row__delete {
+  align-self: stretch;
+  padding: 0 10px;
+  border: 0;
+  border-left: 1px solid var(--border);
+  color: var(--muted);
+  background: rgba(248, 113, 113, 0.04);
+  cursor: pointer;
+  font-size: 0.72rem;
+  font-weight: 800;
+}
+
+.session-row__delete:hover {
+  color: var(--accent-session);
+  background: rgba(248, 113, 113, 0.12);
 }
 
 .session-row span {

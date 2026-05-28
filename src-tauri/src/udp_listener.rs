@@ -10,6 +10,8 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+const VERBOSE_UDP_LOGGING: bool = false;
+
 #[derive(Debug, Clone)]
 pub struct ConnectionState {
     pub last_heartbeat_ms: Option<u64>,
@@ -282,10 +284,12 @@ fn update_connection_if_heartbeat(normalized_json: &Value, state: &Arc<Mutex<Con
     connection.last_heartbeat_ms = Some(now_ms());
     connection.last_message = Some(title);
 
-    println!(
-        "HEARTBEAT UPDATED -> last_heartbeat_ms: {:?}",
-        connection.last_heartbeat_ms
-    );
+    if VERBOSE_UDP_LOGGING {
+        println!(
+            "HEARTBEAT UPDATED -> last_heartbeat_ms: {:?}",
+            connection.last_heartbeat_ms
+        );
+    }
 }
 
 fn push_event(events: &Arc<Mutex<Vec<RecallEvent>>>, event: RecallEvent) {
@@ -297,7 +301,9 @@ fn push_event(events: &Arc<Mutex<Vec<RecallEvent>>>, event: RecallEvent) {
         recent_events.remove(0);
     }
 
-    println!("EVENT QUEUE UPDATED -> {} events", recent_events.len());
+    if VERBOSE_UDP_LOGGING {
+        println!("EVENT QUEUE UPDATED -> {} events", recent_events.len());
+    }
 }
 
 fn assign_session_if_active(event: &mut RecallEvent, session: &Arc<Mutex<SessionState>>) {
@@ -305,10 +311,12 @@ fn assign_session_if_active(event: &mut RecallEvent, session: &Arc<Mutex<Session
     event.session_id = session_state.active_session_id();
 
     if let Some(session_id) = &event.session_id {
-        println!(
-            "EVENT ASSIGNED TO SESSION -> event_type: {}, session_id: {}",
-            event.event_type, session_id
-        );
+        if VERBOSE_UDP_LOGGING {
+            println!(
+                "EVENT ASSIGNED TO SESSION -> event_type: {}, session_id: {}",
+                event.event_type, session_id
+            );
+        }
     }
 }
 
@@ -321,10 +329,12 @@ fn persist_event_if_session_owned(event: &RecallEvent, storage: &Arc<Mutex<Stora
 
     match storage_state.save_event(event) {
         Ok(_) => {
-            println!(
-                "EVENT PERSISTED -> event_type: {}, session_id: {:?}",
-                event.event_type, event.session_id
-            );
+            if VERBOSE_UDP_LOGGING {
+                println!(
+                    "EVENT PERSISTED -> event_type: {}, session_id: {:?}",
+                    event.event_type, event.session_id
+                );
+            }
         }
         Err(error) => {
             eprintln!("FAILED TO PERSIST EVENT -> {}", error);
@@ -351,23 +361,29 @@ pub fn start_udp_listener(
                 Ok((size, addr)) => {
                     let bytes = &buffer[..size];
 
-                    println!("================ UDP PACKET RECEIVED ================");
-                    println!("UDP from: {}", addr);
-                    println!("UDP bytes length: {}", size);
-                    println!("UDP raw bytes: {:?}", bytes);
+                    if VERBOSE_UDP_LOGGING {
+                        println!("================ UDP PACKET RECEIVED ================");
+                        println!("UDP from: {}", addr);
+                        println!("UDP bytes length: {}", size);
+                        println!("UDP raw bytes: {:?}", bytes);
+                    }
 
                     let message = match extract_json_object(bytes) {
                         Ok(message) => message,
                         Err(error) => {
                             eprintln!("FAILED TO EXTRACT JSON FROM UDP MESSAGE -> {}", error);
                             eprintln!("RAW BYTES WERE -> {:?}", bytes);
-                            println!("=====================================================");
+                            if VERBOSE_UDP_LOGGING {
+                                println!("=====================================================");
+                            }
                             continue;
                         }
                     };
 
-                    println!("UDP extracted JSON: {}", message);
-                    println!("=====================================================");
+                    if VERBOSE_UDP_LOGGING {
+                        println!("UDP extracted JSON: {}", message);
+                        println!("=====================================================");
+                    }
 
                     let raw_json = match serde_json::from_str::<Value>(&message) {
                         Ok(value) => value,
@@ -393,10 +409,12 @@ pub fn start_udp_listener(
 
                     match parsed_event {
                         Ok(mut event) => {
-                            println!(
-                                "PARSED RecallEvent -> type: {}, title: {}",
-                                event.event_type, event.title
-                            );
+                            if VERBOSE_UDP_LOGGING {
+                                println!(
+                                    "PARSED RecallEvent -> type: {}, title: {}",
+                                    event.event_type, event.title
+                                );
+                            }
 
                             assign_session_if_active(&mut event, &session);
                             persist_event_if_session_owned(&event, &storage);

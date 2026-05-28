@@ -11,7 +11,9 @@ export type RecallEventType =
   | "track"
   | "device"
   | "parameter"
+  | "clip"
   | "session"
+  | "file"
   | "creative_moment"
   | "unknown";
 

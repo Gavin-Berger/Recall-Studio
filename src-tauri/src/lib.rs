@@ -341,6 +341,7 @@ pub fn run() {
                 recent_events_for_setup.clone(),
                 session_state_for_setup.clone(),
                 storage_state_for_setup.clone(),
+                app.handle().clone(),
             );
 
             Ok(())

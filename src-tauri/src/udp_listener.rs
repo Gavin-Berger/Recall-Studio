@@ -2,13 +2,14 @@ use crate::protocol::RecallEvent;
 use crate::session::SessionState;
 use crate::storage::StorageState;
 use serde::Serialize;
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 use std::{
     net::UdpSocket,
     sync::{Arc, Mutex},
     thread,
     time::{SystemTime, UNIX_EPOCH},
 };
+use tauri::{AppHandle, Emitter};
 
 const VERBOSE_UDP_LOGGING: bool = false;
 
@@ -54,7 +55,7 @@ fn extract_json_object(bytes: &[u8]) -> Result<String, String> {
 }
 
 fn protocol_is_supported(protocol: &str) -> bool {
-    protocol == "recall.v1" || protocol == "recall.protocol.v1"
+    matches!(protocol, "recall.v1" | "recall.v2" | "recall.protocol.v1")
 }
 
 fn title_for_event_type(event_type: &str) -> String {
@@ -64,6 +65,8 @@ fn title_for_event_type(event_type: &str) -> String {
         "bridge_stopped" => "Ableton Bridge Stopped".to_string(),
 
         "tempo_changed" => "Tempo Changed".to_string(),
+        "transport_play" => "Playback Started".to_string(),
+        "transport_stop" => "Playback Stopped".to_string(),
         "playback_state_changed" => "Playback State Changed".to_string(),
         "beat_time_changed" => "Beat Time Changed".to_string(),
         "transport_changed" => "Transport Changed".to_string(),
@@ -76,18 +79,24 @@ fn title_for_event_type(event_type: &str) -> String {
         "track_event" => "Track Event".to_string(),
 
         "clip_event" => "Clip Event".to_string(),
+        "clip_created" => "Clip Created".to_string(),
         "clip_launched" => "Clip Launched".to_string(),
         "clip_stopped" => "Clip Stopped".to_string(),
+        "clip_deleted" => "Clip Deleted".to_string(),
         "clip_recording_started" => "Clip Recording Started".to_string(),
         "clip_recording_stopped" => "Clip Recording Stopped".to_string(),
 
         "scene_changed" => "Scene Changed".to_string(),
         "scene_launched" => "Scene Launched".to_string(),
 
+        "device_added" => "Device Added".to_string(),
+        "device_removed" => "Device Removed".to_string(),
         "device_event" => "Device Event".to_string(),
         "device_selected" => "Device Selected".to_string(),
-        "device_parameter_changed" => "Device Parameter Changed".to_string(),
+        "device_parameter_changed" | "parameter_changed" => "Parameter Changed".to_string(),
 
+        "group_focused" => "Group Focused".to_string(),
+        "live_set_snapshot" => "Live Set Snapshot".to_string(),
         "project_file_changed" => "Project File Changed".to_string(),
         "session_snapshot" => "Session Snapshot".to_string(),
         "creative_decision" => "Creative Decision".to_string(),
@@ -105,6 +114,8 @@ fn description_for_event_type(event_type: &str) -> String {
         "bridge_stopped" => "The Max for Live bridge stopped sending events.".to_string(),
 
         "tempo_changed" => "Ableton tempo changed.".to_string(),
+        "transport_play" => "Ableton playback started.".to_string(),
+        "transport_stop" => "Ableton playback stopped.".to_string(),
         "playback_state_changed" => "Ableton playback state changed.".to_string(),
         "beat_time_changed" => "Ableton beat position changed.".to_string(),
         "transport_changed" => "Ableton transport state changed.".to_string(),
@@ -117,18 +128,26 @@ fn description_for_event_type(event_type: &str) -> String {
         "track_event" => "Ableton track event received.".to_string(),
 
         "clip_event" => "Ableton clip event received.".to_string(),
+        "clip_created" => "A clip was created in Ableton.".to_string(),
         "clip_launched" => "An Ableton clip was launched.".to_string(),
         "clip_stopped" => "An Ableton clip was stopped.".to_string(),
+        "clip_deleted" => "An Ableton clip was deleted.".to_string(),
         "clip_recording_started" => "Ableton clip recording started.".to_string(),
         "clip_recording_stopped" => "Ableton clip recording stopped.".to_string(),
 
         "scene_changed" => "Ableton scene selection changed.".to_string(),
         "scene_launched" => "An Ableton scene was launched.".to_string(),
 
+        "device_added" => "A device was added to the chain.".to_string(),
+        "device_removed" => "A device was removed from the chain.".to_string(),
         "device_event" => "Ableton device event received.".to_string(),
         "device_selected" => "Ableton selected device changed.".to_string(),
-        "device_parameter_changed" => "An Ableton device parameter changed.".to_string(),
+        "device_parameter_changed" | "parameter_changed" => {
+            "A device parameter was adjusted.".to_string()
+        }
 
+        "group_focused" => "A group track was focused.".to_string(),
+        "live_set_snapshot" => "Ableton live set snapshot received.".to_string(),
         "project_file_changed" => "Ableton project file activity was detected.".to_string(),
         "session_snapshot" => "Ableton session snapshot received.".to_string(),
         "creative_decision" => "Creative decision marker received.".to_string(),
@@ -145,6 +164,86 @@ fn payload_to_string(value: Option<&Value>) -> String {
         Some(payload_value) => payload_value.to_string(),
         None => "{}".to_string(),
     }
+}
+
+// ── Structured field extraction ───────────────────────────────────────────────
+// These helpers look in the top-level object first, then inside the parsed
+// payload JSON. They try the canonical v2 name first, then common v1 synonyms.
+// This consolidates all field resolution in Rust so the frontend gets clean data.
+
+fn find_string(
+    top: &Map<String, Value>,
+    payload: Option<&Map<String, Value>>,
+    keys: &[&str],
+) -> Option<String> {
+    for &key in keys {
+        if let Some(val) = top.get(key).and_then(|v| v.as_str()) {
+            if !val.is_empty() {
+                return Some(val.to_string());
+            }
+        }
+    }
+    if let Some(p) = payload {
+        for &key in keys {
+            if let Some(val) = p.get(key).and_then(|v| v.as_str()) {
+                if !val.is_empty() {
+                    return Some(val.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
+fn find_f64(
+    top: &Map<String, Value>,
+    payload: Option<&Map<String, Value>>,
+    keys: &[&str],
+) -> Option<f64> {
+    for &key in keys {
+        if let Some(val) = top.get(key).and_then(|v| v.as_f64()) {
+            return Some(val);
+        }
+    }
+    if let Some(p) = payload {
+        for &key in keys {
+            if let Some(val) = p.get(key).and_then(|v| v.as_f64()) {
+                return Some(val);
+            }
+        }
+    }
+    None
+}
+
+fn find_bool(
+    top: &Map<String, Value>,
+    payload: Option<&Map<String, Value>>,
+    keys: &[&str],
+) -> Option<bool> {
+    for &key in keys {
+        if let Some(val) = top.get(key) {
+            if let Some(b) = val.as_bool() {
+                return Some(b);
+            }
+            // Treat 1/0 as true/false.
+            if let Some(n) = val.as_i64() {
+                return Some(n == 1);
+            }
+        }
+    }
+    if let Some(p) = payload {
+        for &key in keys {
+            if let Some(val) = p.get(key) {
+                if let Some(b) = val.as_bool() {
+                    return Some(b);
+                }
+                if let Some(n) = val.as_i64() {
+                    return Some(n == 1);
+                }
+            }
+        }
+    }
+    None
 }
 
 fn normalize_udp_json(mut value: Value) -> Result<Value, String> {
@@ -169,35 +268,19 @@ fn normalize_udp_json(mut value: Value) -> Result<Value, String> {
         .to_string();
 
     object.insert("protocol".to_string(), Value::String(protocol));
-
-    object
-        .entry("schema_version".to_string())
-        .or_insert(json!(1));
-
     object
         .entry("source".to_string())
         .or_insert(Value::String("max_for_live".to_string()));
-
-    object
-        .entry("device_id".to_string())
-        .or_insert(Value::String("unknown-device".to_string()));
-
-    object.entry("sequence".to_string()).or_insert(json!(0));
-
     object
         .entry("timestamp_ms".to_string())
         .or_insert(json!(now_ms()));
-
     object.insert("event_type".to_string(), Value::String(event_type.clone()));
-
     object
         .entry("title".to_string())
         .or_insert(Value::String(title_for_event_type(&event_type)));
-
     object
         .entry("description".to_string())
         .or_insert(Value::String(description_for_event_type(&event_type)));
-
     object
         .entry("session_id".to_string())
         .or_insert(Value::Null);
@@ -205,61 +288,76 @@ fn normalize_udp_json(mut value: Value) -> Result<Value, String> {
     let payload_string = payload_to_string(object.get("payload"));
     object.insert("payload".to_string(), Value::String(payload_string));
 
-    // Future-friendly protocol metadata.
-    // These extra fields are ignored if RecallEvent does not define them.
-    object
-        .entry("category".to_string())
-        .or_insert(Value::String("ableton_telemetry".to_string()));
+    // ── Extract structured fields ─────────────────────────────────────────────
+    // Parse the payload JSON to look for fields that may be nested inside it.
+    let payload_parsed: Option<Value> = object
+        .get("payload")
+        .and_then(|v| v.as_str())
+        .and_then(|s| serde_json::from_str(s).ok());
+    let payload_obj = payload_parsed.as_ref().and_then(|v| v.as_object());
 
-    object
-        .entry("severity".to_string())
-        .or_insert(Value::String("info".to_string()));
+    // Canonical v2 name first, then common v1 synonyms.
+    let track_name = find_string(
+        object,
+        payload_obj,
+        &[
+            "track_name",
+            "track",
+            "selected_track",
+            "selectedTrack",
+            "selected_track_name",
+        ],
+    );
+    let device_name = find_string(
+        object,
+        payload_obj,
+        &["device_name", "device", "plugin_name", "plugin"],
+    );
+    let parameter_name = find_string(
+        object,
+        payload_obj,
+        &["parameter_name", "parameter", "param_name", "param"],
+    );
+    let clip_name = find_string(object, payload_obj, &["clip_name", "clip"]);
+    let bpm = find_f64(object, payload_obj, &["bpm", "tempo"]);
+    let playing = find_bool(object, payload_obj, &["playing", "is_playing"]);
+    let parameter_value = find_f64(
+        object,
+        payload_obj,
+        &["parameter_value", "value", "param_value"],
+    );
 
-    object
-        .entry("origin".to_string())
-        .or_insert(Value::String("max_for_live".to_string()));
-
-    object
-        .entry("namespace".to_string())
-        .or_insert(Value::String("recall.ableton".to_string()));
-
-    object
-        .entry("project_id".to_string())
-        .or_insert(Value::Null);
-
-    object
-        .entry("project_name".to_string())
-        .or_insert(Value::Null);
-
-    object.entry("track_id".to_string()).or_insert(Value::Null);
-
-    object
-        .entry("track_name".to_string())
-        .or_insert(Value::Null);
-
-    object.entry("clip_id".to_string()).or_insert(Value::Null);
-
-    object.entry("clip_name".to_string()).or_insert(Value::Null);
-
-    object.entry("scene_id".to_string()).or_insert(Value::Null);
-
-    object
-        .entry("scene_name".to_string())
-        .or_insert(Value::Null);
-
-    object
-        .entry("device_name".to_string())
-        .or_insert(Value::Null);
-
-    object
-        .entry("parameter_name".to_string())
-        .or_insert(Value::Null);
-
-    object.entry("tags".to_string()).or_insert(json!([]));
-
-    object
-        .entry("metadata".to_string())
-        .or_insert(Value::String("{}".to_string()));
+    // Write resolved fields back to the top-level object.
+    // These override any null placeholders and become top-level struct fields
+    // in RecallEvent, so the frontend accesses them with zero guessing.
+    match track_name {
+        Some(v) => object.insert("track_name".to_string(), Value::String(v)),
+        None => object.insert("track_name".to_string(), Value::Null),
+    };
+    match device_name {
+        Some(v) => object.insert("device_name".to_string(), Value::String(v)),
+        None => object.insert("device_name".to_string(), Value::Null),
+    };
+    match parameter_name {
+        Some(v) => object.insert("parameter_name".to_string(), Value::String(v)),
+        None => object.insert("parameter_name".to_string(), Value::Null),
+    };
+    match clip_name {
+        Some(v) => object.insert("clip_name".to_string(), Value::String(v)),
+        None => object.insert("clip_name".to_string(), Value::Null),
+    };
+    match bpm {
+        Some(v) => object.insert("bpm".to_string(), json!(v)),
+        None => object.insert("bpm".to_string(), Value::Null),
+    };
+    match playing {
+        Some(v) => object.insert("playing".to_string(), json!(v)),
+        None => object.insert("playing".to_string(), Value::Null),
+    };
+    match parameter_value {
+        Some(v) => object.insert("parameter_value".to_string(), json!(v)),
+        None => object.insert("parameter_value".to_string(), Value::Null),
+    };
 
     Ok(value)
 }
@@ -297,9 +395,9 @@ fn push_event(events: &Arc<Mutex<Vec<RecallEvent>>>, event: RecallEvent) {
 
     recent_events.push(event);
 
-    if recent_events.len() > 100 {
-        recent_events.remove(0);
-    }
+    // No cap — the buffer holds all events for the current live session.
+    // Cleared when a new session starts. Sessions are hours long at most,
+    // so memory cost is negligible (each event is ~200 bytes on average).
 
     if VERBOSE_UDP_LOGGING {
         println!("EVENT QUEUE UPDATED -> {} events", recent_events.len());
@@ -321,6 +419,12 @@ fn assign_session_if_active(event: &mut RecallEvent, session: &Arc<Mutex<Session
 }
 
 fn persist_event_if_session_owned(event: &RecallEvent, storage: &Arc<Mutex<StorageState>>) {
+    // Heartbeats are connection-health signals — never persisted.
+    // They generate ~3600 useless rows per hour and contain no creative information.
+    if event.event_type == "heartbeat" {
+        return;
+    }
+
     if event.session_id.is_none() {
         return;
     }
@@ -347,6 +451,7 @@ pub fn start_udp_listener(
     events: Arc<Mutex<Vec<RecallEvent>>>,
     session: Arc<Mutex<SessionState>>,
     storage: Arc<Mutex<StorageState>>,
+    app_handle: AppHandle,
 ) {
     thread::spawn(move || {
         let socket = UdpSocket::bind("127.0.0.1:9000")
@@ -365,25 +470,15 @@ pub fn start_udp_listener(
                         println!("================ UDP PACKET RECEIVED ================");
                         println!("UDP from: {}", addr);
                         println!("UDP bytes length: {}", size);
-                        println!("UDP raw bytes: {:?}", bytes);
                     }
 
                     let message = match extract_json_object(bytes) {
                         Ok(message) => message,
                         Err(error) => {
                             eprintln!("FAILED TO EXTRACT JSON FROM UDP MESSAGE -> {}", error);
-                            eprintln!("RAW BYTES WERE -> {:?}", bytes);
-                            if VERBOSE_UDP_LOGGING {
-                                println!("=====================================================");
-                            }
                             continue;
                         }
                     };
-
-                    if VERBOSE_UDP_LOGGING {
-                        println!("UDP extracted JSON: {}", message);
-                        println!("=====================================================");
-                    }
 
                     let raw_json = match serde_json::from_str::<Value>(&message) {
                         Ok(value) => value,
@@ -398,7 +493,6 @@ pub fn start_udp_listener(
                         Ok(value) => value,
                         Err(error) => {
                             eprintln!("FAILED TO NORMALIZE UDP JSON -> {}", error);
-                            eprintln!("BAD MESSAGE WAS -> {}", message);
                             continue;
                         }
                     };
@@ -411,23 +505,27 @@ pub fn start_udp_listener(
                         Ok(mut event) => {
                             if VERBOSE_UDP_LOGGING {
                                 println!(
-                                    "PARSED RecallEvent -> type: {}, title: {}",
-                                    event.event_type, event.title
+                                    "PARSED RecallEvent -> type: {}, track: {:?}, device: {:?}",
+                                    event.event_type, event.track_name, event.device_name
                                 );
                             }
 
                             assign_session_if_active(&mut event, &session);
                             persist_event_if_session_owned(&event, &storage);
-                            push_event(&events, event);
+                            push_event(&events, event.clone());
+
+                            // Push to frontend in real-time.
+                            // Heartbeats are excluded — they update connection state only.
+                            if event.event_type != "heartbeat" {
+                                if let Err(e) = app_handle.emit("recall-event", &event) {
+                                    eprintln!("Failed to emit recall-event: {}", e);
+                                }
+                            }
                         }
                         Err(error) => {
                             eprintln!(
                                 "FAILED TO PARSE NORMALIZED JSON AS RecallEvent -> {}",
                                 error
-                            );
-                            eprintln!("ORIGINAL CLEANED MESSAGE WAS -> {}", message);
-                            eprintln!(
-                                "CONNECTION STATE MAY STILL BE UPDATED IF THIS WAS A HEARTBEAT"
                             );
                         }
                     }

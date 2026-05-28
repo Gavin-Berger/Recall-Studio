@@ -1,117 +1,186 @@
 import { useMemo, useState } from "react";
-import type {
-  PlaybackState,
-  RecallTimelineMoment,
-  SessionStats,
-  SessionViewMode,
-} from "../types/recall";
-import { buildProducerSummary, buildSessionInsights } from "../utils/sessionInsights";
-import { formatProducerMoment, isProducerTimelineEvent } from "../utils/producerEvents";
+import type { PlaybackState, SessionStats, SessionViewMode } from "../types/recall";
+import type { SessionNote, TimelineItem } from "../types/timeline";
+import { buildMarkdownDocument, deriveTempoRange } from "../lib/documentation/buildMarkdown";
+import { buildSessionInsights } from "../utils/sessionInsights";
+import { formatProducerMoment, producerEventIcon } from "../utils/producerEvents";
 import { RecallMark } from "./RecallMark";
 
 type SessionDocumentProps = {
-  events: RecallTimelineMoment[];
+  visibleItems: TimelineItem[];
+  freeNotes: SessionNote[];
   playback: PlaybackState;
   stats: SessionStats;
   viewMode: SessionViewMode;
 };
 
 export function SessionDocument({
-  events,
+  visibleItems,
+  freeNotes,
   playback,
   stats,
   viewMode,
 }: SessionDocumentProps) {
   const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
-  const documentEvents = useMemo(
-    () => events.filter(isProducerTimelineEvent),
-    [events],
-  );
-  const groupedEvents = groupEventsByType(documentEvents);
-  const producerSummary = buildProducerSummary(documentEvents, stats);
-  const insights = buildSessionInsights(documentEvents, stats);
-  const importantEvents = documentEvents.filter((event) =>
-    ["track", "group", "device", "parameter", "clip", "tempo", "transport"].includes(event.type),
-  );
-  const plainTextDocument = useMemo(
-    () => buildPlainTextDocument(documentEvents, playback, stats, viewMode),
-    [documentEvents, playback, stats, viewMode],
+
+  // Insights run on curated raw events — hidden items excluded.
+  const curatedRawEvents = useMemo(
+    () => visibleItems.map((i) => i.raw),
+    [visibleItems],
   );
 
-  async function handleCopyDocument() {
+  // Stats derived from visible (curated) items only.
+  const curatedStats = useMemo<SessionStats>(
+    () => ({
+      totalEvents: visibleItems.length,
+      creativeEvents: visibleItems.length,
+      transportEvents: visibleItems.filter((i) => i.raw.type === "transport").length,
+      tempoEvents: visibleItems.filter((i) => i.raw.type === "tempo").length,
+      trackEvents: visibleItems.filter((i) => i.raw.type === "track").length,
+      deviceEvents: visibleItems.filter((i) => i.raw.type === "device").length,
+      parameterEvents: visibleItems.filter((i) => i.raw.type === "parameter").length,
+      heartbeatEvents: 0,
+    }),
+    [visibleItems],
+  );
+
+  const insights = useMemo(
+    () => buildSessionInsights(curatedRawEvents, curatedStats),
+    [curatedRawEvents, curatedStats],
+  );
+
+  const tempoRange = useMemo(
+    () => deriveTempoRange(visibleItems, playback),
+    [visibleItems, playback],
+  );
+
+  const markdown = useMemo(
+    () => buildMarkdownDocument(visibleItems, freeNotes, playback, viewMode),
+    [visibleItems, freeNotes, playback, viewMode],
+  );
+
+  const activityBreakdown = useMemo(
+    () => buildActivityBreakdown(visibleItems),
+    [visibleItems],
+  );
+
+  async function handleCopyMarkdown() {
     try {
-      await navigator.clipboard.writeText(plainTextDocument);
+      await navigator.clipboard.writeText(markdown);
       setCopyState("copied");
       window.setTimeout(() => setCopyState("idle"), 1600);
-    } catch (error) {
-      console.error("Failed to copy session document:", error);
+    } catch {
       setCopyState("failed");
       window.setTimeout(() => setCopyState("idle"), 1800);
     }
   }
 
+  const sessionLabel = viewMode === "live" ? "Live Capture Notes" : "Saved Session Notes";
+  const hasContent = visibleItems.length > 0 || freeNotes.length > 0;
+
   return (
     <section className="session-document">
+      {/* ── Document header ─────────────────────────────────────── */}
       <header className="document-hero">
         <RecallMark />
         <div>
           <p className="eyebrow">Session Document</p>
-          <h1>{viewMode === "live" ? "Live Capture Notes" : "Saved Session Notes"}</h1>
+          <h1>{sessionLabel}</h1>
           <span>
-            A producer-readable timeline you can use to brief collaborators on
-            what changed in the Ableton session.
+            Curated session memory — edits and notes included, hidden items excluded.
           </span>
         </div>
 
-        <button type="button" onClick={handleCopyDocument}>
+        <button
+          type="button"
+          className={`doc-copy-btn ${copyState !== "idle" ? `doc-copy-btn--${copyState}` : ""}`}
+          onClick={handleCopyMarkdown}
+          disabled={!hasContent}
+        >
           {copyState === "copied"
             ? "Copied"
             : copyState === "failed"
-              ? "Copy failed"
-              : "Copy draft"}
+              ? "Failed"
+              : "Copy Markdown"}
         </button>
       </header>
 
       <div className="document-grid">
+        {/* ── Main document page ────────────────────────────────── */}
         <section className="document-page">
-          <div className="document-page__header">
-            <span>Recall Studio</span>
-            <strong>Timecoded Production Notes</strong>
+          {/* Session metadata strip */}
+          <div className="document-meta-strip">
+            {tempoRange && (
+              <div className="document-meta-chip">
+                <span>Tempo</span>
+                <strong>{tempoRange}</strong>
+              </div>
+            )}
+            <div className="document-meta-chip">
+              <span>Moments</span>
+              <strong>{visibleItems.length}</strong>
+            </div>
+            {playback.projectClock && (
+              <div className="document-meta-chip">
+                <span>Duration</span>
+                <strong>{playback.projectClock}</strong>
+              </div>
+            )}
+            {playback.selectedTrack && (
+              <div className="document-meta-chip">
+                <span>Last track</span>
+                <strong>{playback.selectedTrack}</strong>
+              </div>
+            )}
+            {(stats.totalEvents - curatedStats.creativeEvents) > 0 && (
+              <div className="document-meta-chip document-meta-chip--dim">
+                <span>Hidden</span>
+                <strong>{stats.totalEvents - curatedStats.creativeEvents}</strong>
+              </div>
+            )}
           </div>
 
-          <div className="document-summary">
-            <DocumentMetric label="Creative moves" value={stats.creativeEvents} />
-            <DocumentMetric label="Track focus" value={stats.trackEvents} />
-            <DocumentMetric label="Device work" value={stats.deviceEvents} />
-            <DocumentMetric label="Parameter edits" value={stats.parameterEvents} />
-          </div>
-
-          <section className="document-section">
-            <h2>Session Snapshot</h2>
-            <p>{buildSnapshotSentence(playback, stats)}</p>
-            <p>{producerSummary}</p>
-          </section>
-
+          {/* Timeline */}
           <section className="document-section">
             <h2>Timeline</h2>
 
-            {documentEvents.length === 0 ? (
+            {visibleItems.length === 0 ? (
               <p className="document-empty">
-                No creative decisions have been captured yet. Start playback,
-                select tracks, edit devices, or launch clips in Ableton to build
-                this document.
+                No creative moments in the curated timeline yet. Capture events
+                in Ableton to build this document.
               </p>
             ) : (
               <ol className="document-timeline">
-                {documentEvents.map((event) => {
-                  const moment = formatProducerMoment(event);
+                {visibleItems.map((item) => {
+                  const p = formatProducerMoment(item.raw);
+                  const displayTitle = item.edits.title ?? p.title;
+                  const displayDetail = item.edits.description ?? p.detail;
+                  const hasEdits = Boolean(item.edits.title || item.edits.description);
 
                   return (
-                    <li key={event.id}>
-                      <time>{event.sessionTimecode}</time>
-                      <div>
-                        <strong>{moment.title}</strong>
-                        {moment.detail && <p>{moment.detail}</p>}
+                    <li key={item.id} className={hasEdits ? "is-edited" : ""}>
+                      <div className="doc-event-row">
+                        <time>{item.raw.sessionTimecode}</time>
+                        <span
+                          className={`event-glyph event-glyph--${item.raw.type} event-glyph--sm`}
+                          aria-hidden="true"
+                        >
+                          {producerEventIcon(item.raw.type)}
+                        </span>
+                        <div className="doc-event-content">
+                          <strong>{displayTitle}</strong>
+                          {displayDetail && <p>{displayDetail}</p>}
+
+                          {item.notes.length > 0 && (
+                            <div className="doc-event-notes">
+                              {item.notes.map((note) => (
+                                <blockquote key={note.id} className="doc-note">
+                                  {note.text}
+                                </blockquote>
+                              ))}
+                            </div>
+                          )}
+                        </div>
                       </div>
                     </li>
                   );
@@ -119,25 +188,30 @@ export function SessionDocument({
               </ol>
             )}
           </section>
+
+          {/* Free-standing session notes */}
+          {freeNotes.length > 0 && (
+            <section className="document-section">
+              <h2>Session Notes</h2>
+              <div className="doc-free-notes">
+                {freeNotes.map((note) => (
+                  <div key={note.id} className="doc-free-note">
+                    <time>{note.sessionTimecode}</time>
+                    <p>{note.text}</p>
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
         </section>
 
+        {/* ── Sidebar ──────────────────────────────────────────── */}
         <aside className="document-sidebar">
-          <section>
-            <h2>Producer Focus</h2>
-            <DocumentList
-              empty="No major creative moves yet."
-              items={importantEvents.slice(-6).reverse().map((event) => ({
-                label: event.sessionTimecode,
-                value: formatProducerMoment(event).title,
-              }))}
-            />
-          </section>
-
           <section>
             <h2>Session Intelligence</h2>
             <div className="document-insights">
               {insights.slice(0, 4).map((insight) => (
-                <article key={insight.label}>
+                <article key={insight.label} className="doc-insight">
                   <span>{insight.label}</span>
                   <strong>{insight.value}</strong>
                   <p>{insight.detail}</p>
@@ -147,20 +221,26 @@ export function SessionDocument({
           </section>
 
           <section>
-            <h2>Activity Breakdown</h2>
+            <h2>Activity</h2>
             <div className="document-breakdown">
-              {groupedEvents.map((group) => (
-                <div key={group.type}>
-                  <span>{labelForType(group.type)}</span>
-                  <strong>{group.count}</strong>
+              {activityBreakdown.map((row) => (
+                <div key={row.label} className="doc-breakdown-row">
+                  <span>{row.label}</span>
+                  <div className="doc-breakdown-bar">
+                    <div
+                      className="doc-breakdown-bar__fill"
+                      style={{ width: `${row.pct}%` }}
+                    />
+                  </div>
+                  <strong>{row.count}</strong>
                 </div>
               ))}
             </div>
           </section>
 
           <section>
-            <h2>Share Format</h2>
-            <pre>{plainTextDocument}</pre>
+            <h2>Markdown Preview</h2>
+            <pre className="doc-markdown-preview">{markdown}</pre>
           </section>
         </aside>
       </div>
@@ -168,128 +248,21 @@ export function SessionDocument({
   );
 }
 
-function DocumentMetric({ label, value }: { label: string; value: number }) {
-  return (
-    <div>
-      <span>{label}</span>
-      <strong>{value}</strong>
-    </div>
-  );
-}
+function buildActivityBreakdown(items: TimelineItem[]) {
+  const rows = [
+    { label: "Track", type: "track" },
+    { label: "Device", type: "device" },
+    { label: "Parameter", type: "parameter" },
+    { label: "Clip", type: "clip" },
+    { label: "Tempo", type: "tempo" },
+    { label: "Transport", type: "transport" },
+    { label: "Group", type: "group" },
+  ] as const;
 
-function DocumentList({
-  items,
-  empty,
-}: {
-  items: Array<{ label: string; value: string }>;
-  empty: string;
-}) {
-  if (items.length === 0) {
-    return <p className="document-empty">{empty}</p>;
-  }
+  const max = Math.max(1, ...rows.map((r) => items.filter((i) => i.raw.type === r.type).length));
 
-  return (
-    <ul className="document-list">
-      {items.map((item) => (
-        <li key={`${item.label}-${item.value}`}>
-          <span>{item.label}</span>
-          <strong>{item.value}</strong>
-        </li>
-      ))}
-    </ul>
-  );
-}
-
-function buildSnapshotSentence(
-  playback: PlaybackState,
-  stats: SessionStats,
-): string {
-  const parts = [
-    `${stats.creativeEvents} creative moves captured`,
-    playback.projectClock ? `project time ${playback.projectClock}` : null,
-    playback.selectedTrack ? `${playback.selectedTrack} selected` : null,
-    typeof playback.tempo === "number" ? `${formatNumber(playback.tempo)} BPM` : null,
-    playback.arrangementPosition ? playback.arrangementPosition : null,
-  ].filter(Boolean);
-
-  return parts.length > 0
-    ? `${parts.join(". ")}.`
-    : "Recall Studio is waiting for Ableton telemetry to build a session record.";
-}
-
-function buildPlainTextDocument(
-  events: RecallTimelineMoment[],
-  playback: PlaybackState,
-  stats: SessionStats,
-  viewMode: SessionViewMode,
-): string {
-  const lines = [
-    `Recall Studio - ${viewMode === "live" ? "Live Capture" : "Saved Session"} Notes`,
-    "",
-    buildSnapshotSentence(playback, stats),
-    "",
-    "Timeline:",
-    ...(events.length > 0
-      ? events.map((event) => {
-          const moment = formatProducerMoment(event);
-          return `${event.sessionTimecode}  ${moment.title}${
-            moment.detail ? ` - ${moment.detail}` : ""
-          }`;
-        })
-      : ["No creative events captured yet."]),
-  ];
-
-  return lines.join("\n");
-}
-
-function groupEventsByType(events: RecallTimelineMoment[]) {
-  const order: RecallTimelineMoment["type"][] = [
-    "track",
-    "group",
-    "device",
-    "parameter",
-    "clip",
-    "tempo",
-    "transport",
-    "session",
-    "file",
-  ];
-
-  return order.map((type) => ({
-    type,
-    count: events.filter((event) => event.type === type).length,
-  }));
-}
-
-function labelForType(type: RecallTimelineMoment["type"]): string {
-  switch (type) {
-    case "track":
-      return "Track focus";
-    case "group":
-      return "Track groups";
-    case "device":
-      return "Device work";
-    case "parameter":
-      return "Parameter edits";
-    case "clip":
-      return "Clip moves";
-    case "tempo":
-      return "Tempo";
-    case "transport":
-      return "Transport";
-    case "session":
-      return "Live Set";
-    case "file":
-      return "Project file";
-    default:
-      return "Other";
-  }
-}
-
-function formatNumber(value: number): string {
-  if (Number.isInteger(value)) {
-    return String(value);
-  }
-
-  return value.toFixed(2).replace(/\.?0+$/, "");
+  return rows.map((r) => {
+    const count = items.filter((i) => i.raw.type === r.type).length;
+    return { label: r.label, count, pct: Math.round((count / max) * 100) };
+  });
 }

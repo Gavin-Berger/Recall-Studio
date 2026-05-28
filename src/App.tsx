@@ -1,17 +1,20 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { MutableRefObject } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import "./App.css";
 
 import { AppShell } from "./components/AppShell";
+import type { AppSurface } from "./components/AppShell";
 import { ConnectionPanel } from "./components/ConnectionPanel";
+import { ProducerInsights } from "./components/ProducerInsights";
 import { SessionDocument } from "./components/SessionDocument";
 import { SessionOverview } from "./components/SessionOverview";
 import { SessionTimeline } from "./components/SessionTimeline";
 import { SignalStatusStrip } from "./components/SignalStatusStrip";
+import { HomeScreen } from "./features/home/HomeScreen";
 import type {
   ConnectionStatus,
-  PlaybackState,
   RecallEventType,
   RecallMetadataValue,
   RecallTimelineMoment,
@@ -20,7 +23,16 @@ import type {
   SessionStats,
   SessionViewMode,
 } from "./types/recall";
-import { isProducerTimelineEvent } from "./utils/producerEvents";
+import { buildCreativeTimeline } from "./lib/timeline/creativeTimeline";
+import {
+  deriveTransportFromEvents,
+  deriveCaptureDuration,
+  formatProjectClock,
+  formatArrangementPosition,
+  convertAbletonBeatsToSeconds,
+} from "./lib/transport/transportState";
+import { useTimelineCuration } from "./hooks/useTimelineCuration";
+import { useActivityBlocks } from "./hooks/useActivityBlocks";
 import { getSessionElapsedTime } from "./utils/timecode";
 
 const BACKEND_CONNECTION_COMMAND = "get_connection_status";
@@ -32,17 +44,8 @@ const BACKEND_DELETE_SESSION_COMMAND = "delete_saved_session";
 
 const POLL_INTERVAL_MS = 1000;
 
-const EMPTY_PLAYBACK_STATE: PlaybackState = {
-  playing: null,
-  tempo: null,
-  projectClock: null,
-  arrangementPosition: null,
-  rawSongTime: null,
-  selectedTrack: null,
-  lastUpdatedAt: null,
-};
-
 function App() {
+  const [surface, setSurface] = useState<AppSurface>("home");
   const [connection, setConnection] = useState<ConnectionStatus>({
     connected: false,
     last_heartbeat_ms: null,
@@ -57,6 +60,11 @@ function App() {
   const [viewMode, setViewMode] = useState<SessionViewMode>("live");
   const [eventCommandAvailable, setEventCommandAvailable] = useState(true);
   const liveSessionStartedAtRef = useRef<number | null>(null);
+
+  const activeSession = useMemo(
+    () => savedSessions.find((s) => s.ended_at_ms === null) ?? null,
+    [savedSessions],
+  );
 
   useEffect(() => {
     let mounted = true;
@@ -93,46 +101,52 @@ function App() {
   }, []);
 
   useEffect(() => {
-    let mounted = true;
+    if (!eventCommandAvailable) return;
 
-    async function pollEvents() {
-      if (!eventCommandAvailable) {
+    let unlisten: (() => void) | undefined;
+
+    async function setup() {
+      // Seed with all events already in the backend's in-memory buffer.
+      // This covers the full live session since the buffer is no longer capped.
+      try {
+        const rawEvents = await invoke<unknown[]>(BACKEND_EVENTS_COMMAND);
+        if (Array.isArray(rawEvents)) {
+          const normalized = rawEvents
+            .map((rawEvent, index) =>
+              normalizeBackendEvent(rawEvent, index, liveSessionStartedAtRef),
+            )
+            .filter((e): e is RecallTimelineMoment => e !== null);
+          setLiveEvents(normalized);
+        }
+      } catch (error) {
+        console.warn(
+          `Backend event command "${BACKEND_EVENTS_COMMAND}" is not available.`,
+          error,
+        );
+        setEventCommandAvailable(false);
         return;
       }
 
-      try {
-        const rawEvents = await invoke<unknown[]>(BACKEND_EVENTS_COMMAND);
-
-        if (!mounted || !Array.isArray(rawEvents)) {
-          return;
-        }
-
-        const normalizedEvents = rawEvents
-          .map((rawEvent, index) =>
-            normalizeBackendEvent(rawEvent, index, liveSessionStartedAtRef),
-          )
-          .filter((event): event is RecallTimelineMoment => event !== null);
-
-        setLiveEvents(normalizedEvents);
-      } catch (error) {
-        console.warn(
-          `Backend event command "${BACKEND_EVENTS_COMMAND}" is not available yet. The connection panel will still work.`,
-          error,
+      // Subscribe to real-time push events from the Rust UDP listener.
+      // New events are appended; duplicates are ignored by ID check.
+      unlisten = await listen<unknown>("recall-event", (tauriEvent) => {
+        const normalized = normalizeBackendEvent(
+          tauriEvent.payload,
+          0,
+          liveSessionStartedAtRef,
         );
-
-        if (mounted) {
-          setEventCommandAvailable(false);
-        }
-      }
+        if (!normalized) return;
+        setLiveEvents((prev) => {
+          if (prev.some((e) => e.id === normalized.id)) return prev;
+          return [...prev, normalized];
+        });
+      });
     }
 
-    pollEvents();
-
-    const interval = window.setInterval(pollEvents, POLL_INTERVAL_MS);
+    setup();
 
     return () => {
-      mounted = false;
-      window.clearInterval(interval);
+      unlisten?.();
     };
   }, [eventCommandAvailable]);
 
@@ -164,39 +178,45 @@ function App() {
   }, []);
 
   const rawEvents = viewMode === "live" ? liveEvents : savedEvents;
-  const playbackState = useMemo(() => derivePlaybackState(rawEvents), [rawEvents]);
-  const events = useMemo(() => buildCreativeTimeline(rawEvents), [rawEvents]);
+  const playbackState = useMemo(() => deriveTransportFromEvents(rawEvents), [rawEvents]);
+  const creativeEvents = useMemo(() => buildCreativeTimeline(rawEvents), [rawEvents]);
   const bridgeCaptureDuration = useMemo(
-    () => formatCaptureDuration(rawEvents, viewMode),
+    () => deriveCaptureDuration(rawEvents, viewMode),
     [rawEvents, viewMode],
   );
 
-  const latestEvent = useMemo(() => {
-    return [...events].reverse().find((event) => event.type !== "heartbeat");
-  }, [events]);
-  const selectedEvent = useMemo(() => {
-    if (!selectedEventId) {
-      return latestEvent;
-    }
+  const {
+    allItems,
+    visibleItems,
+    freeNotes,
+    actions: curationActions,
+  } = useTimelineCuration(creativeEvents);
 
-    return events.find((event) => event.id === selectedEventId) ?? latestEvent;
-  }, [events, latestEvent, selectedEventId]);
+  const activityBlocks = useActivityBlocks(creativeEvents);
+
+  // selectedItem is driven by click selection; falls back to the latest visible item.
+  const latestItem = visibleItems[visibleItems.length - 1] ?? null;
+  const selectedItem = useMemo(() => {
+    if (!selectedEventId) return latestItem;
+    return visibleItems.find((item) => item.id === selectedEventId) ?? latestItem;
+  }, [visibleItems, latestItem, selectedEventId]);
+
+  // Raw event equivalents for components that haven't adopted TimelineItem yet.
+  const latestEvent = latestItem?.raw ?? null;
+  const selectedEvent = selectedItem?.raw ?? null;
 
   const stats = useMemo<SessionStats>(() => {
     return {
       totalEvents: rawEvents.length,
-      creativeEvents: events.length,
-      transportEvents: events.filter((event) => event.type === "transport")
-        .length,
-      tempoEvents: events.filter((event) => event.type === "tempo").length,
-      trackEvents: events.filter((event) => event.type === "track").length,
-      deviceEvents: events.filter((event) => event.type === "device").length,
-      parameterEvents: events.filter((event) => event.type === "parameter")
-        .length,
-      heartbeatEvents: rawEvents.filter((event) => event.type === "heartbeat")
-        .length,
+      creativeEvents: creativeEvents.length,
+      transportEvents: creativeEvents.filter((e) => e.type === "transport").length,
+      tempoEvents: creativeEvents.filter((e) => e.type === "tempo").length,
+      trackEvents: creativeEvents.filter((e) => e.type === "track").length,
+      deviceEvents: creativeEvents.filter((e) => e.type === "device").length,
+      parameterEvents: creativeEvents.filter((e) => e.type === "parameter").length,
+      heartbeatEvents: rawEvents.filter((e) => e.type === "heartbeat").length,
     };
-  }, [events, rawEvents]);
+  }, [creativeEvents, rawEvents]);
 
   async function handleSelectSavedSession(sessionId: string) {
     try {
@@ -216,6 +236,7 @@ function App() {
       setSelectedSessionId(sessionId);
       setSelectedEventId(null);
       setViewMode("saved");
+      setSurface("timeline");
     } catch (error) {
       console.error("Failed to load saved session:", error);
     }
@@ -236,6 +257,7 @@ function App() {
       setSelectedSessionId(null);
       setSelectedEventId(null);
       setViewMode("live");
+      setSurface("capture");
 
       const sessions = await invoke<SavedSessionMetadata[]>(
         BACKEND_LIST_SESSIONS_COMMAND,
@@ -244,6 +266,10 @@ function App() {
     } catch (error) {
       console.error("Failed to start a new session:", error);
     }
+  }
+
+  function handleGoToCapture() {
+    setSurface("capture");
   }
 
   async function handleDeleteSavedSession(sessionId: string) {
@@ -284,9 +310,22 @@ function App() {
 
   return (
     <AppShell
+      surface={surface}
+      onChangeSurface={setSurface}
+      connected={connection.connected}
+      home={
+        <HomeScreen
+          connection={connection}
+          sessions={savedSessions}
+          activeSession={activeSession}
+          onStartNewSession={handleStartNewSession}
+          onGoToCapture={handleGoToCapture}
+          onOpenSession={handleSelectSavedSession}
+        />
+      }
       rail={
         <SessionOverview
-          events={events}
+          events={creativeEvents}
           stats={stats}
           sessions={savedSessions}
           selectedSessionId={selectedSessionId}
@@ -300,26 +339,35 @@ function App() {
       timeline={
         <SessionTimeline
           connection={connection}
-          events={events}
+          items={visibleItems}
+          allItems={allItems}
+          rawEvents={creativeEvents}
+          activityBlocks={activityBlocks}
           playback={playbackState}
-          selectedEventId={selectedEvent?.id ?? null}
+          selectedEventId={selectedItem?.id ?? null}
           stats={stats}
           viewMode={viewMode}
           onSelectEvent={setSelectedEventId}
+          onHideItem={curationActions.hideItem}
+          onRestoreItem={curationActions.restoreItem}
+          onEditItem={curationActions.editItem}
+          onAddNote={curationActions.addNote}
         />
       }
       document={
         <SessionDocument
-          events={events}
+          visibleItems={visibleItems}
+          freeNotes={freeNotes}
           playback={playbackState}
           stats={stats}
           viewMode={viewMode}
         />
       }
+      analytics={<ProducerInsights events={creativeEvents} stats={stats} />}
       inspector={
         <ConnectionPanel
           connection={connection}
-          events={events}
+          events={creativeEvents}
           latestEvent={latestEvent}
           selectedEvent={selectedEvent}
           heartbeatCount={stats.heartbeatEvents}
@@ -341,6 +389,81 @@ function App() {
   );
 }
 
+// Shape of the RecallEvent struct as serialized by Rust.
+// Fields extracted by the Rust normalizer are top-level — no payload digging needed.
+type BackendEvent = {
+  event_type?: string;
+  timestamp_ms?: number;
+  source?: string;
+  // Structured fields extracted by Rust from the payload at ingestion.
+  track_name?: string | null;
+  device_name?: string | null;
+  parameter_name?: string | null;
+  parameter_value?: number | null;
+  clip_name?: string | null;
+  bpm?: number | null;
+  playing?: boolean | null;
+  // Retain raw payload and legacy fields for backwards compatibility
+  // with v1 events loaded from the database.
+  [key: string]: unknown;
+};
+
+// Canonical lookup map: exact Rust event_type strings → frontend RecallEventType.
+// No string inference — if the event_type isn't in this map, it stays "unknown".
+const EVENT_TYPE_MAP: Record<string, RecallEventType> = {
+  // Transport
+  transport_play: "transport",
+  transport_stop: "transport",
+  transport_changed: "transport",
+  playback_state_changed: "transport",
+  beat_time_changed: "transport",
+  recording_state_changed: "transport",
+  // Tempo
+  tempo_changed: "tempo",
+  // Track
+  track_selected: "track",
+  track_created: "track",
+  track_deleted: "track",
+  track_name_changed: "track",
+  track_event: "track",
+  // Device
+  device_added: "device",
+  device_removed: "device",
+  device_event: "device",
+  device_selected: "device",
+  // Parameter
+  device_parameter_changed: "parameter",
+  parameter_changed: "parameter",
+  // Clip
+  clip_created: "clip",
+  clip_launched: "clip",
+  clip_stopped: "clip",
+  clip_deleted: "clip",
+  clip_event: "clip",
+  clip_recording_started: "clip",
+  clip_recording_stopped: "clip",
+  // Scene
+  scene_launched: "scene",
+  scene_changed: "scene",
+  // Group
+  group_focused: "group",
+  // Session / arrangement
+  live_set_snapshot: "session",
+  session_snapshot: "session",
+  creative_decision: "creative_moment",
+  // File
+  project_file_changed: "file",
+  // System
+  heartbeat: "heartbeat",
+  bridge_started: "heartbeat",
+  bridge_stopped: "heartbeat",
+};
+
+function canonicalEventType(rawEventType: string | undefined): RecallEventType {
+  if (!rawEventType) return "unknown";
+  return EVENT_TYPE_MAP[rawEventType] ?? EVENT_TYPE_MAP[rawEventType.toLowerCase()] ?? "unknown";
+}
+
 function normalizeBackendEvent(
   rawEvent: unknown,
   index: number,
@@ -350,224 +473,98 @@ function normalizeBackendEvent(
     return null;
   }
 
-  const event = withParsedPayload(rawEvent as Record<string, unknown>);
-  const timestamp = readTimestamp(event) ?? Date.now();
+  // The Rust backend sends RecallEvent with structured top-level fields.
+  // For v1 events loaded from the database, payload may still need parsing
+  // to recover legacy fields — keep withParsedPayload for compatibility.
+  const raw = rawEvent as BackendEvent;
+  const event = withParsedPayload(raw as Record<string, unknown>);
+
+  // Timestamps: use the ms field from Rust directly. Fall back to legacy paths
+  // only for old v1 database events that may not include timestamp_ms.
+  const timestamp =
+    typeof raw.timestamp_ms === "number"
+      ? raw.timestamp_ms
+      : (readTimestamp(event) ?? Date.now());
 
   if (!sessionStartedAtRef.current) {
     sessionStartedAtRef.current = timestamp;
   }
 
-  const type = readEventType(event);
-  const rawEventType = readRawEventType(event);
+  // Type: canonical lookup first. Fall back to string inference only for
+  // old v1 events that predate the structured event_type vocabulary.
+  const rawEventType = typeof raw.event_type === "string" ? raw.event_type : readRawEventType(event);
+  const type = canonicalEventType(rawEventType) !== "unknown"
+    ? canonicalEventType(rawEventType)
+    : readEventTypeLegacy(event);
 
-  const trackName = readStringDeep(event, [
-    "track",
-    "track_name",
-    "trackName",
-    "selected_track",
-    "selectedTrack",
-    "selected_track_name",
-    "selectedTrackName",
-    "payload.track",
-    "payload.track_name",
-    "payload.trackName",
-    "payload.selected_track",
-    "payload.selectedTrack",
-    "payload.selected_track_name",
-    "payload.selectedTrackName",
-    "data.track",
-    "data.track_name",
-    "data.selected_track",
-    "data.selected_track_name",
-  ]);
+  // ── Structured fields ───────────────────────────────────────────────────
+  // v2 events: read directly from top-level Rust struct fields.
+  // v1 events: fall back to deep path search (old behaviour).
+  const trackName =
+    typeof raw.track_name === "string"
+      ? raw.track_name
+      : readStringDeep(event, ["track", "track_name", "selected_track", "payload.track_name", "payload.track", "data.track_name"]);
 
-  const deviceName = readStringDeep(event, [
-    "device",
-    "device_name",
-    "deviceName",
-    "plugin",
-    "plugin_name",
-    "pluginName",
-    "payload.device",
-    "payload.device_name",
-    "payload.deviceName",
-    "payload.plugin",
-    "payload.plugin_name",
-    "payload.pluginName",
-    "data.device",
-    "data.device_name",
-    "data.plugin",
-    "data.plugin_name",
-  ]);
+  const deviceName =
+    typeof raw.device_name === "string"
+      ? raw.device_name
+      : readStringDeep(event, ["device", "device_name", "plugin", "plugin_name", "payload.device_name", "payload.device"]);
 
+  const parameterName =
+    typeof raw.parameter_name === "string"
+      ? raw.parameter_name
+      : readStringDeep(event, ["parameter", "parameter_name", "param", "param_name", "payload.parameter_name", "payload.parameter"]);
+
+  const clipName =
+    typeof raw.clip_name === "string"
+      ? raw.clip_name
+      : readStringDeep(event, ["clip", "clip_name", "payload.clip_name", "payload.clip"]);
+
+  const bpm =
+    typeof raw.bpm === "number"
+      ? raw.bpm
+      : readNumberDeep(event, ["bpm", "tempo", "payload.bpm", "payload.tempo"]);
+
+  const playing =
+    typeof raw.playing === "boolean"
+      ? raw.playing
+      : readBooleanDeep(event, ["playing", "is_playing", "payload.playing"]);
+
+  // Fields not yet promoted to top-level struct (v1 compat only).
   const groupName = readStringDeep(event, [
-    "group",
-    "group_name",
-    "groupName",
-    "track_group",
-    "trackGroup",
-    "parent_group",
-    "parentGroup",
-    "payload.group",
-    "payload.group_name",
-    "payload.groupName",
-    "payload.track_group",
-    "payload.trackGroup",
-    "payload.parent_group",
-    "payload.parentGroup",
-    "data.group",
-    "data.group_name",
-    "data.groupName",
-    "data.track_group",
-    "data.trackGroup",
-    "data.parent_group",
-    "data.parentGroup",
+    "group", "group_name", "track_group",
+    "payload.group", "payload.group_name",
   ]);
-
   const groupPath = readStringArrayDeep(event, [
-    "group_path",
-    "groupPath",
-    "track_group_path",
-    "trackGroupPath",
-    "payload.group_path",
-    "payload.groupPath",
-    "payload.track_group_path",
-    "payload.trackGroupPath",
-    "data.group_path",
-    "data.groupPath",
-    "data.track_group_path",
-    "data.trackGroupPath",
+    "group_path", "groupPath", "payload.group_path",
   ]);
-
-  const parameterName = readStringDeep(event, [
-    "parameter",
-    "parameter_name",
-    "parameterName",
-    "param",
-    "param_name",
-    "paramName",
-    "payload.parameter",
-    "payload.parameter_name",
-    "payload.parameterName",
-    "payload.param",
-    "payload.param_name",
-    "payload.paramName",
-    "data.parameter",
-    "data.parameter_name",
-    "data.param",
-    "data.param_name",
-  ]);
-
-  const clipName = readStringDeep(event, [
-    "clip",
-    "clip_name",
-    "clipName",
-    "payload.clip",
-    "payload.clip_name",
-    "payload.clipName",
-    "payload.name",
-    "data.clip",
-    "data.clip_name",
-  ]);
-
-  const bpm = readNumberDeep(event, [
-    "bpm",
-    "tempo",
-    "payload.bpm",
-    "payload.tempo",
-    "data.bpm",
-    "data.tempo",
-  ]);
-
   const previousBpm = readNumberDeep(event, [
-    "previous_bpm",
-    "previousBpm",
-    "previous_tempo",
-    "previousTempo",
-    "payload.previous_bpm",
-    "payload.previousBpm",
-    "payload.previous_tempo",
-    "payload.previousTempo",
-    "data.previous_bpm",
-    "data.previous_tempo",
+    "previous_bpm", "previousBpm", "payload.previous_bpm",
   ]);
-
   const state = readStringDeep(event, [
-    "state",
-    "transport_state",
-    "transportState",
-    "play_state",
-    "playState",
-    "payload.state",
-    "payload.transport_state",
-    "payload.transportState",
-    "payload.play_state",
-    "payload.playState",
-    "data.state",
-    "data.transport_state",
-    "data.play_state",
+    "state", "transport_state", "play_state",
+    "payload.state", "payload.transport_state",
   ]);
-
   const songTime = readNumberDeep(event, [
-    "current_song_time",
-    "currentSongTime",
-    "beat_time",
-    "beatTime",
-    "song_time_beats",
-    "songTimeBeats",
-    "payload.current_song_time",
-    "payload.currentSongTime",
-    "payload.beat_time",
-    "payload.beatTime",
-    "payload.song_time_beats",
-    "payload.songTimeBeats",
-    "data.current_song_time",
-    "data.beat_time",
-    "data.song_time_beats",
-    "data.songTimeBeats",
+    "current_song_time", "beat_time", "song_time_beats",
+    "payload.current_song_time", "payload.beat_time",
   ]);
-
   const explicitProjectTimeSeconds = readNumberDeep(event, [
-    "song_time_seconds",
-    "songTimeSeconds",
-    "project_time_seconds",
-    "projectTimeSeconds",
-    "time_seconds",
-    "timeSeconds",
-    "payload.song_time_seconds",
-    "payload.songTimeSeconds",
-    "payload.project_time_seconds",
-    "payload.projectTimeSeconds",
-    "payload.time_seconds",
-    "payload.timeSeconds",
-    "data.song_time_seconds",
-    "data.songTimeSeconds",
-    "data.project_time_seconds",
-    "data.projectTimeSeconds",
+    "song_time_seconds", "project_time_seconds",
+    "payload.song_time_seconds", "payload.project_time_seconds",
   ]);
-
   const projectTimeSeconds =
     explicitProjectTimeSeconds ??
-    (typeof songTime === "number"
-      ? convertAbletonBeatsToSeconds(songTime, bpm)
-      : undefined);
-
-  const playing = readBooleanDeep(event, [
-    "playing",
-    "is_playing",
-    "payload.playing",
-    "payload.is_playing",
-    "data.playing",
-    "data.is_playing",
-  ]);
+    (typeof songTime === "number" ? convertAbletonBeatsToSeconds(songTime, bpm) : undefined);
 
   const source =
-    readStringDeep(event, ["source", "payload.source", "data.source"]) ??
+    (typeof raw.source === "string" ? raw.source : null) ??
+    readStringDeep(event, ["source", "payload.source"]) ??
     "Max_for_Live";
 
   const id =
     readStringDeep(event, ["id", "event_id", "eventId"]) ??
-    `${type}-${timestamp}-${index}`;
+    `${rawEventType ?? type}-${timestamp}-${index}`;
 
   return {
     id,
@@ -576,41 +573,16 @@ function normalizeBackendEvent(
     timelineRole: readTimelineRole(rawEventType, type),
     rawEvent: event,
     timestamp,
-    sessionTimecode: getSessionElapsedTime(
-      timestamp,
-      sessionStartedAtRef.current,
-    ),
+    sessionTimecode: getSessionElapsedTime(timestamp, sessionStartedAtRef.current),
     summary: buildEventSummary({
-      type,
-      trackName,
-      groupName,
-      groupPath,
-      deviceName,
-      parameterName,
-      clipName,
-      bpm,
-      previousBpm,
-      state,
-      playing,
-      songTime,
-      projectTimeSeconds,
-      event,
+      type, trackName, groupName, groupPath, deviceName,
+      parameterName, clipName, bpm, previousBpm, state,
+      playing, songTime, projectTimeSeconds, event,
     }),
     detail: buildEventDetail({
-      type,
-      trackName,
-      groupName,
-      groupPath,
-      deviceName,
-      parameterName,
-      clipName,
-      bpm,
-      previousBpm,
-      state,
-      playing,
-      songTime,
-      projectTimeSeconds,
-      event,
+      type, trackName, groupName, groupPath, deviceName,
+      parameterName, clipName, bpm, previousBpm, state,
+      playing, songTime, projectTimeSeconds, event,
     }),
     trackName,
     groupName,
@@ -618,128 +590,13 @@ function normalizeBackendEvent(
     deviceName,
     source,
     metadata: buildMetadata(event, {
-      trackName,
-      groupName,
-      groupPath,
-      deviceName,
-      parameterName,
-      clipName,
-      bpm,
-      previousBpm,
-      state,
-      playing,
-      songTime,
-      projectTimeSeconds,
+      trackName, groupName, groupPath, deviceName,
+      parameterName, clipName, bpm, previousBpm, state,
+      playing, songTime, projectTimeSeconds,
     }),
   };
 }
 
-function buildCreativeTimeline(
-  events: RecallTimelineMoment[],
-): RecallTimelineMoment[] {
-  const output: RecallTimelineMoment[] = [];
-  let previousPlaying: boolean | null = null;
-  let previousTempo: number | null = null;
-  let previousTrack: string | null = null;
-
-  for (const event of events) {
-    if (event.type === "heartbeat") {
-      continue;
-    }
-
-    if (event.timelineRole === "context") {
-      const playing = readMetadataBoolean(event, "playing");
-      const tempo = readMetadataNumber(event, "bpm");
-      const track = readMetadataString(event, "track");
-
-      const playingChanged =
-        typeof playing === "boolean" &&
-        previousPlaying !== null &&
-        playing !== previousPlaying;
-      const tempoChanged =
-        typeof tempo === "number" &&
-        previousTempo !== null &&
-        tempo !== previousTempo;
-      const trackChanged = Boolean(track && previousTrack && track !== previousTrack);
-
-      previousPlaying = typeof playing === "boolean" ? playing : previousPlaying;
-      previousTempo = typeof tempo === "number" ? tempo : previousTempo;
-      previousTrack = track ?? previousTrack;
-
-      if (!playingChanged && !tempoChanged && !trackChanged) {
-        continue;
-      }
-    }
-
-    if (!isProducerTimelineEvent(event)) {
-      continue;
-    }
-
-    output.push(event);
-
-    const playing = readMetadataBoolean(event, "playing");
-    const tempo = readMetadataNumber(event, "bpm");
-    const track = readMetadataString(event, "track");
-
-    if (typeof playing === "boolean") previousPlaying = playing;
-    if (typeof tempo === "number") previousTempo = tempo;
-    if (track) previousTrack = track;
-  }
-
-  return output;
-}
-
-function derivePlaybackState(events: RecallTimelineMoment[]): PlaybackState {
-  return events.reduce<PlaybackState>((state, event) => {
-    const playing = readMetadataBoolean(event, "playing");
-    const tempo = readMetadataNumber(event, "bpm");
-    const rawSongTime = readMetadataNumber(event, "songTime");
-    const projectTimeSeconds = readMetadataNumber(event, "projectTimeSeconds");
-    const selectedTrack = readMetadataString(event, "track");
-
-    return {
-      playing: typeof playing === "boolean" ? playing : state.playing,
-      tempo: typeof tempo === "number" ? tempo : state.tempo,
-      projectClock:
-        typeof projectTimeSeconds === "number"
-          ? formatProjectClock(projectTimeSeconds)
-          : state.projectClock,
-      arrangementPosition:
-        typeof rawSongTime === "number"
-          ? formatArrangementPosition(rawSongTime)
-          : state.arrangementPosition,
-      rawSongTime:
-        typeof rawSongTime === "number" ? rawSongTime : state.rawSongTime,
-      selectedTrack: selectedTrack ?? state.selectedTrack,
-      lastUpdatedAt:
-        event.type === "transport" || event.type === "tempo" || selectedTrack
-          ? event.timestamp
-          : state.lastUpdatedAt,
-    };
-  }, EMPTY_PLAYBACK_STATE);
-}
-
-function formatCaptureDuration(
-  events: RecallTimelineMoment[],
-  viewMode: SessionViewMode,
-): string {
-  if (events.length === 0) {
-    return "0:00";
-  }
-
-  const timestamps = events
-    .map((event) => event.timestamp)
-    .filter((timestamp) => Number.isFinite(timestamp));
-  const firstTimestamp = Math.min(...timestamps);
-  const lastTimestamp =
-    viewMode === "live" ? Date.now() : Math.max(...timestamps);
-
-  if (!Number.isFinite(firstTimestamp) || !Number.isFinite(lastTimestamp)) {
-    return "0:00";
-  }
-
-  return formatProjectClock((lastTimestamp - firstTimestamp) / 1000);
-}
 
 function readTimelineRole(
   rawEventType: string | undefined,
@@ -770,7 +627,9 @@ function withParsedPayload(
   }
 }
 
-function readEventType(event: Record<string, unknown>): RecallEventType {
+// Legacy type inference — only used for v1 events loaded from the database
+// that predate the structured event_type vocabulary. New events use canonicalEventType().
+function readEventTypeLegacy(event: Record<string, unknown>): RecallEventType {
   const rawType = String(
     event.type ??
       event.event_type ??
@@ -784,100 +643,19 @@ function readEventType(event: Record<string, unknown>): RecallEventType {
   ).toLowerCase();
 
   if (rawType.includes("heart")) return "heartbeat";
-
-  if (
-    rawType.includes("transport") ||
-    rawType.includes("playback") ||
-    rawType.includes("playing")
-  ) {
-    return "transport";
-  }
-
-  if (rawType.includes("tempo") || rawType.includes("bpm")) {
-    return "tempo";
-  }
-
-  if (rawType.includes("scene_launched") || rawType.includes("scene launched")) {
-    return "scene";
-  }
-
-  if (rawType.includes("clip")) {
-    return "clip";
-  }
-
-  if (rawType.includes("group") || rawType.includes("track bus")) {
-    return "group";
-  }
-
-  if (
-    rawType.includes("selected_track") ||
-    rawType.includes("track_selected") ||
-    rawType.includes("track selected") ||
-    rawType.includes("track focus") ||
-    rawType.includes("track")
-  ) {
-    return "track";
-  }
-
-  if (
-    rawType.includes("mixer") ||
-    rawType.includes("volume") ||
-    rawType.includes("pan") ||
-    rawType.includes("send") ||
-    rawType.includes("solo") ||
-    rawType.includes("mute") ||
-    rawType.includes("arm")
-  ) {
-    return "mixer";
-  }
-
-  if (
-    rawType.includes("arrangement") ||
-    rawType.includes("locator") ||
-    rawType.includes("marker")
-  ) {
-    return "arrangement";
-  }
-
-  if (
-    rawType.includes("device") ||
-    rawType.includes("plugin") ||
-    rawType.includes("serum") ||
-    rawType.includes("operator") ||
-    rawType.includes("wavetable")
-  ) {
-    return "device";
-  }
-
-  if (
-    rawType.includes("parameter") ||
-    rawType.includes("param") ||
-    rawType.includes("automation") ||
-    rawType.includes("cutoff") ||
-    rawType.includes("macro")
-  ) {
-    return "parameter";
-  }
-
-  if (
-    rawType.includes("file") ||
-    rawType.includes(".als") ||
-    rawType.includes("project")
-  ) {
-    return "file";
-  }
-
-  if (
-    rawType.includes("live set") ||
-    rawType.includes("liveset") ||
-    rawType.includes("set snapshot") ||
-    rawType.includes("session")
-  ) {
-    return "session";
-  }
-
+  if (rawType.includes("transport") || rawType.includes("playback")) return "transport";
+  if (rawType.includes("tempo") || rawType.includes("bpm")) return "tempo";
+  if (rawType.includes("scene_launched") || rawType.includes("scene launched")) return "scene";
+  if (rawType.includes("clip")) return "clip";
+  if (rawType.includes("group") || rawType.includes("track bus")) return "group";
+  if (rawType.includes("selected_track") || rawType.includes("track_selected") || rawType.includes("track")) return "track";
+  if (rawType.includes("mixer") || rawType.includes("volume") || rawType.includes("pan")) return "mixer";
+  if (rawType.includes("arrangement") || rawType.includes("locator")) return "arrangement";
+  if (rawType.includes("device") || rawType.includes("plugin")) return "device";
+  if (rawType.includes("parameter") || rawType.includes("param") || rawType.includes("automation")) return "parameter";
+  if (rawType.includes("file") || rawType.includes(".als") || rawType.includes("project")) return "file";
+  if (rawType.includes("live set") || rawType.includes("session")) return "session";
   if (rawType.includes("moment")) return "creative_moment";
-
   return "unknown";
 }
 
@@ -1464,72 +1242,6 @@ function formatAtProjectTime(projectTimeSeconds?: number): string {
   }
 
   return ` at ${formatProjectClock(projectTimeSeconds)}`;
-}
-
-function formatArrangementPosition(songTime: number): string {
-  const safeSongTime = Math.max(0, songTime);
-  const beatsPerBar = 4;
-  const bar = Math.floor(safeSongTime / beatsPerBar) + 1;
-  const beat = Math.floor(safeSongTime % beatsPerBar) + 1;
-  const subBeat = safeSongTime % 1;
-
-  if (subBeat > 0.05) {
-    return `Bar ${bar} Beat ${beat}.${Math.round(subBeat * 100)}`;
-  }
-
-  return `Bar ${bar} Beat ${beat}`;
-}
-
-function convertAbletonBeatsToSeconds(
-  beats: number,
-  bpm?: number,
-): number {
-  if (typeof bpm === "number" && bpm > 0) {
-    return beats / (bpm / 60);
-  }
-
-  return beats;
-}
-
-function formatProjectClock(totalSeconds: number): string {
-  const safeSeconds = Math.max(0, Math.floor(totalSeconds));
-  const hours = Math.floor(safeSeconds / 3600);
-  const minutes = Math.floor((safeSeconds % 3600) / 60);
-  const seconds = safeSeconds % 60;
-
-  if (hours > 0) {
-    return `${hours}:${padTime(minutes)}:${padTime(seconds)}`;
-  }
-
-  return `${minutes}:${padTime(seconds)}`;
-}
-
-function padTime(value: number): string {
-  return value.toString().padStart(2, "0");
-}
-
-function readMetadataNumber(
-  event: RecallTimelineMoment,
-  key: string,
-): number | null {
-  const value = event.metadata?.[key];
-  return typeof value === "number" ? value : null;
-}
-
-function readMetadataString(
-  event: RecallTimelineMoment,
-  key: string,
-): string | null {
-  const value = event.metadata?.[key];
-  return typeof value === "string" && value.trim() ? value : null;
-}
-
-function readMetadataBoolean(
-  event: RecallTimelineMoment,
-  key: string,
-): boolean | null {
-  const value = event.metadata?.[key];
-  return typeof value === "boolean" ? value : null;
 }
 
 function formatNumber(value: number): string {

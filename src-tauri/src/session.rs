@@ -1,4 +1,5 @@
-use serde::Serialize;
+use crate::protocol::RecallEvent;
+use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Clone, Serialize)]
@@ -7,6 +8,76 @@ pub struct SessionStatus {
     pub session_id: Option<String>,
     pub started_at_ms: Option<u64>,
     pub ended_at_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SavedSessionMetadata {
+    pub id: String,
+    pub name: String,
+    pub started_at_ms: u64,
+    pub ended_at_ms: Option<u64>,
+    pub last_updated_at_ms: u64,
+    pub event_count: usize,
+    pub creative_event_count: usize,
+    pub heartbeat_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SavedSession {
+    pub id: String,
+    pub name: String,
+    pub started_at_ms: u64,
+    pub ended_at_ms: Option<u64>,
+    pub last_updated_at_ms: u64,
+    pub event_count: usize,
+    pub creative_event_count: usize,
+    pub heartbeat_count: usize,
+    pub events: Vec<SavedSessionEvent>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SavedSessionEvent {
+    pub id: String,
+    #[serde(rename = "type")]
+    pub event_type: String,
+    pub timestamp_ms: u64,
+    pub summary: Option<String>,
+    pub title: String,
+    pub description: String,
+    pub source: String,
+    pub payload: Option<String>,
+    pub session_id: Option<String>,
+    pub track: Option<String>,
+    pub device: Option<String>,
+    pub parameter: Option<String>,
+    pub is_heartbeat: bool,
+}
+
+impl From<RecallEvent> for SavedSessionEvent {
+    fn from(event: RecallEvent) -> Self {
+        let is_heartbeat = event.event_type == "heartbeat";
+
+        Self {
+            id: format!(
+                "{}-{}-{}",
+                event.session_id.as_deref().unwrap_or("unsaved-session"),
+                event.event_type,
+                event.timestamp_ms
+            ),
+            event_type: event.event_type,
+            timestamp_ms: event.timestamp_ms,
+            summary: Some(event.title.clone()),
+            title: event.title,
+            description: event.description,
+            source: event.source,
+            payload: event.payload,
+            session_id: event.session_id,
+            track: None,
+            device: None,
+            parameter: None,
+            is_heartbeat,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -43,6 +114,15 @@ impl SessionState {
 
         self.active = true;
         self.session_id = Some(format!("session-{}", started_at_ms));
+        self.started_at_ms = Some(started_at_ms);
+        self.ended_at_ms = None;
+
+        self.status()
+    }
+
+    pub fn restore_active(&mut self, session_id: String, started_at_ms: u64) -> SessionStatus {
+        self.active = true;
+        self.session_id = Some(session_id);
         self.started_at_ms = Some(started_at_ms);
         self.ended_at_ms = None;
 

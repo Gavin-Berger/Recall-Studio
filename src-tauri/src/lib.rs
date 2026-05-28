@@ -4,7 +4,7 @@ mod storage;
 mod udp_listener;
 
 use protocol::RecallEvent;
-use session::{SessionState, SessionStatus};
+use session::{SavedSession, SavedSessionMetadata, SessionState, SessionStatus};
 use std::sync::{Arc, Mutex};
 use storage::{initialize_database, StorageState, StorageStatus};
 use tauri::{Manager, State};
@@ -139,6 +139,78 @@ fn get_storage_status(state: State<'_, AppState>) -> StorageStatus {
     status
 }
 
+#[tauri::command]
+fn list_saved_sessions(state: State<'_, AppState>) -> Result<Vec<SavedSessionMetadata>, String> {
+    let storage = state.storage.lock().expect("Storage state lock failed");
+    let sessions = storage.list_saved_sessions()?;
+
+    println!(
+        "COMMAND list_saved_sessions called -> {} sessions",
+        sessions.len()
+    );
+
+    Ok(sessions)
+}
+
+#[tauri::command]
+fn load_session_events(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<SavedSession, String> {
+    let storage = state.storage.lock().expect("Storage state lock failed");
+    let session = storage.load_session(&session_id)?;
+
+    println!(
+        "COMMAND load_session_events called -> session_id: {}, {} events",
+        session_id,
+        session.events.len()
+    );
+
+    Ok(session)
+}
+
+#[tauri::command]
+fn start_new_session(state: State<'_, AppState>) -> Result<SessionStatus, String> {
+    let previous_status = {
+        let mut session = state.session.lock().expect("Session state lock failed");
+        session.stop()
+    };
+
+    {
+        let storage = state.storage.lock().expect("Storage state lock failed");
+
+        if previous_status.session_id.is_some() {
+            storage.save_session_stopped(&previous_status)?;
+        }
+    }
+
+    let status = {
+        let mut session = state.session.lock().expect("Session state lock failed");
+        session.start()
+    };
+
+    {
+        let mut recent_events = state
+            .recent_events
+            .lock()
+            .expect("Recent events lock failed");
+
+        recent_events.clear();
+    }
+
+    {
+        let storage = state.storage.lock().expect("Storage state lock failed");
+        storage.save_session_started(&status)?;
+    }
+
+    println!(
+        "COMMAND start_new_session called -> active: {}, session_id: {:?}",
+        status.active, status.session_id
+    );
+
+    Ok(status)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let connection_state = Arc::new(Mutex::new(ConnectionState {
@@ -182,6 +254,32 @@ pub fn run() {
             }
 
             println!("SQLite database initialized at {:?}", db_path);
+
+            let active_status = {
+                let storage = storage_state_for_setup
+                    .lock()
+                    .expect("Storage state lock failed");
+
+                storage
+                    .resume_or_create_active_session()
+                    .expect("Failed to resume or create active Recall Studio session")
+            };
+
+            if let (Some(session_id), Some(started_at_ms)) = (
+                active_status.session_id.clone(),
+                active_status.started_at_ms,
+            ) {
+                let mut session = session_state_for_setup
+                    .lock()
+                    .expect("Session state lock failed");
+
+                session.restore_active(session_id, started_at_ms);
+            }
+
+            println!(
+                "Active session ready -> session_id: {:?}",
+                active_status.session_id
+            );
             println!("Starting UDP listener...");
 
             start_udp_listener(
@@ -205,7 +303,10 @@ pub fn run() {
             start_session,
             stop_session,
             get_session_status,
-            get_storage_status
+            get_storage_status,
+            list_saved_sessions,
+            load_session_events,
+            start_new_session
         ])
         .run(tauri::generate_context!())
         .expect("error while running Recall Studio");

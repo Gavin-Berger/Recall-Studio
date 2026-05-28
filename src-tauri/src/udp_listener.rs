@@ -301,10 +301,6 @@ fn push_event(events: &Arc<Mutex<Vec<RecallEvent>>>, event: RecallEvent) {
 }
 
 fn assign_session_if_active(event: &mut RecallEvent, session: &Arc<Mutex<SessionState>>) {
-    if event.event_type == "heartbeat" {
-        return;
-    }
-
     let session_state = session.lock().expect("Session state lock failed");
     event.session_id = session_state.active_session_id();
 

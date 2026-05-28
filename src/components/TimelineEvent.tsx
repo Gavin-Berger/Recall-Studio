@@ -10,6 +10,7 @@ export function TimelineEvent({ event }: TimelineEventProps) {
   const instrument = findAbletonInstrumentReference(
     event.deviceName ?? String(event.metadata?.device ?? ""),
   );
+  const metadataPills = buildMetadataPills(event);
 
   return (
     <article className={`timeline-event timeline-event--${event.type}`}>
@@ -53,14 +54,11 @@ export function TimelineEvent({ event }: TimelineEventProps) {
           </div>
         )}
 
-        {event.metadata && Object.keys(event.metadata).length > 0 && (
+        {metadataPills.length > 0 && (
           <div className="timeline-event__meta">
-            {event.trackName && <span>Track: {event.trackName}</span>}
-            {event.deviceName && <span>Device: {event.deviceName}</span>}
-
-            {Object.entries(event.metadata).map(([key, value]) => (
-              <span key={key}>
-                {key}: <strong>{String(value)}</strong>
+            {metadataPills.map((pill) => (
+              <span key={pill.label}>
+                {pill.label}: <strong>{pill.value}</strong>
               </span>
             ))}
           </div>
@@ -68,6 +66,76 @@ export function TimelineEvent({ event }: TimelineEventProps) {
       </div>
     </article>
   );
+}
+
+function buildMetadataPills(event: RecallTimelineMoment): Array<{
+  label: string;
+  value: string;
+}> {
+  const metadata = event.metadata ?? {};
+  const pills: Array<{ label: string; value: string }> = [];
+
+  addPill(pills, "Track", event.trackName ?? readString(metadata.track));
+  addPill(pills, "Device", event.deviceName ?? readString(metadata.device));
+  addPill(pills, "Parameter", readString(metadata.parameter));
+  addPill(pills, "Clip", readString(metadata.clip));
+  addPill(pills, "Tempo", formatBpm(metadata.bpm));
+  addPill(pills, "Position", readString(metadata.arrangementPosition));
+  addPill(pills, "Value", formatPrimitive(metadata.value));
+
+  return pills.slice(0, 4);
+}
+
+function addPill(
+  pills: Array<{ label: string; value: string }>,
+  label: string,
+  value?: string,
+) {
+  if (!value || pills.some((pill) => pill.label === label && pill.value === value)) {
+    return;
+  }
+
+  pills.push({ label, value });
+}
+
+function readString(value: unknown): string | undefined {
+  if (typeof value === "string" && value.trim()) {
+    return value;
+  }
+
+  return undefined;
+}
+
+function formatBpm(value: unknown): string | undefined {
+  if (typeof value !== "number") {
+    return undefined;
+  }
+
+  return `${formatNumber(value)} BPM`;
+}
+
+function formatPrimitive(value: unknown): string | undefined {
+  if (
+    typeof value === "string" ||
+    typeof value === "boolean" ||
+    value === null
+  ) {
+    return String(value);
+  }
+
+  if (typeof value === "number") {
+    return formatNumber(value);
+  }
+
+  return undefined;
+}
+
+function formatNumber(value: number): string {
+  if (Number.isInteger(value)) {
+    return String(value);
+  }
+
+  return value.toFixed(2).replace(/\.?0+$/, "");
 }
 
 function labelForEventType(type: RecallTimelineMoment["type"]): string {

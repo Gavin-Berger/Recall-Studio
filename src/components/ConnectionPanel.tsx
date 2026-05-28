@@ -1,15 +1,21 @@
-import type { ConnectionStatus, RecallTimelineMoment } from "../types/recall";
+import type {
+  ConnectionStatus,
+  PlaybackState,
+  RecallTimelineMoment,
+} from "../types/recall";
 
 type ConnectionPanelProps = {
   connection: ConnectionStatus;
   latestEvent?: RecallTimelineMoment;
   heartbeatCount: number;
+  playback: PlaybackState;
 };
 
 export function ConnectionPanel({
   connection,
   latestEvent,
   heartbeatCount,
+  playback,
 }: ConnectionPanelProps) {
   const statusLabel = connection.connected ? "ONLINE" : "WAITING";
   const statusClass = connection.connected ? "is-online" : "is-waiting";
@@ -35,11 +41,35 @@ export function ConnectionPanel({
               : "Waiting for Ableton bridge"}
           </p>
 
-          <p className="signal-subtitle">UDP localhost · port 9000</p>
+          <p className="signal-subtitle">UDP localhost - port 9000</p>
         </div>
       </div>
 
       <div className="telemetry-list">
+        <div>
+          <span>Transport</span>
+          <strong>{formatPlaybackStatus(playback.playing)}</strong>
+        </div>
+
+        <div>
+          <span>Tempo</span>
+          <strong>
+            {typeof playback.tempo === "number"
+              ? `${formatNumber(playback.tempo)} BPM`
+              : "Unknown"}
+          </strong>
+        </div>
+
+        <div>
+          <span>Arrangement Position</span>
+          <strong>{playback.arrangementPosition ?? "Not reported"}</strong>
+        </div>
+
+        <div>
+          <span>Selected Track</span>
+          <strong>{playback.selectedTrack ?? "None"}</strong>
+        </div>
+
         <div>
           <span>Last heartbeat</span>
           <strong>{formatHeartbeatAge(connection.last_heartbeat_ms)}</strong>
@@ -67,6 +97,22 @@ export function ConnectionPanel({
       </div>
     </aside>
   );
+}
+
+function formatPlaybackStatus(playing: boolean | null): string {
+  if (playing === null) {
+    return "Unknown";
+  }
+
+  return playing ? "Playing" : "Stopped";
+}
+
+function formatNumber(value: number): string {
+  if (Number.isInteger(value)) {
+    return String(value);
+  }
+
+  return value.toFixed(2).replace(/\.?0+$/, "");
 }
 
 function formatHeartbeatAge(value: number | null): string {

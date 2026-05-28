@@ -10,6 +10,7 @@ import { SessionTimeline } from "./components/SessionTimeline";
 import { TopSystemBar } from "./components/TopSystemBar";
 import type {
   ConnectionStatus,
+  PlaybackState,
   RecallEventType,
   RecallTimelineMoment,
   SavedSession,
@@ -27,6 +28,15 @@ const BACKEND_START_NEW_SESSION_COMMAND = "start_new_session";
 const BACKEND_DELETE_SESSION_COMMAND = "delete_saved_session";
 
 const POLL_INTERVAL_MS = 1000;
+
+const EMPTY_PLAYBACK_STATE: PlaybackState = {
+  playing: null,
+  tempo: null,
+  arrangementPosition: null,
+  rawSongTime: null,
+  selectedTrack: null,
+  lastUpdatedAt: null,
+};
 
 function App() {
   const [connection, setConnection] = useState<ConnectionStatus>({
@@ -148,7 +158,9 @@ function App() {
     };
   }, []);
 
-  const events = viewMode === "live" ? liveEvents : savedEvents;
+  const rawEvents = viewMode === "live" ? liveEvents : savedEvents;
+  const playbackState = useMemo(() => derivePlaybackState(rawEvents), [rawEvents]);
+  const events = useMemo(() => buildCreativeTimeline(rawEvents), [rawEvents]);
 
   const latestEvent = useMemo(() => {
     return [...events].reverse().find((event) => event.type !== "heartbeat");
@@ -156,9 +168,8 @@ function App() {
 
   const stats = useMemo<SessionStats>(() => {
     return {
-      totalEvents: events.length,
-      creativeEvents: events.filter((event) => event.type !== "heartbeat")
-        .length,
+      totalEvents: rawEvents.length,
+      creativeEvents: events.length,
       transportEvents: events.filter((event) => event.type === "transport")
         .length,
       tempoEvents: events.filter((event) => event.type === "tempo").length,
@@ -166,10 +177,10 @@ function App() {
       deviceEvents: events.filter((event) => event.type === "device").length,
       parameterEvents: events.filter((event) => event.type === "parameter")
         .length,
-      heartbeatEvents: events.filter((event) => event.type === "heartbeat")
+      heartbeatEvents: rawEvents.filter((event) => event.type === "heartbeat")
         .length,
     };
-  }, [events]);
+  }, [events, rawEvents]);
 
   async function handleSelectSavedSession(sessionId: string) {
     try {
@@ -278,6 +289,7 @@ function App() {
           connection={connection}
           latestEvent={latestEvent}
           heartbeatCount={stats.heartbeatEvents}
+          playback={playbackState}
         />
       }
       footer={
@@ -316,6 +328,7 @@ function normalizeBackendEvent(
   }
 
   const type = readEventType(event);
+  const rawEventType = readRawEventType(event);
 
   const trackName = readStringDeep(event, [
     "track",
@@ -459,6 +472,8 @@ function normalizeBackendEvent(
   return {
     id,
     type,
+    rawEventType,
+    timelineRole: readTimelineRole(rawEventType, type),
     timestamp,
     sessionTimecode: getSessionElapsedTime(
       timestamp,
@@ -505,6 +520,92 @@ function normalizeBackendEvent(
       songTime,
     }),
   };
+}
+
+function buildCreativeTimeline(
+  events: RecallTimelineMoment[],
+): RecallTimelineMoment[] {
+  const output: RecallTimelineMoment[] = [];
+  let previousPlaying: boolean | null = null;
+  let previousTempo: number | null = null;
+  let previousTrack: string | null = null;
+
+  for (const event of events) {
+    if (event.type === "heartbeat") {
+      continue;
+    }
+
+    if (event.timelineRole === "context") {
+      const playing = readMetadataBoolean(event, "playing");
+      const tempo = readMetadataNumber(event, "bpm");
+      const track = readMetadataString(event, "track");
+
+      const playingChanged =
+        typeof playing === "boolean" &&
+        previousPlaying !== null &&
+        playing !== previousPlaying;
+      const tempoChanged =
+        typeof tempo === "number" &&
+        previousTempo !== null &&
+        tempo !== previousTempo;
+      const trackChanged = Boolean(track && previousTrack && track !== previousTrack);
+
+      previousPlaying = typeof playing === "boolean" ? playing : previousPlaying;
+      previousTempo = typeof tempo === "number" ? tempo : previousTempo;
+      previousTrack = track ?? previousTrack;
+
+      if (!playingChanged && !tempoChanged && !trackChanged) {
+        continue;
+      }
+    }
+
+    output.push(event);
+
+    const playing = readMetadataBoolean(event, "playing");
+    const tempo = readMetadataNumber(event, "bpm");
+    const track = readMetadataString(event, "track");
+
+    if (typeof playing === "boolean") previousPlaying = playing;
+    if (typeof tempo === "number") previousTempo = tempo;
+    if (track) previousTrack = track;
+  }
+
+  return output;
+}
+
+function derivePlaybackState(events: RecallTimelineMoment[]): PlaybackState {
+  return events.reduce<PlaybackState>((state, event) => {
+    const playing = readMetadataBoolean(event, "playing");
+    const tempo = readMetadataNumber(event, "bpm");
+    const rawSongTime = readMetadataNumber(event, "songTime");
+    const selectedTrack = readMetadataString(event, "track");
+
+    return {
+      playing: typeof playing === "boolean" ? playing : state.playing,
+      tempo: typeof tempo === "number" ? tempo : state.tempo,
+      arrangementPosition:
+        typeof rawSongTime === "number"
+          ? formatArrangementPosition(rawSongTime)
+          : state.arrangementPosition,
+      rawSongTime:
+        typeof rawSongTime === "number" ? rawSongTime : state.rawSongTime,
+      selectedTrack: selectedTrack ?? state.selectedTrack,
+      lastUpdatedAt:
+        event.type === "transport" || event.type === "tempo" || selectedTrack
+          ? event.timestamp
+          : state.lastUpdatedAt,
+    };
+  }, EMPTY_PLAYBACK_STATE);
+}
+
+function readTimelineRole(
+  rawEventType: string | undefined,
+  type: RecallEventType,
+): RecallTimelineMoment["timelineRole"] {
+  if (type === "heartbeat") return "debug";
+  if (rawEventType === "transport_snapshot") return "context";
+  if (type === "transport" || type === "tempo") return "transport";
+  return "creative";
 }
 
 function withParsedPayload(
@@ -674,7 +775,6 @@ function buildEventSummary(input: {
     previousBpm,
     state,
     playing,
-    songTime,
     event,
   } = input;
 
@@ -713,21 +813,15 @@ function buildEventSummary(input: {
   const normalizedEventType = (rawEventType ?? "").toLowerCase();
 
   if (normalizedEventType === "transport_play") {
-    return `Playback started${formatAtSongTime(songTime)}.`;
+    return "Playback started";
   }
 
   if (normalizedEventType === "transport_stop") {
-    return `Playback stopped${formatAtSongTime(songTime)}.`;
+    return "Playback stopped";
   }
 
   if (normalizedEventType === "transport_snapshot") {
-    return buildTransportSnapshotSummary({
-      playing,
-      bpm,
-      songTime,
-      trackName,
-      event,
-    });
+    return "Transport updated";
   }
 
   if (normalizedEventType === "tempo_changed") {
@@ -773,13 +867,7 @@ function buildEventSummary(input: {
   }
 
   if (normalizedTitle.includes("transport snapshot")) {
-    return buildTransportSnapshotSummary({
-      playing,
-      bpm,
-      songTime,
-      trackName,
-      event,
-    });
+    return "Transport updated";
   }
 
   if (normalizedTitle.includes("live set snapshot")) {
@@ -792,7 +880,7 @@ function buildEventSummary(input: {
 
     case "transport":
       if (typeof playing === "boolean") {
-        return `Playback is ${playing ? "running" : "stopped"}${formatAtSongTime(songTime)}.`;
+        return playing ? "Playback started" : "Playback stopped";
       }
 
       if (state) {
@@ -814,7 +902,7 @@ function buildEventSummary(input: {
 
     case "track":
       if (trackName) {
-        return `${trackName} track was selected.`;
+        return "Track selected";
       }
 
       return "Track focus changed.";
@@ -899,7 +987,7 @@ function buildEventDetail(input: {
   } = input;
 
   if (type === "track" && trackName) {
-    return buildTrackFocusDetail(event, trackName);
+    return `Selected "${trackName}".`;
   }
 
   if (type === "device" && deviceName && trackName) {
@@ -928,7 +1016,7 @@ function buildEventDetail(input: {
   }
 
   if (type === "transport" && typeof playing === "boolean") {
-    return `Transport state: ${playing ? "playing" : "stopped"}${formatAtSongTime(songTime)}.`;
+    return `Arrangement playback ${playing ? "started" : "stopped"}${formatAtArrangementPosition(songTime)}.`;
   }
 
   if (type === "transport" && state) {
@@ -970,7 +1058,10 @@ function buildMetadata(
   if (known.clipName) metadata.clip = known.clipName;
   if (typeof known.previousBpm === "number") metadata.previousBpm = known.previousBpm;
   if (typeof known.playing === "boolean") metadata.playing = known.playing;
-  if (typeof known.songTime === "number") metadata.songTime = known.songTime;
+  if (typeof known.songTime === "number") {
+    metadata.arrangementPosition = formatArrangementPosition(known.songTime);
+    metadata.songTime = known.songTime;
+  }
 
   const position = readStringDeep(event, [
     "position",
@@ -1015,45 +1106,8 @@ function buildMetadata(
   return metadata;
 }
 
-function buildTransportSnapshotSummary(input: {
-  playing?: boolean;
-  bpm?: number;
-  songTime?: number;
-  trackName?: string;
-  event: Record<string, unknown>;
-}): string {
-  const { playing, bpm, songTime, trackName, event } = input;
-  const parts: string[] = [];
-
-  if (typeof playing === "boolean") {
-    parts.push(`playback ${playing ? "running" : "stopped"}`);
-  }
-
-  if (typeof bpm === "number") {
-    parts.push(`${formatNumber(bpm)} BPM`);
-  }
-
-  if (typeof songTime === "number") {
-    parts.push(`song time ${formatNumber(songTime)} beats`);
-  }
-
-  const selectedTrack =
-    trackName ??
-    readStringDeep(event, [
-      "selected_track_name",
-      "payload.selected_track_name",
-      "data.selected_track_name",
-    ]);
-
-  if (selectedTrack) {
-    parts.push(`${selectedTrack} selected`);
-  }
-
-  if (parts.length === 0) {
-    return "Transport state changed.";
-  }
-
-  return `Transport state: ${parts.join(", ")}.`;
+function readRawEventType(event: Record<string, unknown>): string | undefined {
+  return readStringDeep(event, ["type", "event_type", "eventType"])?.toLowerCase();
 }
 
 function buildTrackFocusSummary(
@@ -1090,22 +1144,6 @@ function buildTrackFocusSummary(
   return details.length > 0
     ? `${name} track was selected (${details.join(", ")}).`
     : `${name} track was selected.`;
-}
-
-function buildTrackFocusDetail(
-  event: Record<string, unknown>,
-  trackName?: string,
-): string | undefined {
-  const devices = readObjectArray(event, ["devices", "payload.devices", "data.devices"])
-    .map((device) => readStringDeep(device, ["name", "class_name"]))
-    .filter((name): name is string => Boolean(name))
-    .slice(0, 4);
-
-  if (devices.length > 0) {
-    return `${trackName ?? "Selected track"} devices: ${devices.join(", ")}.`;
-  }
-
-  return "Track focus changed inside Ableton.";
 }
 
 function buildLiveSetSummary(
@@ -1229,12 +1267,50 @@ function buildFileSummary(event: Record<string, unknown>): string {
   return "Ableton project file changed.";
 }
 
-function formatAtSongTime(songTime?: number): string {
+function formatAtArrangementPosition(songTime?: number): string {
   if (typeof songTime !== "number") {
     return "";
   }
 
-  return ` at ${formatNumber(songTime)} beats`;
+  return ` at ${formatArrangementPosition(songTime)}`;
+}
+
+function formatArrangementPosition(songTime: number): string {
+  const safeSongTime = Math.max(0, songTime);
+  const beatsPerBar = 4;
+  const bar = Math.floor(safeSongTime / beatsPerBar) + 1;
+  const beat = Math.floor(safeSongTime % beatsPerBar) + 1;
+  const subBeat = safeSongTime % 1;
+
+  if (subBeat > 0.05) {
+    return `Bar ${bar} Beat ${beat}.${Math.round(subBeat * 100)}`;
+  }
+
+  return `Bar ${bar} Beat ${beat}`;
+}
+
+function readMetadataNumber(
+  event: RecallTimelineMoment,
+  key: string,
+): number | null {
+  const value = event.metadata?.[key];
+  return typeof value === "number" ? value : null;
+}
+
+function readMetadataString(
+  event: RecallTimelineMoment,
+  key: string,
+): string | null {
+  const value = event.metadata?.[key];
+  return typeof value === "string" && value.trim() ? value : null;
+}
+
+function readMetadataBoolean(
+  event: RecallTimelineMoment,
+  key: string,
+): boolean | null {
+  const value = event.metadata?.[key];
+  return typeof value === "boolean" ? value : null;
 }
 
 function formatNumber(value: number): string {

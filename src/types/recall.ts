@@ -20,6 +20,8 @@ export type RecallEventType =
 export type RecallTimelineMoment = {
   id: string;
   type: RecallEventType;
+  rawEventType?: string;
+  timelineRole?: "creative" | "transport" | "context" | "debug";
   timestamp: number;
   sessionTimecode: string;
   summary: string;
@@ -28,6 +30,15 @@ export type RecallTimelineMoment = {
   deviceName?: string;
   source?: string;
   metadata?: Record<string, string | number | boolean | null>;
+};
+
+export type PlaybackState = {
+  playing: boolean | null;
+  tempo: number | null;
+  arrangementPosition: string | null;
+  rawSongTime: number | null;
+  selectedTrack: string | null;
+  lastUpdatedAt: number | null;
 };
 
 export type SavedSessionMetadata = {

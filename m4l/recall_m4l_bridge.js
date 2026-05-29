@@ -43,7 +43,7 @@ outlets = 2;
 var PROTOCOL = "recall.v2";
 var SOURCE = "max_for_live";
 var DEVICE_ID = "recall-m4l-bridge-dev";
-var BRIDGE_VERSION = "0.5.0";
+var BRIDGE_VERSION = "0.6.0";
 
 // Canonical v2 flat fields. emit() lifts any of these from its `fields` arg up
 // to the TOP LEVEL of the packet, because the Rust normalizer reads canonical
@@ -124,6 +124,15 @@ var lastPlayingState = null;
 var lastTempo = null;
 var lastSelectedTrackId = null;
 var lastFocusedTrackId = null;
+
+// Diff state for creative-action detection. We compare each focus snapshot of a
+// track against the previous snapshot of THE SAME track to emit discrete
+// device_added/removed and clip_created/deleted events. Keyed by track id so
+// switching tracks never produces false diffs. Why diff instead of LiveAPI
+// observers: live observers on many objects are a native-crash risk; diffing
+// reuses the already-hardened focus scan.
+var focusDeviceCacheByTrack = {};
+var focusClipCacheByTrack = {};
 
 post("Recall Studio M4L bridge JavaScript loaded (v" + BRIDGE_VERSION + ")\n");
 
@@ -280,7 +289,9 @@ function focus_tick() {
 
     if (captureFocus) {
         try {
-            send_selected_track_focus_if_selected_track_changed();
+            // Re-scan the selected track every tick (not only on track switch),
+            // so device/clip changes made while staying on a track are caught.
+            send_selected_track_focus_if_changed();
         } catch (error) {
             debug("focus scan failed: " + error);
         }
@@ -789,6 +800,12 @@ function collect_selected_track_focus_snapshot() {
 
 function send_selected_track_focus_if_changed() {
     var snapshot = collect_selected_track_focus_snapshot();
+
+    // Detect discrete creative actions BEFORE the snapshot dedup, so we emit
+    // device_added/clip_created etc. even though the bulky snapshot itself may
+    // be deduped away.
+    detect_focus_changes(snapshot);
+
     var fp = fingerprint(snapshot);
 
     if (fp === lastSelectedTrackFocusFingerprint) {
@@ -817,6 +834,108 @@ function send_selected_track_focus_if_selected_track_changed() {
     }
 
     send_selected_track_focus_if_changed();
+}
+
+// Diff a focus snapshot against the previous snapshot of the SAME track and
+// emit discrete creative-action events. The first snapshot of a track only
+// seeds the cache (no events) so pre-existing devices/clips don't fire as
+// "added" the moment you select a track.
+function detect_focus_changes(snapshot) {
+    if (!snapshot || !snapshot.available || !snapshot.id) {
+        return;
+    }
+
+    var trackKey = String(snapshot.id);
+    var trackName = snapshot.name;
+
+    var newDevices = build_id_name_map(snapshot.devices, "id", "name");
+    var newClips = build_clip_slot_map(snapshot.clips);
+
+    var hadDeviceBaseline = focusDeviceCacheByTrack.hasOwnProperty(trackKey);
+    var hadClipBaseline = focusClipCacheByTrack.hasOwnProperty(trackKey);
+
+    if (hadDeviceBaseline) {
+        var oldDevices = focusDeviceCacheByTrack[trackKey];
+
+        for (var newId in newDevices) {
+            if (newDevices.hasOwnProperty(newId) && !oldDevices.hasOwnProperty(newId)) {
+                emit("device_added", "Device Added", "A device was added to the selected track.",
+                    { track_name: trackName, device_name: newDevices[newId] },
+                    { track_name: trackName, device_name: newDevices[newId] });
+            }
+        }
+
+        for (var oldId in oldDevices) {
+            if (oldDevices.hasOwnProperty(oldId) && !newDevices.hasOwnProperty(oldId)) {
+                emit("device_removed", "Device Removed", "A device was removed from the selected track.",
+                    { track_name: trackName, device_name: oldDevices[oldId] },
+                    { track_name: trackName, device_name: oldDevices[oldId] });
+            }
+        }
+    }
+
+    if (hadClipBaseline) {
+        var oldClips = focusClipCacheByTrack[trackKey];
+
+        for (var newSlot in newClips) {
+            if (!newClips.hasOwnProperty(newSlot)) {
+                continue;
+            }
+            // New clip in a slot, or a different clip replacing the old one.
+            if (!oldClips.hasOwnProperty(newSlot) || oldClips[newSlot].id !== newClips[newSlot].id) {
+                emit("clip_created", "Clip Created", "A clip was created on the selected track.",
+                    { track_name: trackName, clip_name: newClips[newSlot].name },
+                    { track_name: trackName, clip_name: newClips[newSlot].name });
+            }
+        }
+
+        for (var oldSlot in oldClips) {
+            if (!oldClips.hasOwnProperty(oldSlot)) {
+                continue;
+            }
+            if (!newClips.hasOwnProperty(oldSlot)) {
+                emit("clip_deleted", "Clip Deleted", "A clip was deleted on the selected track.",
+                    { track_name: trackName, clip_name: oldClips[oldSlot].name },
+                    { track_name: trackName, clip_name: oldClips[oldSlot].name });
+            }
+        }
+    }
+
+    focusDeviceCacheByTrack[trackKey] = newDevices;
+    focusClipCacheByTrack[trackKey] = newClips;
+}
+
+function build_id_name_map(items, idKey, nameKey) {
+    var map = {};
+
+    if (items instanceof Array) {
+        for (var i = 0; i < items.length; i++) {
+            var item = items[i];
+            if (item && item[idKey] !== null && item[idKey] !== undefined) {
+                map[String(item[idKey])] = item[nameKey];
+            }
+        }
+    }
+
+    return map;
+}
+
+function build_clip_slot_map(clips) {
+    var map = {};
+
+    if (clips instanceof Array) {
+        for (var i = 0; i < clips.length; i++) {
+            var clip = clips[i];
+            if (clip && clip.slot_index !== null && clip.slot_index !== undefined) {
+                map[String(clip.slot_index)] = {
+                    id: clip.clip_id,
+                    name: clip.name
+                };
+            }
+        }
+    }
+
+    return map;
 }
 
 function collect_focus_devices_for_track(trackIndex, limit) {

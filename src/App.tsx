@@ -366,6 +366,10 @@ function App() {
           playback={playbackState}
           stats={stats}
           viewMode={viewMode}
+          curationEnabled={curationSessionId !== null}
+          onEditItem={curationActions.editItem}
+          onHideItem={curationActions.hideItem}
+          onAddNote={curationActions.addNote}
         />
       }
       analytics={<ProducerInsights events={creativeEvents} stats={stats} />}

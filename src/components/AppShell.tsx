@@ -45,12 +45,8 @@ export function AppShell({
   inspector,
   statusStrip,
 }: AppShellProps) {
-  function renderMain() {
-    if (surface === "timeline") return document;
-    if (surface === "analytics") return analytics;
-    return timeline;
-  }
-
+  // Document and analytics are self-contained, full-width views. Only capture
+  // is a true three-column workspace (rail + live stage + inspector).
   return (
     <main className={`recall-app recall-app--${surface}`}>
       <div className="ecosystem-background" aria-hidden="true">
@@ -98,6 +94,10 @@ export function AppShell({
         <div className="recall-frame__content">
           {surface === "home" ? (
             <div className="home-surface">{home}</div>
+          ) : surface === "timeline" ? (
+            <div className="document-surface">{document}</div>
+          ) : surface === "analytics" ? (
+            <div className="document-surface">{analytics}</div>
           ) : (
             <section
               className={`studio-layout studio-layout--${surface}`}
@@ -106,7 +106,7 @@ export function AppShell({
               <div className="ecosystem-pane ecosystem-pane--rail">{rail}</div>
 
               <div className="memory-workbench">
-                {renderMain()}
+                {timeline}
                 {statusStrip}
               </div>
 

@@ -1,6 +1,11 @@
 import { useMemo, useState } from "react";
 import type { PlaybackState, SessionStats, SessionViewMode } from "../types/recall";
-import type { SessionNote, TimelineItem } from "../types/timeline";
+import type {
+  AddNoteOptions,
+  EditItemPayload,
+  SessionNote,
+  TimelineItem,
+} from "../types/timeline";
 import { buildMarkdownDocument, deriveTempoRange } from "../lib/documentation/buildMarkdown";
 import { buildSessionInsights } from "../utils/sessionInsights";
 import { formatProducerMoment, producerEventIcon } from "../utils/producerEvents";
@@ -12,6 +17,10 @@ type SessionDocumentProps = {
   playback: PlaybackState;
   stats: SessionStats;
   viewMode: SessionViewMode;
+  curationEnabled: boolean;
+  onEditItem: (id: string, payload: EditItemPayload) => void;
+  onHideItem: (id: string) => void;
+  onAddNote: (text: string, options?: AddNoteOptions) => void;
 };
 
 export function SessionDocument({
@@ -20,8 +29,49 @@ export function SessionDocument({
   playback,
   stats,
   viewMode,
+  curationEnabled,
+  onEditItem,
+  onHideItem,
+  onAddNote,
 }: SessionDocumentProps) {
   const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editValue, setEditValue] = useState("");
+  const [notingId, setNotingId] = useState<string | null>(null);
+  const [noteValue, setNoteValue] = useState("");
+
+  function startEdit(id: string, current: string) {
+    setNotingId(null);
+    setEditingId(id);
+    setEditValue(current);
+  }
+
+  function commitEdit(item: TimelineItem) {
+    const trimmed = editValue.trim();
+    const fallback = formatProducerMoment(item.raw).title;
+    // Empty or unchanged-from-raw clears the override; otherwise store it.
+    onEditItem(item.id, { title: trimmed && trimmed !== fallback ? trimmed : null });
+    setEditingId(null);
+    setEditValue("");
+  }
+
+  function startNote(id: string) {
+    setEditingId(null);
+    setNotingId(id);
+    setNoteValue("");
+  }
+
+  function commitNote(item: TimelineItem) {
+    const trimmed = noteValue.trim();
+    if (trimmed) {
+      onAddNote(trimmed, {
+        linkedEventId: item.id,
+        sessionTimecode: item.raw.sessionTimecode,
+      });
+    }
+    setNotingId(null);
+    setNoteValue("");
+  }
 
   // Insights run on curated raw events — hidden items excluded.
   const curatedRawEvents = useMemo(
@@ -168,7 +218,24 @@ export function SessionDocument({
                           {producerEventIcon(item.raw.type)}
                         </span>
                         <div className="doc-event-content">
-                          <strong>{displayTitle}</strong>
+                          {editingId === item.id ? (
+                            <input
+                              className="doc-edit-input"
+                              value={editValue}
+                              autoFocus
+                              onChange={(e) => setEditValue(e.target.value)}
+                              onBlur={() => commitEdit(item)}
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter") commitEdit(item);
+                                if (e.key === "Escape") {
+                                  setEditingId(null);
+                                  setEditValue("");
+                                }
+                              }}
+                            />
+                          ) : (
+                            <strong>{displayTitle}</strong>
+                          )}
                           {displayDetail && <p>{displayDetail}</p>}
 
                           {item.notes.length > 0 && (
@@ -180,7 +247,48 @@ export function SessionDocument({
                               ))}
                             </div>
                           )}
+
+                          {notingId === item.id && (
+                            <textarea
+                              className="doc-note-input"
+                              value={noteValue}
+                              autoFocus
+                              placeholder="Add a note for this moment…"
+                              onChange={(e) => setNoteValue(e.target.value)}
+                              onBlur={() => commitNote(item)}
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                                  commitNote(item);
+                                }
+                                if (e.key === "Escape") {
+                                  setNotingId(null);
+                                  setNoteValue("");
+                                }
+                              }}
+                            />
+                          )}
                         </div>
+
+                        {curationEnabled && (
+                          <div className="doc-event-actions">
+                            <button
+                              type="button"
+                              onClick={() => startEdit(item.id, displayTitle)}
+                            >
+                              Rename
+                            </button>
+                            <button type="button" onClick={() => startNote(item.id)}>
+                              Note
+                            </button>
+                            <button
+                              type="button"
+                              className="doc-event-actions__hide"
+                              onClick={() => onHideItem(item.id)}
+                            >
+                              Hide
+                            </button>
+                          </div>
+                        )}
                       </div>
                     </li>
                   );

@@ -43,6 +43,9 @@ const BACKEND_START_NEW_SESSION_COMMAND = "start_new_session";
 const BACKEND_DELETE_SESSION_COMMAND = "delete_saved_session";
 
 const POLL_INTERVAL_MS = 1000;
+// How often buffered live events are flushed into React state. Low enough to
+// feel real-time, high enough to collapse bursts into a single re-render.
+const LIVE_FLUSH_INTERVAL_MS = 150;
 
 function App() {
   const [surface, setSurface] = useState<AppSurface>("home");
@@ -60,6 +63,17 @@ function App() {
   const [viewMode, setViewMode] = useState<SessionViewMode>("live");
   const [eventCommandAvailable, setEventCommandAvailable] = useState(true);
   const liveSessionStartedAtRef = useRef<number | null>(null);
+  // Live ingestion is batched: UDP events can arrive faster than React can
+  // re-render, and every render rebuilds the whole creative timeline + stats.
+  // We dedup with an O(1) id set and buffer arrivals, then flush in batches on
+  // an interval so render cost is bounded by flush rate, not event rate.
+  const seenLiveIdsRef = useRef<Set<string>>(new Set());
+  const pendingLiveEventsRef = useRef<RecallTimelineMoment[]>([]);
+
+  function resetLiveEventTracking() {
+    seenLiveIdsRef.current = new Set();
+    pendingLiveEventsRef.current = [];
+  }
 
   const activeSession = useMemo(
     () => savedSessions.find((s) => s.ended_at_ms === null) ?? null,
@@ -116,6 +130,10 @@ function App() {
               normalizeBackendEvent(rawEvent, index, liveSessionStartedAtRef),
             )
             .filter((e): e is RecallTimelineMoment => e !== null);
+          // Seed the dedup set so streamed events that overlap the buffer are
+          // ignored without an O(n) scan.
+          seenLiveIdsRef.current = new Set(normalized.map((e) => e.id));
+          pendingLiveEventsRef.current = [];
           setLiveEvents(normalized);
         }
       } catch (error) {
@@ -136,17 +154,27 @@ function App() {
           liveSessionStartedAtRef,
         );
         if (!normalized) return;
-        setLiveEvents((prev) => {
-          if (prev.some((e) => e.id === normalized.id)) return prev;
-          return [...prev, normalized];
-        });
+        // O(1) dedup; buffer for the next flush instead of setting state now.
+        if (seenLiveIdsRef.current.has(normalized.id)) return;
+        seenLiveIdsRef.current.add(normalized.id);
+        pendingLiveEventsRef.current.push(normalized);
       });
     }
 
     setup();
 
+    // Drain buffered events into state in batches, collapsing event bursts into
+    // a single re-render so the per-event cost stays bounded under heavy load.
+    const flushInterval = window.setInterval(() => {
+      if (pendingLiveEventsRef.current.length === 0) return;
+      const batch = pendingLiveEventsRef.current;
+      pendingLiveEventsRef.current = [];
+      setLiveEvents((prev) => prev.concat(batch));
+    }, LIVE_FLUSH_INTERVAL_MS);
+
     return () => {
       unlisten?.();
+      window.clearInterval(flushInterval);
     };
   }, [eventCommandAvailable]);
 
@@ -257,6 +285,7 @@ function App() {
     try {
       await invoke(BACKEND_START_NEW_SESSION_COMMAND);
       liveSessionStartedAtRef.current = null;
+      resetLiveEventTracking();
       setLiveEvents([]);
       setSavedEvents([]);
       setSelectedSessionId(null);
@@ -305,6 +334,7 @@ function App() {
 
       if (session?.ended_at_ms === null) {
         liveSessionStartedAtRef.current = null;
+        resetLiveEventTracking();
         setLiveEvents([]);
         setViewMode("live");
       }

@@ -8,7 +8,13 @@ import type {
 } from "../types/timeline";
 import { buildMarkdownDocument, deriveTempoRange } from "../lib/documentation/buildMarkdown";
 import { buildSessionInsights } from "../utils/sessionInsights";
-import { formatProducerMoment, producerEventIcon } from "../utils/producerEvents";
+import {
+  categoryForEvent,
+  formatProducerMoment,
+  labelForCategory,
+  producerEventIcon,
+  type ProducerEventCategory,
+} from "../utils/producerEvents";
 import { RecallMark } from "./RecallMark";
 
 type SessionDocumentProps = {
@@ -41,6 +47,22 @@ export function SessionDocument({
   const [editValue, setEditValue] = useState("");
   const [notingId, setNotingId] = useState<string | null>(null);
   const [noteValue, setNoteValue] = useState("");
+  // Empty set = show everything. Otherwise only the selected categories render.
+  const [activeFilters, setActiveFilters] = useState<Set<ProducerEventCategory>>(
+    () => new Set(),
+  );
+
+  function toggleFilter(category: ProducerEventCategory) {
+    setActiveFilters((prev) => {
+      const next = new Set(prev);
+      if (next.has(category)) {
+        next.delete(category);
+      } else {
+        next.add(category);
+      }
+      return next;
+    });
+  }
 
   function startEdit(id: string, current: string) {
     setNotingId(null);
@@ -115,6 +137,28 @@ export function SessionDocument({
     () => buildActivityBreakdown(visibleItems),
     [visibleItems],
   );
+
+  // Filter options are derived from what's actually in the curated timeline, so
+  // chips never offer a category with zero moments.
+  const filterOptions = useMemo(() => {
+    const counts = new Map<ProducerEventCategory, number>();
+    for (const item of visibleItems) {
+      const category = categoryForEvent(item.raw.type);
+      counts.set(category, (counts.get(category) ?? 0) + 1);
+    }
+    return [...counts.entries()]
+      .map(([category, count]) => ({ category, count }))
+      .sort((a, b) => b.count - a.count);
+  }, [visibleItems]);
+
+  const filteredItems = useMemo(() => {
+    if (activeFilters.size === 0) {
+      return visibleItems;
+    }
+    return visibleItems.filter((item) =>
+      activeFilters.has(categoryForEvent(item.raw.type)),
+    );
+  }, [visibleItems, activeFilters]);
 
   async function handleCopyMarkdown() {
     try {
@@ -196,14 +240,42 @@ export function SessionDocument({
           <section className="document-section">
             <h2>Timeline</h2>
 
+            {filterOptions.length > 0 && (
+              <div className="document-filters" role="group" aria-label="Filter timeline by type">
+                <button
+                  type="button"
+                  className={`document-filter ${activeFilters.size === 0 ? "is-active" : ""}`}
+                  onClick={() => setActiveFilters(new Set())}
+                >
+                  All
+                  <span className="document-filter__count">{visibleItems.length}</span>
+                </button>
+                {filterOptions.map(({ category, count }) => (
+                  <button
+                    key={category}
+                    type="button"
+                    className={`document-filter ${activeFilters.has(category) ? "is-active" : ""}`}
+                    onClick={() => toggleFilter(category)}
+                  >
+                    {labelForCategory(category)}
+                    <span className="document-filter__count">{count}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+
             {visibleItems.length === 0 ? (
               <p className="document-empty">
                 No creative moments in the curated timeline yet. Capture events
                 in Ableton to build this document.
               </p>
+            ) : filteredItems.length === 0 ? (
+              <p className="document-empty">
+                No moments match the active filters.
+              </p>
             ) : (
               <ol className="document-timeline">
-                {visibleItems.map((item) => {
+                {filteredItems.map((item) => {
                   const p = formatProducerMoment(item.raw);
                   const displayTitle = item.edits.title ?? p.title;
                   const displayDetail = item.edits.description ?? p.detail;

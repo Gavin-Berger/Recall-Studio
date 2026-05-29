@@ -43,7 +43,7 @@ outlets = 2;
 var PROTOCOL = "recall.v2";
 var SOURCE = "max_for_live";
 var DEVICE_ID = "recall-m4l-bridge-dev";
-var BRIDGE_VERSION = "0.6.0";
+var BRIDGE_VERSION = "0.7.0";
 
 // Canonical v2 flat fields. emit() lifts any of these from its `fields` arg up
 // to the TOP LEVEL of the packet, because the Rust normalizer reads canonical
@@ -57,6 +57,7 @@ var CANONICAL_FIELDS = [
     "parameter_value_min",
     "parameter_value_max",
     "clip_name",
+    "device_chain",
     "bpm",
     "playing"
 ];
@@ -133,6 +134,11 @@ var lastFocusedTrackId = null;
 // reuses the already-hardened focus scan.
 var focusDeviceCacheByTrack = {};
 var focusClipCacheByTrack = {};
+
+// Last emitted device-chain string per track ("Serum 2 : Saturator : Vocoder").
+// Lets us emit a device_chain_changed event only when the ordered chain of
+// device names on a track actually changes, instead of on every focus scan.
+var lastDeviceChainByTrack = {};
 
 post("Recall Studio M4L bridge JavaScript loaded (v" + BRIDGE_VERSION + ")\n");
 
@@ -772,6 +778,11 @@ function collect_selected_track_focus_snapshot() {
     var deviceCount = get_count(track, "devices", 0);
     var clipSlotCount = get_count(track, "clip_slots", 0);
 
+    var devices = collect_focus_devices_for_track(
+        selectedTrackIndex,
+        Math.min(deviceCount, MAX_FOCUS_DEVICES)
+    );
+
     return {
         available: true,
         id: selectedTrackId,
@@ -787,15 +798,43 @@ function collect_selected_track_focus_snapshot() {
         fold_state: isFoldable ? get_prop(track, "fold_state", null) : null,
         device_count: deviceCount,
         clip_slot_count: clipSlotCount,
-        devices: collect_focus_devices_for_track(
-            selectedTrackIndex,
-            Math.min(deviceCount, MAX_FOCUS_DEVICES)
-        ),
+        device_chain: build_device_chain(devices),
+        devices: devices,
         clips: collect_focus_clips_for_track(
             selectedTrackIndex,
             Math.min(clipSlotCount, MAX_FOCUS_CLIP_SLOTS)
         )
     };
+}
+
+// Build the producer-readable signal chain for a track as an ordered, colon-
+// separated string of device names — e.g. "Serum 2 : Saturator : Vocoder".
+// Why device.name (not class_name): name is what the producer sees in Live's
+// title bar, including VST/AU plugin display names and any user rename, so it
+// matches what they'd recognise. class_name is the internal type id ("Operator",
+// "PluginDevice") and would read wrong for plugins. Empty/unnamed devices are
+// skipped so a half-loaded chain never emits stray separators.
+function build_device_chain(devices) {
+    if (!(devices instanceof Array) || devices.length === 0) {
+        return null;
+    }
+
+    var names = [];
+
+    for (var i = 0; i < devices.length; i++) {
+        var device = devices[i];
+        var name = device && device.name ? String(device.name) : "";
+
+        if (name && name.length > 0) {
+            names.push(name);
+        }
+    }
+
+    if (names.length === 0) {
+        return null;
+    }
+
+    return names.join(" : ");
 }
 
 function send_selected_track_focus_if_changed() {
@@ -847,6 +886,7 @@ function detect_focus_changes(snapshot) {
 
     var trackKey = String(snapshot.id);
     var trackName = snapshot.name;
+    var chain = snapshot.device_chain || null;
 
     var newDevices = build_id_name_map(snapshot.devices, "id", "name");
     var newClips = build_clip_slot_map(snapshot.clips);
@@ -860,19 +900,33 @@ function detect_focus_changes(snapshot) {
         for (var newId in newDevices) {
             if (newDevices.hasOwnProperty(newId) && !oldDevices.hasOwnProperty(newId)) {
                 emit("device_added", "Device Added", "A device was added to the selected track.",
-                    { track_name: trackName, device_name: newDevices[newId] },
-                    { track_name: trackName, device_name: newDevices[newId] });
+                    { track_name: trackName, device_name: newDevices[newId], device_chain: chain },
+                    { track_name: trackName, device_name: newDevices[newId], device_chain: chain });
             }
         }
 
         for (var oldId in oldDevices) {
             if (oldDevices.hasOwnProperty(oldId) && !newDevices.hasOwnProperty(oldId)) {
                 emit("device_removed", "Device Removed", "A device was removed from the selected track.",
-                    { track_name: trackName, device_name: oldDevices[oldId] },
-                    { track_name: trackName, device_name: oldDevices[oldId] });
+                    { track_name: trackName, device_name: oldDevices[oldId], device_chain: chain },
+                    { track_name: trackName, device_name: oldDevices[oldId], device_chain: chain });
             }
         }
     }
+
+    // Emit the full signal chain whenever its ordered string changes (device
+    // added, removed, or reordered). Seeded silently on the first snapshot of a
+    // track so an unchanged pre-existing chain never fires on track select.
+    var hadChainBaseline = lastDeviceChainByTrack.hasOwnProperty(trackKey);
+
+    if (hadChainBaseline && chain && lastDeviceChainByTrack[trackKey] !== chain) {
+        emit("device_chain_changed", "Signal Chain Changed",
+            "The device chain on the selected track changed.",
+            { track_name: trackName, device_chain: chain },
+            { track_name: trackName, device_chain: chain });
+    }
+
+    lastDeviceChainByTrack[trackKey] = chain;
 
     if (hadClipBaseline) {
         var oldClips = focusClipCacheByTrack[trackKey];

@@ -91,6 +91,7 @@ fn title_for_event_type(event_type: &str) -> String {
 
         "device_added" => "Device Added".to_string(),
         "device_removed" => "Device Removed".to_string(),
+        "device_chain_changed" => "Signal Chain Changed".to_string(),
         "device_event" => "Device Event".to_string(),
         "device_selected" => "Device Selected".to_string(),
         "device_parameter_changed" | "parameter_changed" => "Parameter Changed".to_string(),
@@ -140,6 +141,7 @@ fn description_for_event_type(event_type: &str) -> String {
 
         "device_added" => "A device was added to the chain.".to_string(),
         "device_removed" => "A device was removed from the chain.".to_string(),
+        "device_chain_changed" => "The device chain on the selected track changed.".to_string(),
         "device_event" => "Ableton device event received.".to_string(),
         "device_selected" => "Ableton selected device changed.".to_string(),
         "device_parameter_changed" | "parameter_changed" => {
@@ -319,6 +321,7 @@ fn normalize_udp_json(mut value: Value) -> Result<Value, String> {
         &["parameter_name", "parameter", "param_name", "param"],
     );
     let clip_name = find_string(object, payload_obj, &["clip_name", "clip"]);
+    let device_chain = find_string(object, payload_obj, &["device_chain", "chain"]);
     let bpm = find_f64(object, payload_obj, &["bpm", "tempo"]);
     let playing = find_bool(object, payload_obj, &["playing", "is_playing"]);
     let parameter_value = find_f64(
@@ -345,6 +348,10 @@ fn normalize_udp_json(mut value: Value) -> Result<Value, String> {
     match clip_name {
         Some(v) => object.insert("clip_name".to_string(), Value::String(v)),
         None => object.insert("clip_name".to_string(), Value::Null),
+    };
+    match device_chain {
+        Some(v) => object.insert("device_chain".to_string(), Value::String(v)),
+        None => object.insert("device_chain".to_string(), Value::Null),
     };
     match bpm {
         Some(v) => object.insert("bpm".to_string(), json!(v)),

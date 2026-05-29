@@ -42,6 +42,7 @@ export type RecallTimelineMoment = {
   groupName?: string;
   groupPath?: string[];
   deviceName?: string;
+  deviceChain?: string;
   source?: string;
   metadata?: Record<string, RecallMetadataValue>;
 };

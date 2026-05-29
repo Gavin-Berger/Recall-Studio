@@ -108,6 +108,7 @@ export function formatProducerMoment(
     readString(event.metadata?.group) ??
     (groupPath?.length ? groupPath[groupPath.length - 1] : undefined);
   const device = event.deviceName ?? readString(event.metadata?.device);
+  const deviceChain = event.deviceChain ?? readString(event.metadata?.deviceChain);
   const parameter = readString(event.metadata?.parameter);
   const clip = readString(event.metadata?.clip);
   const position = readString(event.metadata?.arrangementPosition);
@@ -136,10 +137,29 @@ export function formatProducerMoment(
         : "A track group became part of the session focus.";
       break;
 
-    case "device":
-      title = device ? "Device activity" : "Device changed";
-      detail = buildDeviceDetail(device, track, groupText);
+    case "device": {
+      const rawType = event.rawEventType?.toLowerCase();
+      const where = track ? (groupText ? `"${track}" inside ${groupText}` : `"${track}"`) : null;
+
+      if (rawType === "device_chain_changed") {
+        title = "Signal chain changed";
+        detail = deviceChain
+          ? where
+            ? `Chain on ${where} is now ${deviceChain}.`
+            : `Signal chain is now ${deviceChain}.`
+          : "The device chain on the selected track changed.";
+      } else if (rawType === "device_added") {
+        title = device ? `Added ${device}` : "Device added";
+        detail = buildChainEdit("Added", device, where, deviceChain);
+      } else if (rawType === "device_removed") {
+        title = device ? `Removed ${device}` : "Device removed";
+        detail = buildChainEdit("Removed", device, where, deviceChain);
+      } else {
+        title = device ? "Device activity" : "Device changed";
+        detail = buildDeviceDetail(device, track, groupText);
+      }
       break;
+    }
 
     case "parameter":
       title = parameter ? "Parameter changed" : "Control changed";
@@ -203,6 +223,7 @@ export function formatProducerMoment(
       groupText,
       track,
       device,
+      deviceChain,
       parameter,
       clip,
       tempo,
@@ -284,7 +305,7 @@ function isMeaningfulStateChange(event: RecallTimelineMoment): boolean {
   );
 }
 
-function labelForCategory(category: ProducerEventCategory): string {
+export function labelForCategory(category: ProducerEventCategory): string {
   switch (category) {
     case "track":
       return "Track";
@@ -333,6 +354,19 @@ function buildDeviceDetail(
   }
 
   return "Device-level session activity was captured.";
+}
+
+function buildChainEdit(
+  verb: "Added" | "Removed",
+  device?: string,
+  where?: string | null,
+  chain?: string,
+): string {
+  const base = device
+    ? `${verb} ${device}${where ? ` on ${where}` : ""}.`
+    : `${verb} a device${where ? ` on ${where}` : ""}.`;
+
+  return chain ? `${base} Chain: ${chain}.` : base;
 }
 
 function buildParameterDetail(
@@ -404,6 +438,7 @@ function buildProducerPills(input: {
   groupText?: string;
   track?: string;
   device?: string;
+  deviceChain?: string;
   parameter?: string;
   clip?: string;
   tempo?: string;
@@ -416,6 +451,7 @@ function buildProducerPills(input: {
   addPill(pills, "Group", input.groupText);
   addPill(pills, "Track", input.track);
   addPill(pills, "Device", input.device);
+  addPill(pills, "Chain", input.deviceChain);
   addPill(pills, "Parameter", input.parameter);
   addPill(pills, "Clip", input.clip);
   addPill(pills, "Tempo", input.tempo);

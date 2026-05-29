@@ -32,6 +32,10 @@ pub struct RecallEvent {
     pub parameter_value: Option<f64>,
     #[serde(default)]
     pub clip_name: Option<String>,
+    // Ordered, colon-separated device chain for the selected track, e.g.
+    // "Serum 2 : Saturator : Vocoder". Read straight from Ableton via the bridge.
+    #[serde(default)]
+    pub device_chain: Option<String>,
     #[serde(default)]
     pub bpm: Option<f64>,
     #[serde(default)]

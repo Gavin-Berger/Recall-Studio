@@ -411,6 +411,7 @@ type BackendEvent = {
   parameter_name?: string | null;
   parameter_value?: number | null;
   clip_name?: string | null;
+  device_chain?: string | null;
   bpm?: number | null;
   playing?: boolean | null;
   // Retain raw payload and legacy fields for backwards compatibility
@@ -530,6 +531,12 @@ function normalizeBackendEvent(
       ? raw.clip_name
       : readStringDeep(event, ["clip", "clip_name", "payload.clip_name", "payload.clip"]);
 
+  // Top-level for live events; payload fallback for saved sessions (no column).
+  const deviceChain =
+    typeof raw.device_chain === "string"
+      ? raw.device_chain
+      : readStringDeep(event, ["device_chain", "payload.device_chain", "chain", "payload.chain"]);
+
   const bpm =
     typeof raw.bpm === "number"
       ? raw.bpm
@@ -602,9 +609,10 @@ function normalizeBackendEvent(
     groupName,
     groupPath,
     deviceName,
+    deviceChain,
     source,
     metadata: buildMetadata(event, {
-      trackName, groupName, groupPath, deviceName,
+      trackName, groupName, groupPath, deviceName, deviceChain,
       parameterName, clipName, bpm, previousBpm, state,
       playing, songTime, projectTimeSeconds,
     }),
@@ -1007,6 +1015,7 @@ function buildMetadata(
     groupName?: string;
     groupPath?: string[];
     deviceName?: string;
+    deviceChain?: string;
     parameterName?: string;
     clipName?: string;
     bpm?: number;
@@ -1025,6 +1034,7 @@ function buildMetadata(
   if (known.groupName) metadata.group = known.groupName;
   if (known.groupPath?.length) metadata.groupPath = known.groupPath;
   if (known.deviceName) metadata.device = known.deviceName;
+  if (known.deviceChain) metadata.deviceChain = known.deviceChain;
   if (known.parameterName) metadata.parameter = known.parameterName;
   if (known.clipName) metadata.clip = known.clipName;
   if (typeof known.previousBpm === "number") metadata.previousBpm = known.previousBpm;

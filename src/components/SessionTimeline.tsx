@@ -16,6 +16,14 @@ import { ActivityBlockCard } from "./ActivityBlock";
 
 type TimelineViewStyle = "blocks" | "raw";
 
+// How many raw-event rows to mount at once. A long session can accumulate tens
+// of thousands of curated moments; each one is a rich interactive TimelineEvent
+// (edit/note/hide controls), so mounting them all freezes the app. We render
+// only the most recent window (the live edge is what producers watch) and let
+// them reveal older batches on demand. Blocks view is already aggregated, so it
+// needs no cap.
+const RAW_RENDER_STEP = 200;
+
 type SessionTimelineProps = {
   connection: ConnectionStatus;
   items: TimelineItem[];
@@ -67,6 +75,7 @@ export function SessionTimeline({
   const [activeFilter, setActiveFilter] = useState<TimelineFilter>("all");
   const [searchQuery, setSearchQuery] = useState("");
   const [showHidden, setShowHidden] = useState(false);
+  const [rawRenderLimit, setRawRenderLimit] = useState(RAW_RENDER_STEP);
 
   const hiddenItems = useMemo(
     () => allItems.filter((item) => item.isHidden),
@@ -100,6 +109,20 @@ export function SessionTimeline({
       );
     });
   }, [filteredItems, searchQuery]);
+
+  // Window the raw stream to the most recent rawRenderLimit items (the tail,
+  // since events are oldest-first and the live edge is newest). Older moments
+  // stay one click away rather than all mounting at once.
+  const windowedItems = useMemo(() => {
+    if (displayItems.length <= rawRenderLimit) return displayItems;
+    return displayItems.slice(displayItems.length - rawRenderLimit);
+  }, [displayItems, rawRenderLimit]);
+
+  const olderHiddenCount = displayItems.length - windowedItems.length;
+
+  // Collapsing the visible set (changing filter/search) should reset the window
+  // so the user isn't stranded scrolled past a now-shorter list.
+  const resetRawWindow = () => setRawRenderLimit(RAW_RENDER_STEP);
 
   const activityLanes = useMemo(
     () => buildActivityLanes(rawEvents),
@@ -176,7 +199,10 @@ export function SessionTimeline({
             type="text"
             className="timeline-search__input"
             value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
+            onChange={(e) => {
+              setSearchQuery(e.target.value);
+              resetRawWindow();
+            }}
             placeholder="Search timeline…"
             aria-label="Search timeline"
           />
@@ -185,7 +211,10 @@ export function SessionTimeline({
               type="button"
               className="timeline-search__clear"
               aria-label="Clear search"
-              onClick={() => setSearchQuery("")}
+              onClick={() => {
+                setSearchQuery("");
+                resetRawWindow();
+              }}
             >
               ×
             </button>
@@ -200,7 +229,10 @@ export function SessionTimeline({
               className={`timeline-filter ${
                 activeFilter === filter.id ? "is-active" : ""
               }`}
-              onClick={() => setActiveFilter(filter.id)}
+              onClick={() => {
+                setActiveFilter(filter.id);
+                resetRawWindow();
+              }}
             >
               {filter.label}
               <span>{countItemsForFilter(items, filter.id)}</span>
@@ -248,17 +280,31 @@ export function SessionTimeline({
                 <p>No events match this filter{searchQuery ? " and search" : ""}.</p>
               </div>
             ) : (
-              displayItems.map((item) => (
-                <TimelineEvent
-                  key={item.id}
-                  item={item}
-                  isSelected={selectedEventId === item.id}
-                  onSelect={onSelectEvent}
-                  onHide={onHideItem}
-                  onEdit={onEditItem}
-                  onAddNote={onAddNote}
-                />
-              ))
+              <>
+                {olderHiddenCount > 0 && (
+                  <button
+                    type="button"
+                    className="timeline-load-older"
+                    onClick={() =>
+                      setRawRenderLimit((limit) => limit + RAW_RENDER_STEP)
+                    }
+                  >
+                    Load {Math.min(olderHiddenCount, RAW_RENDER_STEP)} older
+                    <span>{olderHiddenCount} earlier moments hidden</span>
+                  </button>
+                )}
+                {windowedItems.map((item) => (
+                  <TimelineEvent
+                    key={item.id}
+                    item={item}
+                    isSelected={selectedEventId === item.id}
+                    onSelect={onSelectEvent}
+                    onHide={onHideItem}
+                    onEdit={onEditItem}
+                    onAddNote={onAddNote}
+                  />
+                ))}
+              </>
             )
           )}
 

@@ -43,7 +43,7 @@ outlets = 2;
 var PROTOCOL = "recall.v2";
 var SOURCE = "max_for_live";
 var DEVICE_ID = "recall-m4l-bridge-dev";
-var BRIDGE_VERSION = "0.7.0";
+var BRIDGE_VERSION = "0.7.1";
 
 // Canonical v2 flat fields. emit() lifts any of these from its `fields` arg up
 // to the TOP LEVEL of the packet, because the Rust normalizer reads canonical
@@ -1002,8 +1002,16 @@ function collect_focus_devices_for_track(trackIndex, limit) {
             continue;
         }
 
-        var parameterCount = get_count(device, "parameters", 0);
-
+        // Parameter values are deliberately NOT collected here. The periodic
+        // focus scan runs while the producer plays and edits, and pulling every
+        // device's parameters (up to MAX_FOCUS_DEVICES * MAX_FOCUS_PARAMETERS_PER_DEVICE
+        // LiveAPI reads per tick) on Max's main thread is the dominant source of
+        // the audio/UI lag — and nothing downstream consumes the values. Worse,
+        // parameter values change continuously during playback, so including them
+        // busted the snapshot dedup and forced a full re-emit every tick. We keep
+        // only the cheap structural fields the timeline actually uses (name drives
+        // the device chain). Deep parameter capture still exists on demand via
+        // the manual deep_session_snapshot path.
         devices.push({
             index: i,
             id: normalize_id(device.id),
@@ -1011,12 +1019,7 @@ function collect_focus_devices_for_track(trackIndex, limit) {
             class_name: value_to_string(get_prop(device, "class_name", null)),
             type: get_prop(device, "type", null),
             is_active: value_to_bool(get_prop(device, "is_active", 0)),
-            parameter_count: parameterCount,
-            main_parameters: collect_focus_parameters_for_device(
-                trackIndex,
-                i,
-                Math.min(parameterCount, MAX_FOCUS_PARAMETERS_PER_DEVICE)
-            )
+            parameter_count: get_count(device, "parameters", 0)
         });
     }
 

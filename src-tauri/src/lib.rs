@@ -1,8 +1,10 @@
+mod metrics;
 mod protocol;
 mod session;
 mod storage;
 mod udp_listener;
 
+use metrics::{BridgeMetrics, BridgeMetricsSnapshot};
 use protocol::RecallEvent;
 use session::{SavedSession, SavedSessionMetadata, SessionState, SessionStatus};
 use std::sync::{Arc, Mutex};
@@ -15,6 +17,7 @@ struct AppState {
     recent_events: Arc<Mutex<Vec<RecallEvent>>>,
     session: Arc<Mutex<SessionState>>,
     storage: Arc<Mutex<StorageState>>,
+    metrics: Arc<BridgeMetrics>,
 }
 
 #[tauri::command]
@@ -124,6 +127,11 @@ fn get_session_status(state: State<'_, AppState>) -> SessionStatus {
     );
 
     status
+}
+
+#[tauri::command]
+fn get_bridge_metrics(state: State<'_, AppState>) -> BridgeMetricsSnapshot {
+    state.metrics.snapshot()
 }
 
 #[tauri::command]
@@ -343,10 +351,13 @@ pub fn run() {
 
     let storage_state = Arc::new(Mutex::new(StorageState::new()));
 
+    let bridge_metrics = BridgeMetrics::new();
+
     let connection_state_for_setup = connection_state.clone();
     let recent_events_for_setup = recent_events.clone();
     let session_state_for_setup = session_state.clone();
     let storage_state_for_setup = storage_state.clone();
+    let bridge_metrics_for_setup = bridge_metrics.clone();
 
     println!("Starting Recall Studio backend...");
 
@@ -407,6 +418,7 @@ pub fn run() {
                 session_state_for_setup.clone(),
                 storage_state_for_setup.clone(),
                 app.handle().clone(),
+                bridge_metrics_for_setup.clone(),
             );
 
             Ok(())
@@ -416,6 +428,7 @@ pub fn run() {
             recent_events,
             session: session_state,
             storage: storage_state,
+            metrics: bridge_metrics,
         })
         .invoke_handler(tauri::generate_handler![
             get_connection_status,
@@ -423,6 +436,7 @@ pub fn run() {
             start_session,
             stop_session,
             get_session_status,
+            get_bridge_metrics,
             get_storage_status,
             list_saved_sessions,
             load_session_events,

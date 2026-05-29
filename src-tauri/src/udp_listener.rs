@@ -1,3 +1,4 @@
+use crate::metrics::BridgeMetrics;
 use crate::protocol::RecallEvent;
 use crate::session::SessionState;
 use crate::storage::StorageState;
@@ -5,13 +6,63 @@ use serde::Serialize;
 use serde_json::{json, Map, Value};
 use std::{
     net::UdpSocket,
-    sync::{Arc, Mutex},
+    sync::{
+        mpsc::{sync_channel, SyncSender, TrySendError},
+        Arc, Mutex,
+    },
     thread,
     time::{SystemTime, UNIX_EPOCH},
 };
 use tauri::{AppHandle, Emitter};
 
 const VERBOSE_UDP_LOGGING: bool = false;
+
+// Receive buffer must exceed the bridge's MAX_EVENT_BYTES (8192) so a large but
+// legal snapshot is never truncated mid-JSON into an unparseable packet.
+const RECV_BUFFER_BYTES: usize = 16_384;
+
+// Bounded queue between the receive loop and the persistence worker. Sized to
+// absorb multi-hundred-event bursts while the worker drains. When full, the
+// enqueue policy (see classify/enqueue) protects critical creative events and
+// sheds only coalescible noise.
+const EVENT_QUEUE_CAPACITY: usize = 4_096;
+
+// Max events drained and persisted in one transaction by the worker.
+const PERSIST_BATCH_MAX: usize = 256;
+
+// Hard ceiling on the in-memory live buffer so a marathon session can't grow
+// memory without bound. The DB is authoritative; the frontend reloads saved
+// sessions from SQLite, so trimming the oldest live events is safe.
+const LIVE_BUFFER_MAX: usize = 50_000;
+
+// Event priority for graceful overload. Critical creative actions must never be
+// dropped; coalescible high-frequency telemetry is the first to shed when the
+// queue is saturated.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EventPriority {
+    Critical,
+    Important,
+    Coalescible,
+}
+
+fn classify_priority(event_type: &str) -> EventPriority {
+    match event_type {
+        // Discrete creative actions and lifecycle — must always be captured.
+        "track_created" | "track_deleted" | "track_name_changed" | "clip_created"
+        | "clip_deleted" | "clip_recording_started" | "clip_recording_stopped" | "device_added"
+        | "device_removed" | "device_chain_changed" | "creative_decision" | "bridge_started"
+        | "bridge_stopped" | "session_snapshot" => EventPriority::Critical,
+
+        // Meaningful context worth keeping unless truly saturated.
+        "tempo_changed" | "transport_play" | "transport_stop" | "scene_launched"
+        | "clip_launched" | "device_selected" | "project_file_changed" | "live_set_snapshot" => {
+            EventPriority::Important
+        }
+
+        // High-frequency / re-derivable telemetry — safe to shed under pressure.
+        _ => EventPriority::Coalescible,
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct ConnectionState {
@@ -402,9 +453,13 @@ fn push_event(events: &Arc<Mutex<Vec<RecallEvent>>>, event: RecallEvent) {
 
     recent_events.push(event);
 
-    // No cap — the buffer holds all events for the current live session.
-    // Cleared when a new session starts. Sessions are hours long at most,
-    // so memory cost is negligible (each event is ~200 bytes on average).
+    // Bound the live buffer. The DB is authoritative and the frontend reloads
+    // saved sessions from SQLite, so trimming the oldest live events caps memory
+    // without losing durable data.
+    if recent_events.len() > LIVE_BUFFER_MAX {
+        let overflow = recent_events.len() - LIVE_BUFFER_MAX;
+        recent_events.drain(0..overflow);
+    }
 
     if VERBOSE_UDP_LOGGING {
         println!("EVENT QUEUE UPDATED -> {} events", recent_events.len());
@@ -425,33 +480,97 @@ fn assign_session_if_active(event: &mut RecallEvent, session: &Arc<Mutex<Session
     }
 }
 
-fn persist_event_if_session_owned(event: &mut RecallEvent, storage: &Arc<Mutex<StorageState>>) {
-    // Heartbeats are connection-health signals — never persisted.
-    // They generate ~3600 useless rows per hour and contain no creative information.
-    if event.event_type == "heartbeat" {
-        return;
-    }
+// Drains the queue, persists in batches on a single connection, stamps stable
+// ids, then pushes to the live buffer and emits to the frontend. Runs on its own
+// thread so no SQLite work or emit ever blocks the UDP receive loop.
+fn run_persistence_worker(
+    receiver: std::sync::mpsc::Receiver<RecallEvent>,
+    events: Arc<Mutex<Vec<RecallEvent>>>,
+    storage: Arc<Mutex<StorageState>>,
+    app_handle: AppHandle,
+    metrics: Arc<BridgeMetrics>,
+) {
+    // Block for the next event, then opportunistically drain whatever else is
+    // already queued so a burst becomes a single transaction.
+    while let Ok(first) = receiver.recv() {
+        metrics.on_dequeue();
 
-    if event.session_id.is_none() {
-        return;
-    }
+        let mut batch: Vec<RecallEvent> = Vec::with_capacity(PERSIST_BATCH_MAX);
+        batch.push(first);
 
-    let storage_state = storage.lock().expect("Storage state lock failed");
-
-    match storage_state.save_event(event) {
-        Ok(rowid) => {
-            // Stamp the stable identity so the live event matches its saved self.
-            event.id = rowid;
-
-            if VERBOSE_UDP_LOGGING {
-                println!(
-                    "EVENT PERSISTED -> id: {:?}, event_type: {}, session_id: {:?}",
-                    event.id, event.event_type, event.session_id
-                );
+        while batch.len() < PERSIST_BATCH_MAX {
+            match receiver.try_recv() {
+                Ok(event) => {
+                    metrics.on_dequeue();
+                    batch.push(event);
+                }
+                Err(_) => break,
             }
         }
-        Err(error) => {
-            eprintln!("FAILED TO PERSIST EVENT -> {}", error);
+
+        // Persist the session-owned events as one transaction and stamp rowids
+        // back onto the matching events so the live event shares its saved id.
+        {
+            let storage_state = storage.lock().expect("Storage state lock failed");
+
+            match storage_state.save_events_batch(&batch) {
+                Ok(rowids) => {
+                    for (event, rowid) in batch.iter_mut().zip(rowids.into_iter()) {
+                        if let Some(id) = rowid {
+                            event.id = Some(id);
+                            metrics.incr_persisted();
+                        }
+                    }
+                }
+                Err(error) => {
+                    eprintln!("FAILED TO PERSIST EVENT BATCH -> {}", error);
+                    metrics.set_last_error(error);
+                }
+            }
+        }
+
+        for event in batch {
+            push_event(&events, event.clone());
+
+            if let Err(e) = app_handle.emit("recall-event", &event) {
+                eprintln!("Failed to emit recall-event: {}", e);
+                metrics.set_last_error(format!("emit failed: {}", e));
+            } else {
+                metrics.incr_emitted();
+            }
+        }
+    }
+
+    eprintln!("Recall Studio persistence worker stopped (channel closed)");
+}
+
+// Enqueue policy implementing graceful overload. Critical/important events block
+// briefly until the worker makes room (rare; guarantees no creative data loss),
+// while coalescible high-frequency telemetry is dropped when the queue is full.
+fn enqueue_event(sender: &SyncSender<RecallEvent>, event: RecallEvent, metrics: &Arc<BridgeMetrics>) {
+    let priority = classify_priority(&event.event_type);
+
+    match sender.try_send(event) {
+        Ok(()) => metrics.on_enqueue(),
+        Err(TrySendError::Full(event)) => {
+            if priority == EventPriority::Coalescible {
+                metrics.incr_dropped();
+                if VERBOSE_UDP_LOGGING {
+                    println!("QUEUE FULL -> dropped coalescible {}", event.event_type);
+                }
+            } else {
+                // Block until the worker drains room. Critical creative actions
+                // are rare, so the brief backpressure here cannot cause a storm.
+                if sender.send(event).is_ok() {
+                    metrics.on_enqueue();
+                } else {
+                    metrics.incr_dropped();
+                }
+            }
+        }
+        Err(TrySendError::Disconnected(_)) => {
+            metrics.incr_dropped();
+            metrics.set_last_error("persistence worker channel disconnected");
         }
     }
 }
@@ -462,18 +581,34 @@ pub fn start_udp_listener(
     session: Arc<Mutex<SessionState>>,
     storage: Arc<Mutex<StorageState>>,
     app_handle: AppHandle,
+    metrics: Arc<BridgeMetrics>,
 ) {
+    let (sender, receiver) = sync_channel::<RecallEvent>(EVENT_QUEUE_CAPACITY);
+
+    // Persistence/emit worker.
+    {
+        let events = events.clone();
+        let storage = storage.clone();
+        let app_handle = app_handle.clone();
+        let metrics = metrics.clone();
+        thread::spawn(move || {
+            run_persistence_worker(receiver, events, storage, app_handle, metrics);
+        });
+    }
+
+    // UDP receive loop — parse, normalize, classify, enqueue. No SQLite, no emit.
     thread::spawn(move || {
         let socket = UdpSocket::bind("127.0.0.1:9000")
             .expect("Failed to bind UDP listener on 127.0.0.1:9000");
 
         println!("Recall Studio UDP listener running on 127.0.0.1:9000");
 
-        let mut buffer = [0u8; 4096];
+        let mut buffer = [0u8; RECV_BUFFER_BYTES];
 
         loop {
             match socket.recv_from(&mut buffer) {
                 Ok((size, addr)) => {
+                    metrics.incr_packets_received();
                     let bytes = &buffer[..size];
 
                     if VERBOSE_UDP_LOGGING {
@@ -485,6 +620,8 @@ pub fn start_udp_listener(
                     let message = match extract_json_object(bytes) {
                         Ok(message) => message,
                         Err(error) => {
+                            metrics.incr_malformed();
+                            metrics.set_last_error(error.clone());
                             eprintln!("FAILED TO EXTRACT JSON FROM UDP MESSAGE -> {}", error);
                             continue;
                         }
@@ -493,8 +630,9 @@ pub fn start_udp_listener(
                     let raw_json = match serde_json::from_str::<Value>(&message) {
                         Ok(value) => value,
                         Err(error) => {
+                            metrics.incr_malformed();
+                            metrics.set_last_error(format!("json parse: {}", error));
                             eprintln!("FAILED TO PARSE UDP MESSAGE AS JSON -> {}", error);
-                            eprintln!("BAD MESSAGE WAS -> {}", message);
                             continue;
                         }
                     };
@@ -502,37 +640,31 @@ pub fn start_udp_listener(
                     let normalized_json = match normalize_udp_json(raw_json) {
                         Ok(value) => value,
                         Err(error) => {
+                            metrics.incr_malformed();
+                            metrics.set_last_error(error.clone());
                             eprintln!("FAILED TO NORMALIZE UDP JSON -> {}", error);
                             continue;
                         }
                     };
 
+                    // Heartbeats are health-only: update connection state and
+                    // stop here. They are never queued, persisted, or emitted.
                     update_connection_if_heartbeat(&normalized_json, &state);
+                    let is_heartbeat = normalized_json
+                        .get("event_type")
+                        .and_then(Value::as_str)
+                        == Some("heartbeat");
+                    if is_heartbeat {
+                        continue;
+                    }
 
-                    let parsed_event = serde_json::from_value::<RecallEvent>(normalized_json);
-
-                    match parsed_event {
+                    match serde_json::from_value::<RecallEvent>(normalized_json) {
                         Ok(mut event) => {
-                            if VERBOSE_UDP_LOGGING {
-                                println!(
-                                    "PARSED RecallEvent -> type: {}, track: {:?}, device: {:?}",
-                                    event.event_type, event.track_name, event.device_name
-                                );
-                            }
-
                             assign_session_if_active(&mut event, &session);
-                            persist_event_if_session_owned(&mut event, &storage);
-                            push_event(&events, event.clone());
-
-                            // Push to frontend in real-time.
-                            // Heartbeats are excluded — they update connection state only.
-                            if event.event_type != "heartbeat" {
-                                if let Err(e) = app_handle.emit("recall-event", &event) {
-                                    eprintln!("Failed to emit recall-event: {}", e);
-                                }
-                            }
+                            enqueue_event(&sender, event, &metrics);
                         }
                         Err(error) => {
+                            metrics.incr_malformed();
                             eprintln!(
                                 "FAILED TO PARSE NORMALIZED JSON AS RecallEvent -> {}",
                                 error
@@ -541,6 +673,7 @@ pub fn start_udp_listener(
                     }
                 }
                 Err(error) => {
+                    metrics.set_last_error(format!("recv: {}", error));
                     eprintln!("UDP listener error: {}", error);
                 }
             }

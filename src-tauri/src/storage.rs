@@ -357,46 +357,70 @@ impl StorageState {
         Ok(())
     }
 
-    // Returns the inserted rowid so the caller can stamp a stable identity onto
-    // the live event. Returns None when the event is not session-owned (not saved).
-    pub fn save_event(&self, event: &RecallEvent) -> Result<Option<i64>, String> {
-        if event.session_id.is_none() {
-            return Ok(None);
+    // Persist a batch of session-owned events in a single transaction on one
+    // connection, returning the assigned rowid for each input event (None for
+    // events that were not session-owned and therefore not written). Why batch:
+    // the per-event path opens a fresh SQLite connection and commits on its own,
+    // which is far too slow to run inline under burst. The worker drains the
+    // queue and writes many events per transaction, keeping the receive loop
+    // free and bounding disk pressure.
+    pub fn save_events_batch(&self, events: &[RecallEvent]) -> Result<Vec<Option<i64>>, String> {
+        let mut connection = self.open_connection()?;
+        let transaction = connection
+            .transaction()
+            .map_err(|error| format!("Failed to start event batch transaction: {}", error))?;
+
+        let mut rowids = Vec::with_capacity(events.len());
+
+        {
+            let mut statement = transaction
+                .prepare_cached(
+                    "
+                    INSERT INTO events (
+                        session_id,
+                        protocol,
+                        source,
+                        event_type,
+                        timestamp_ms,
+                        title,
+                        description,
+                        payload,
+                        created_at_ms
+                    )
+                    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                    ",
+                )
+                .map_err(|error| format!("Failed to prepare batch insert: {}", error))?;
+
+            for event in events {
+                if event.session_id.is_none() {
+                    rowids.push(None);
+                    continue;
+                }
+
+                statement
+                    .execute(params![
+                        event.session_id.as_deref(),
+                        event.protocol.as_str(),
+                        event.source.as_str(),
+                        event.event_type.as_str(),
+                        event.timestamp_ms as i64,
+                        event.title.as_str(),
+                        event.description.as_str(),
+                        event.payload.as_deref(),
+                        now_ms() as i64,
+                    ])
+                    .map_err(|error| format!("Failed to save event in batch: {}", error))?;
+
+                rowids.push(Some(transaction.last_insert_rowid()));
+            }
         }
 
-        let connection = self.open_connection()?;
+        transaction
+            .commit()
+            .map_err(|error| format!("Failed to commit event batch: {}", error))?;
 
-        connection
-            .execute(
-                "
-                INSERT INTO events (
-                    session_id,
-                    protocol,
-                    source,
-                    event_type,
-                    timestamp_ms,
-                    title,
-                    description,
-                    payload,
-                    created_at_ms
-                )
-                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
-                ",
-                params![
-                    event.session_id.as_deref(),
-                    event.protocol.as_str(),
-                    event.source.as_str(),
-                    event.event_type.as_str(),
-                    event.timestamp_ms as i64,
-                    event.title.as_str(),
-                    event.description.as_str(),
-                    event.payload.as_deref(),
-                    now_ms() as i64,
-                ],
-            )
-            .map_err(|error| format!("Failed to save event: {}", error))?;
-
-        Ok(Some(connection.last_insert_rowid()))
+        Ok(rowids)
     }
 
     pub fn set_event_curation(
@@ -604,6 +628,12 @@ pub fn initialize_database(db_path: &Path) -> rusqlite::Result<()> {
     connection.execute_batch(
         "
         PRAGMA foreign_keys = ON;
+        -- WAL lets the worker's batched writes proceed without blocking reads
+        -- (saved-session loads, curation queries) and improves write throughput
+        -- under bursts of Ableton telemetry. NORMAL sync is the standard durable
+        -- pairing with WAL for a local app.
+        PRAGMA journal_mode = WAL;
+        PRAGMA synchronous = NORMAL;
 
         CREATE TABLE IF NOT EXISTS sessions (
             id TEXT PRIMARY KEY,

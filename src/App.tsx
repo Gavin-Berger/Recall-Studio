@@ -470,6 +470,7 @@ const EVENT_TYPE_MAP: Record<string, RecallEventType> = {
   // Device
   device_added: "device",
   device_removed: "device",
+  device_chain_changed: "device",
   device_event: "device",
   device_selected: "device",
   // Parameter

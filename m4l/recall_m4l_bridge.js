@@ -43,7 +43,7 @@ outlets = 2;
 var PROTOCOL = "recall.v2";
 var SOURCE = "max_for_live";
 var DEVICE_ID = "recall-m4l-bridge-dev";
-var BRIDGE_VERSION = "0.7.2";
+var BRIDGE_VERSION = "0.7.3";
 
 // Canonical v2 flat fields. emit() lifts any of these from its `fields` arg up
 // to the TOP LEVEL of the packet, because the Rust normalizer reads canonical
@@ -103,6 +103,15 @@ var HEARTBEAT_INTERVAL_MS = 2000;
 var TRANSPORT_INTERVAL_MS = 2000;
 var FOCUS_INTERVAL_MS = 4000;
 var AUTO_LIVE_SET_SNAPSHOT_INTERVAL_MS = 0;
+
+// While transport is PLAYING the audio thread is under the most pressure, so we
+// run the heavy focus scan at a reduced cadence: skip this many focus ticks
+// between scans while playing (2 -> scan every 3rd tick ~= every 12s). When
+// stopped, every tick scans as before, so edits made while paused are caught
+// promptly. The task keeps firing at FOCUS_INTERVAL_MS either way, so the moment
+// playback stops the next tick runs a full scan with no added latency.
+var FOCUS_SKIP_TICKS_WHILE_PLAYING = 2;
+var focusTicksSkippedWhilePlaying = 0;
 
 // Hard ceiling on a single emitted event. A snapshot that serializes larger
 // than this is dropped, not sent. Why: pushing an oversized symbol out the
@@ -330,12 +339,24 @@ function focus_tick() {
     }
 
     if (captureFocus) {
-        try {
-            // Re-scan the selected track every tick (not only on track switch),
-            // so device/clip changes made while staying on a track are caught.
-            send_selected_track_focus_if_changed();
-        } catch (error) {
-            debug("focus scan failed: " + error);
+        // Throttle the heavy scan while playing to leave the audio thread
+        // headroom; full cadence resumes the instant transport stops.
+        var skipForPlayback =
+            lastPlayingState === true &&
+            focusTicksSkippedWhilePlaying < FOCUS_SKIP_TICKS_WHILE_PLAYING;
+
+        if (skipForPlayback) {
+            focusTicksSkippedWhilePlaying++;
+        } else {
+            focusTicksSkippedWhilePlaying = 0;
+
+            try {
+                // Re-scan the selected track every tick (not only on track switch),
+                // so device/clip changes made while staying on a track are caught.
+                send_selected_track_focus_if_changed();
+            } catch (error) {
+                debug("focus scan failed: " + error);
+            }
         }
     }
 
@@ -754,6 +775,16 @@ function collect_selected_track_basic() {
     };
 }
 
+// Cache of trackId -> index. The focus scan runs every few seconds and used to
+// walk EVERY track on the set to map the selected track's id back to its index,
+// even though the selection rarely moves. On a 40+ track set that full loop ran
+// on Max's main thread during playback (worst-case audio contention). Now we
+// remember the last index for each id and validate it cheaply: read only the
+// track at the cached index and confirm its id still matches. Tracks only shift
+// index when one is added/removed/reordered, so the expensive full scan is the
+// rare path, not the per-tick path.
+var trackIndexCacheById = {};
+
 function find_track_index_by_id(trackId) {
     var liveSet = safe_path("live_set");
 
@@ -763,6 +794,16 @@ function find_track_index_by_id(trackId) {
 
     var trackCount = get_count(liveSet, "tracks", 0);
 
+    var cachedIndex = trackIndexCacheById[trackId];
+
+    if (typeof cachedIndex === "number" && cachedIndex >= 0 && cachedIndex < trackCount) {
+        var cachedTrack = safe_path("live_set tracks " + cachedIndex);
+
+        if (cachedTrack && normalize_id(cachedTrack.id) === trackId) {
+            return cachedIndex;
+        }
+    }
+
     for (var i = 0; i < trackCount; i++) {
         var track = safe_path("live_set tracks " + i);
 
@@ -771,9 +812,12 @@ function find_track_index_by_id(trackId) {
         }
 
         if (normalize_id(track.id) === trackId) {
+            trackIndexCacheById[trackId] = i;
             return i;
         }
     }
+
+    delete trackIndexCacheById[trackId];
 
     return -1;
 }

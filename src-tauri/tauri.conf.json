@@ -24,6 +24,10 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "resources": {
+      "../m4l/recall-studio.amxd": "bridge/recall-studio.amxd",
+      "../m4l/recall_m4l_bridge.js": "bridge/recall_m4l_bridge.js"
+    },
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

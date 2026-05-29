@@ -1,3 +1,4 @@
+mod install;
 mod metrics;
 mod protocol;
 mod session;
@@ -447,7 +448,9 @@ pub fn run() {
             list_session_curation,
             add_session_note,
             update_session_note,
-            delete_session_note
+            delete_session_note,
+            install::detect_bridge_install_targets,
+            install::install_bridge
         ])
         .run(tauri::generate_context!())
         .expect("error while running Recall Studio");

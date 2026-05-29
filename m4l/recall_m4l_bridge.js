@@ -40,14 +40,39 @@ outlets = 2;
 // Protocol config
 // ------------------------------------------------------------
 
-var PROTOCOL = "recall.protocol.v1";
+var PROTOCOL = "recall.v2";
 var SOURCE = "max_for_live";
 var DEVICE_ID = "recall-m4l-bridge-dev";
-var BRIDGE_VERSION = "0.4.2";
+var BRIDGE_VERSION = "0.5.0";
+
+// Canonical v2 flat fields. emit() lifts any of these from its `fields` arg up
+// to the TOP LEVEL of the packet, because the Rust normalizer reads canonical
+// names at the top level first (see docs/recall-protocol-v2.md). Everything
+// else stays in `payload` for debugging only.
+var CANONICAL_FIELDS = [
+    "track_name",
+    "device_name",
+    "parameter_name",
+    "parameter_value",
+    "parameter_value_min",
+    "parameter_value_max",
+    "clip_name",
+    "bpm",
+    "playing"
+];
 
 var sequence = 0;
 var bridgeRunning = false;
 var deviceLoadedSent = false;
+
+// Capture toggles. Flip these at runtime by sending the matching message into
+// the js object (e.g. a [safe_mode] message box) so the crash can be isolated
+// without editing this file. The heavy LiveAPI traversals are the only realistic
+// native-crash sources; safe_mode disables all of them and leaves only the
+// tiny heartbeat + lifecycle events.
+var captureTransport = true;
+var captureFocus = true;
+var captureLiveSet = true;
 
 // Automatic capture limits.
 var MAX_TRACK_SUMMARIES = 32;
@@ -72,10 +97,23 @@ var TRANSPORT_INTERVAL_MS = 2000;
 var FOCUS_INTERVAL_MS = 4000;
 var AUTO_LIVE_SET_SNAPSHOT_INTERVAL_MS = 0;
 
+// Hard ceiling on a single emitted event. A snapshot that serializes larger
+// than this is dropped, not sent. Why: pushing an oversized symbol out the
+// outlet into [udpsend] can natively crash Max (and take Ableton with it).
+// 8KB is comfortably inside a single loopback UDP datagram.
+var MAX_EVENT_BYTES = 8192;
+
+// Delay before the first heavy LiveAPI scan after start_bridge. Why: running a
+// full live-set + selected-track traversal synchronously on the message that
+// starts the bridge blocks Max's main thread and is the #1 crash trigger.
+// Deferring it lets the scheduler settle first.
+var INITIAL_CONTEXT_DELAY_MS = 800;
+
 var heartbeatTask = new Task(heartbeat_tick, this);
 var transportTask = new Task(transport_tick, this);
 var focusTask = new Task(focus_tick, this);
 var liveSetTask = new Task(live_set_tick, this);
+var initialContextTask = new Task(initial_context_tick, this);
 
 // Fingerprint cache.
 var lastTransportSummaryFingerprint = "";
@@ -87,7 +125,7 @@ var lastTempo = null;
 var lastSelectedTrackId = null;
 var lastFocusedTrackId = null;
 
-post("Recall Studio M4L bridge JavaScript loaded\n");
+post("Recall Studio M4L bridge JavaScript loaded (v" + BRIDGE_VERSION + ")\n");
 
 // ------------------------------------------------------------
 // Bridge lifecycle
@@ -120,15 +158,11 @@ function start_bridge() {
 
     heartbeat();
 
-    // Initial useful context.
-    send_live_set_snapshot_if_changed();
-    send_transport_delta_if_changed();
-    send_selected_track_focus_if_changed();
-
     heartbeatTask.cancel();
     transportTask.cancel();
     focusTask.cancel();
     liveSetTask.cancel();
+    initialContextTask.cancel();
 
     heartbeatTask.schedule(HEARTBEAT_INTERVAL_MS);
     transportTask.schedule(TRANSPORT_INTERVAL_MS);
@@ -138,7 +172,43 @@ function start_bridge() {
         liveSetTask.schedule(AUTO_LIVE_SET_SNAPSHOT_INTERVAL_MS);
     }
 
+    // Defer the first heavy LiveAPI scan off this message. Running it inline
+    // here is what was crashing Max on start.
+    initialContextTask.schedule(INITIAL_CONTEXT_DELAY_MS);
+
     debug("bridge started");
+}
+
+// Runs the first context scans well after start, on the scheduler thread,
+// each isolated so one bad scan cannot take down the others or the process.
+function initial_context_tick() {
+    if (!bridgeRunning) {
+        return;
+    }
+
+    if (captureTransport) {
+        try {
+            send_transport_delta_if_changed();
+        } catch (error) {
+            debug("initial transport scan failed: " + error);
+        }
+    }
+
+    if (captureFocus) {
+        try {
+            send_selected_track_focus_if_changed();
+        } catch (error) {
+            debug("initial focus scan failed: " + error);
+        }
+    }
+
+    if (captureLiveSet) {
+        try {
+            send_live_set_snapshot_if_changed();
+        } catch (error) {
+            debug("initial live set scan failed: " + error);
+        }
+    }
 }
 
 function stop() {
@@ -157,6 +227,7 @@ function stop_bridge() {
     transportTask.cancel();
     focusTask.cancel();
     liveSetTask.cancel();
+    initialContextTask.cancel();
 
     emit("bridge_stopped", "Ableton Bridge Stopped", "The Max for Live bridge stopped sending telemetry.", {
         status: "stopped"
@@ -191,7 +262,14 @@ function transport_tick() {
         return;
     }
 
-    send_transport_delta_if_changed();
+    if (captureTransport) {
+        try {
+            send_transport_delta_if_changed();
+        } catch (error) {
+            debug("transport scan failed: " + error);
+        }
+    }
+
     transportTask.schedule(TRANSPORT_INTERVAL_MS);
 }
 
@@ -200,7 +278,14 @@ function focus_tick() {
         return;
     }
 
-    send_selected_track_focus_if_selected_track_changed();
+    if (captureFocus) {
+        try {
+            send_selected_track_focus_if_selected_track_changed();
+        } catch (error) {
+            debug("focus scan failed: " + error);
+        }
+    }
+
     focusTask.schedule(FOCUS_INTERVAL_MS);
 }
 
@@ -209,7 +294,13 @@ function live_set_tick() {
         return;
     }
 
-    send_live_set_snapshot_if_changed();
+    if (captureLiveSet) {
+        try {
+            send_live_set_snapshot_if_changed();
+        } catch (error) {
+            debug("live set scan failed: " + error);
+        }
+    }
 
     if (AUTO_LIVE_SET_SNAPSHOT_INTERVAL_MS > 0) {
         liveSetTask.schedule(AUTO_LIVE_SET_SNAPSHOT_INTERVAL_MS);
@@ -222,7 +313,18 @@ function live_set_tick() {
 
 function get_live_api(path) {
     try {
-        return new LiveAPI(null, path);
+        var api = new LiveAPI(null, path);
+
+        // Reject zombie objects. When a path doesn't resolve (track index past
+        // the end, a device/parameter that isn't there), Max still returns a
+        // LiveAPI object but with id 0. Calling .get()/.getcount() on a zombie
+        // is a NATIVE crash, not a catchable JS error — this guard is what makes
+        // the deep scans safe. Every collector already handles a null return.
+        if (!api || Number(api.id) === 0) {
+            return null;
+        }
+
+        return api;
     } catch (error) {
         debug("LiveAPI failed for path [" + path + "]: " + error);
         return null;
@@ -398,9 +500,17 @@ function send_transport_delta_if_changed() {
     if (snapshot.available) {
         if (lastPlayingState !== null && snapshot.playing !== lastPlayingState) {
             if (snapshot.playing) {
-                emit("transport_play", "Transport Play", "Ableton playback started.", snapshot);
+                emit("transport_play", "Transport Play", "Ableton playback started.", snapshot, {
+                    playing: true,
+                    bpm: snapshot.tempo,
+                    track_name: snapshot.selected_track_name
+                });
             } else {
-                emit("transport_stop", "Transport Stop", "Ableton playback stopped.", snapshot);
+                emit("transport_stop", "Transport Stop", "Ableton playback stopped.", snapshot, {
+                    playing: false,
+                    bpm: snapshot.tempo,
+                    track_name: snapshot.selected_track_name
+                });
             }
         }
 
@@ -408,6 +518,8 @@ function send_transport_delta_if_changed() {
             emit("tempo_changed", "Tempo Changed", "Ableton tempo changed.", {
                 tempo: snapshot.tempo,
                 previous_tempo: lastTempo
+            }, {
+                bpm: snapshot.tempo
             });
         }
 
@@ -419,6 +531,8 @@ function send_transport_delta_if_changed() {
             emit("track_selected", "Track Selected", "Selected Ableton track changed.", {
                 selected_track_id: snapshot.selected_track_id,
                 selected_track_name: snapshot.selected_track_name
+            }, {
+                track_name: snapshot.selected_track_name
             });
         }
 
@@ -470,7 +584,11 @@ function send_live_set_snapshot_if_changed() {
 
     lastLiveSetFingerprint = fp;
 
-    emit("live_set_snapshot", "Live Set Snapshot", "Shallow Ableton Live Set snapshot captured.", snapshot);
+    emit("live_set_snapshot", "Live Set Snapshot", "Shallow Ableton Live Set snapshot captured.", snapshot, {
+        bpm: snapshot.tempo,
+        playing: snapshot.playing,
+        track_name: snapshot.selected_track_name
+    });
 }
 
 function collect_track_summaries(limit) {
@@ -1006,12 +1124,50 @@ function session_snapshot() {
     deep_session_snapshot();
 }
 
+// ------------------------------------------------------------
+// Capture toggles (crash isolation) — send these as Max messages
+// ------------------------------------------------------------
+
+// Disable every heavy LiveAPI scan. Only heartbeat + lifecycle events remain.
+// If start_bridge is stable in safe_mode but crashes with full capture, the
+// crash is in one of the scans — re-enable them one at a time to find it.
+function safe_mode() {
+    captureTransport = false;
+    captureFocus = false;
+    captureLiveSet = false;
+    debug("SAFE MODE: all LiveAPI scans disabled (heartbeat only)");
+}
+
+function full_capture() {
+    captureTransport = true;
+    captureFocus = true;
+    captureLiveSet = true;
+    debug("FULL CAPTURE: all LiveAPI scans enabled");
+}
+
+function capture_transport(value) {
+    captureTransport = Number(value) === 1;
+    debug("capture_transport = " + captureTransport);
+}
+
+function capture_focus(value) {
+    captureFocus = Number(value) === 1;
+    debug("capture_focus = " + captureFocus);
+}
+
+function capture_live_set(value) {
+    captureLiveSet = Number(value) === 1;
+    debug("capture_live_set = " + captureLiveSet);
+}
+
 function deep_snapshot() {
     deep_session_snapshot();
 }
 
 function tempo(value) {
     emit("tempo_changed", "Tempo Changed", "Manual tempo event received from Max.", {
+        bpm: Number(value)
+    }, {
         bpm: Number(value)
     });
 }
@@ -1020,9 +1176,13 @@ function playing(value) {
     if (Number(value) === 1) {
         emit("transport_play", "Transport Play", "Manual play event received from Max.", {
             playing: true
+        }, {
+            playing: true
         });
     } else {
         emit("transport_stop", "Transport Stop", "Manual stop event received from Max.", {
+            playing: false
+        }, {
             playing: false
         });
     }
@@ -1038,6 +1198,8 @@ function track_name() {
     var args = arrayfromargs(arguments);
 
     emit("track_selected", "Track Selected", "Manual track name event received from Max.", {
+        track_name: args.join(" ")
+    }, {
         track_name: args.join(" ")
     });
 }
@@ -1079,7 +1241,7 @@ function anything() {
 // Recall Protocol output
 // ------------------------------------------------------------
 
-function emit(eventType, title, description, payload) {
+function emit(eventType, title, description, payload, fields) {
     var event = {
         protocol: PROTOCOL,
         source: SOURCE,
@@ -1091,6 +1253,19 @@ function emit(eventType, title, description, payload) {
         session_id: null
     };
 
+    // Lift canonical fields to the top level so the backend reads them directly
+    // (no payload digging). Only known v2 keys with a real value are promoted.
+    if (fields) {
+        for (var f = 0; f < CANONICAL_FIELDS.length; f++) {
+            var key = CANONICAL_FIELDS[f];
+            var value = fields[key];
+
+            if (value !== null && value !== undefined && value !== "") {
+                event[key] = value;
+            }
+        }
+    }
+
     sequence = sequence + 1;
 
     event.payload._bridge = {
@@ -1099,7 +1274,25 @@ function emit(eventType, title, description, payload) {
         sequence: sequence
     };
 
-    var json = JSON.stringify(event);
+    var json;
+
+    try {
+        json = JSON.stringify(event);
+    } catch (error) {
+        debug("emit serialize failed for " + eventType + ": " + error);
+        return;
+    }
+
+    // Hard safety net: never push an oversized symbol out the outlet into
+    // [udpsend]. Doing so can natively crash Max. Drop and log instead.
+    if (json.length > MAX_EVENT_BYTES) {
+        post(
+            "Recall Studio event DROPPED: " + eventType + " #" + sequence +
+            " (" + json.length + " bytes > " + MAX_EVENT_BYTES + " cap)\n"
+        );
+        outlet(1, "dropped " + eventType + " #" + sequence + " (" + json.length + " bytes, over cap)");
+        return;
+    }
 
     // Never print full JSON here. Large payloads can freeze Max.
     post("Recall Studio event: " + eventType + " #" + sequence + " (" + json.length + " bytes)\n");

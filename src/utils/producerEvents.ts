@@ -64,6 +64,14 @@ export function isProducerTimelineEvent(event: RecallTimelineMoment): boolean {
     return false;
   }
 
+  // Track *selection* is navigation, not a creative decision — it's the moment
+  // producers hide most. Keep persisting it (raw telemetry is preserved) but
+  // exclude it from the curated document. Real track events (created, renamed,
+  // deleted) still pass through below.
+  if (event.rawEventType?.toLowerCase() === "track_selected") {
+    return false;
+  }
+
   const searchable = [
     event.type,
     event.rawEventType,

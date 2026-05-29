@@ -1070,9 +1070,7 @@
 }
 
 .document-timeline li {
-  display: grid;
-  grid-template-columns: 78px minmax(0, 1fr);
-  gap: 12px;
+  /* .doc-event-row owns the internal column layout; the li is a plain block. */
   padding: 10px 0;
   border-top: 1px solid var(--line-soft);
 }
@@ -2791,6 +2789,35 @@
   color: var(--paper);
   font-size: 0.79rem;
   line-height: 1.45;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.doc-note__delete {
+  flex: none;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font-size: 1rem;
+  line-height: 1;
+  padding: 0 2px;
+  cursor: pointer;
+  opacity: 0;
+  transition:
+    color 140ms ease,
+    opacity 140ms ease;
+}
+
+.doc-note:hover .doc-note__delete,
+.doc-free-note:hover .doc-note__delete,
+.doc-note__delete:focus-visible {
+  opacity: 1;
+}
+
+.doc-note__delete:hover {
+  color: var(--oxide);
 }
 
 .doc-free-notes {
@@ -2800,11 +2827,18 @@
 }
 
 .doc-free-note {
+  position: relative;
   display: grid;
   grid-template-columns: 64px minmax(0, 1fr);
   gap: 8px;
   padding: 10px 0;
   border-top: 1px solid var(--line-soft);
+}
+
+.doc-free-note .doc-note__delete {
+  position: absolute;
+  top: 10px;
+  right: 0;
 }
 
 .doc-free-note time {

@@ -21,6 +21,7 @@ type SessionDocumentProps = {
   onEditItem: (id: string, payload: EditItemPayload) => void;
   onHideItem: (id: string) => void;
   onAddNote: (text: string, options?: AddNoteOptions) => void;
+  onDeleteNote: (noteId: string) => void;
 };
 
 export function SessionDocument({
@@ -33,6 +34,7 @@ export function SessionDocument({
   onEditItem,
   onHideItem,
   onAddNote,
+  onDeleteNote,
 }: SessionDocumentProps) {
   const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -242,7 +244,17 @@ export function SessionDocument({
                             <div className="doc-event-notes">
                               {item.notes.map((note) => (
                                 <blockquote key={note.id} className="doc-note">
-                                  {note.text}
+                                  <span>{note.text}</span>
+                                  {curationEnabled && (
+                                    <button
+                                      type="button"
+                                      className="doc-note__delete"
+                                      aria-label="Delete note"
+                                      onClick={() => onDeleteNote(note.id)}
+                                    >
+                                      ×
+                                    </button>
+                                  )}
                                 </blockquote>
                               ))}
                             </div>
@@ -306,6 +318,16 @@ export function SessionDocument({
                   <div key={note.id} className="doc-free-note">
                     <time>{note.sessionTimecode}</time>
                     <p>{note.text}</p>
+                    {curationEnabled && (
+                      <button
+                        type="button"
+                        className="doc-note__delete"
+                        aria-label="Delete note"
+                        onClick={() => onDeleteNote(note.id)}
+                      >
+                        ×
+                      </button>
+                    )}
                   </div>
                 ))}
               </div>

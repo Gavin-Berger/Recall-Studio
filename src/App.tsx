@@ -370,6 +370,7 @@ function App() {
           onEditItem={curationActions.editItem}
           onHideItem={curationActions.hideItem}
           onAddNote={curationActions.addNote}
+          onDeleteNote={curationActions.deleteNote}
         />
       }
       analytics={<ProducerInsights events={creativeEvents} stats={stats} />}

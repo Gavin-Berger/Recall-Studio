@@ -68,6 +68,10 @@ fn classify_priority(event_type: &str) -> EventPriority {
 pub struct ConnectionState {
     pub last_heartbeat_ms: Option<u64>,
     pub last_message: Option<String>,
+    // Version string reported by the live Max bridge in each heartbeat. Lets the
+    // app show which bridge build is actually connected, so a producer can verify
+    // they loaded the newest device instead of squinting at the Max Console.
+    pub bridge_version: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -75,6 +79,7 @@ pub struct ConnectionStatus {
     pub connected: bool,
     pub last_heartbeat_ms: Option<u64>,
     pub last_message: Option<String>,
+    pub bridge_version: Option<String>,
 }
 
 fn now_ms() -> u64 {
@@ -436,9 +441,23 @@ fn update_connection_if_heartbeat(normalized_json: &Value, state: &Arc<Mutex<Con
         .unwrap_or("Heartbeat Received")
         .to_string();
 
+    // bridge_version lives in the heartbeat payload JSON string.
+    let bridge_version = normalized_json
+        .get("payload")
+        .and_then(Value::as_str)
+        .and_then(|s| serde_json::from_str::<Value>(s).ok())
+        .and_then(|p| {
+            p.get("bridge_version")
+                .and_then(Value::as_str)
+                .map(|s| s.to_string())
+        });
+
     let mut connection = state.lock().expect("Connection state lock failed");
     connection.last_heartbeat_ms = Some(now_ms());
     connection.last_message = Some(title);
+    if bridge_version.is_some() {
+        connection.bridge_version = bridge_version;
+    }
 
     if VERBOSE_UDP_LOGGING {
         println!(
@@ -694,5 +713,6 @@ pub fn get_status(state: Arc<Mutex<ConnectionState>>) -> ConnectionStatus {
         connected,
         last_heartbeat_ms: connection.last_heartbeat_ms,
         last_message: connection.last_message.clone(),
+        bridge_version: connection.bridge_version.clone(),
     }
 }

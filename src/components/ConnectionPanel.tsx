@@ -130,6 +130,17 @@ export function ConnectionPanel({
           </div>
 
           <div>
+            <span>Bridge Version</span>
+            <strong>
+              {connection.bridge_version
+                ? `v${connection.bridge_version}`
+                : connection.connected
+                  ? "Reporting…"
+                  : "Not connected"}
+            </strong>
+          </div>
+
+          <div>
             <span>Capture Time</span>
             <strong>{bridgeCaptureDuration}</strong>
           </div>

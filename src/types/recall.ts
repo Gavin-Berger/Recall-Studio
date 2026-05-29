@@ -2,6 +2,7 @@ export type ConnectionStatus = {
   connected: boolean;
   last_heartbeat_ms: number | null;
   last_message: string | null;
+  bridge_version: string | null;
 };
 
 export type RecallEventType =

@@ -53,6 +53,7 @@ function App() {
     connected: false,
     last_heartbeat_ms: null,
     last_message: null,
+    bridge_version: null,
   });
 
   const [liveEvents, setLiveEvents] = useState<RecallTimelineMoment[]>([]);

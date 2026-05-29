@@ -343,6 +343,7 @@ pub fn run() {
     let connection_state = Arc::new(Mutex::new(ConnectionState {
         last_heartbeat_ms: None,
         last_message: None,
+        bridge_version: None,
     }));
 
     let recent_events = Arc::new(Mutex::new(Vec::<RecallEvent>::new()));

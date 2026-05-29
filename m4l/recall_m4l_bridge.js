@@ -43,7 +43,7 @@ outlets = 2;
 var PROTOCOL = "recall.v2";
 var SOURCE = "max_for_live";
 var DEVICE_ID = "recall-m4l-bridge-dev";
-var BRIDGE_VERSION = "0.7.1";
+var BRIDGE_VERSION = "0.7.2";
 
 // Canonical v2 flat fields. emit() lifts any of these from its `fields` arg up
 // to the TOP LEVEL of the packet, because the Rust normalizer reads canonical
@@ -73,11 +73,17 @@ var deviceLoadedSent = false;
 // tiny heartbeat + lifecycle events.
 var captureTransport = true;
 var captureFocus = true;
-var captureLiveSet = true;
+// Off by default. The full live-set summary is the heaviest single scan: it
+// walks every track and serializes them in one packet. On large sets (40+
+// tracks, groups, many active plugins) running it synchronously while audio is
+// playing is the dominant native-crash trigger, and nothing in the curated
+// timeline depends on it (the timeline is built from transport + focus + diff
+// events). Re-enable on demand with a [capture_live_set 1] message if needed.
+var captureLiveSet = false;
 
 // Automatic capture limits.
-var MAX_TRACK_SUMMARIES = 32;
-var MAX_SCENE_SUMMARIES = 32;
+var MAX_TRACK_SUMMARIES = 16;
+var MAX_SCENE_SUMMARIES = 16;
 var MAX_FOCUS_DEVICES = 8;
 var MAX_FOCUS_PARAMETERS_PER_DEVICE = 12;
 var MAX_FOCUS_CLIP_SLOTS = 16;
@@ -110,11 +116,19 @@ var MAX_EVENT_BYTES = 8192;
 // Deferring it lets the scheduler settle first.
 var INITIAL_CONTEXT_DELAY_MS = 800;
 
+// Gap between the staggered first scans. The three initial scans used to run
+// back-to-back in one tick; on a large set that single synchronous block was
+// long enough to crash Max. Spacing them lets the scheduler (and the audio
+// thread) breathe between each heavy traversal.
+var INITIAL_STAGGER_MS = 600;
+
 var heartbeatTask = new Task(heartbeat_tick, this);
 var transportTask = new Task(transport_tick, this);
 var focusTask = new Task(focus_tick, this);
 var liveSetTask = new Task(live_set_tick, this);
 var initialContextTask = new Task(initial_context_tick, this);
+var initialFocusTask = new Task(initial_focus_tick, this);
+var initialLiveSetTask = new Task(initial_live_set_tick, this);
 
 // Fingerprint cache.
 var lastTransportSummaryFingerprint = "";
@@ -178,6 +192,8 @@ function start_bridge() {
     focusTask.cancel();
     liveSetTask.cancel();
     initialContextTask.cancel();
+    initialFocusTask.cancel();
+    initialLiveSetTask.cancel();
 
     heartbeatTask.schedule(HEARTBEAT_INTERVAL_MS);
     transportTask.schedule(TRANSPORT_INTERVAL_MS);
@@ -187,15 +203,21 @@ function start_bridge() {
         liveSetTask.schedule(AUTO_LIVE_SET_SNAPSHOT_INTERVAL_MS);
     }
 
-    // Defer the first heavy LiveAPI scan off this message. Running it inline
-    // here is what was crashing Max on start.
+    // Defer and STAGGER the first heavy LiveAPI scans off this message. Running
+    // them inline (or all in one deferred tick) is what crashed Max on start in
+    // large sets. Each scan runs on its own task, spaced apart, so the main
+    // thread never holds a long synchronous traversal.
     initialContextTask.schedule(INITIAL_CONTEXT_DELAY_MS);
+    initialFocusTask.schedule(INITIAL_CONTEXT_DELAY_MS + INITIAL_STAGGER_MS);
+    initialLiveSetTask.schedule(INITIAL_CONTEXT_DELAY_MS + INITIAL_STAGGER_MS * 2);
 
     debug("bridge started");
 }
 
-// Runs the first context scans well after start, on the scheduler thread,
-// each isolated so one bad scan cannot take down the others or the process.
+// The first context scans run well after start, on the scheduler thread, and
+// are STAGGERED across three separate tasks (transport, then focus, then live
+// set) so no single tick holds a long synchronous LiveAPI traversal. Each is
+// isolated in try/catch so one bad scan cannot take down the others.
 function initial_context_tick() {
     if (!bridgeRunning) {
         return;
@@ -208,6 +230,12 @@ function initial_context_tick() {
             debug("initial transport scan failed: " + error);
         }
     }
+}
+
+function initial_focus_tick() {
+    if (!bridgeRunning) {
+        return;
+    }
 
     if (captureFocus) {
         try {
@@ -215,6 +243,12 @@ function initial_context_tick() {
         } catch (error) {
             debug("initial focus scan failed: " + error);
         }
+    }
+}
+
+function initial_live_set_tick() {
+    if (!bridgeRunning) {
+        return;
     }
 
     if (captureLiveSet) {
@@ -243,6 +277,8 @@ function stop_bridge() {
     focusTask.cancel();
     liveSetTask.cancel();
     initialContextTask.cancel();
+    initialFocusTask.cancel();
+    initialLiveSetTask.cancel();
 
     emit("bridge_stopped", "Ableton Bridge Stopped", "The Max for Live bridge stopped sending telemetry.", {
         status: "stopped"

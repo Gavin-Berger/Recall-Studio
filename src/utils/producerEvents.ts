@@ -64,11 +64,19 @@ export function isProducerTimelineEvent(event: RecallTimelineMoment): boolean {
     return false;
   }
 
-  // Track *selection* is navigation, not a creative decision — it's the moment
-  // producers hide most. Keep persisting it (raw telemetry is preserved) but
-  // exclude it from the curated document. Real track events (created, renamed,
-  // deleted) still pass through below.
-  if (event.rawEventType?.toLowerCase() === "track_selected") {
+  // Track *selection / focus* is navigation, not a creative decision — it's the
+  // moment producers hide most. Keep persisting it (raw telemetry is preserved)
+  // but exclude it from the curated document. This covers both the discrete
+  // track_selected event and the periodic selected_track_focus_snapshot, which
+  // otherwise falls through type inference to "track" and renders as a bogus
+  // "Track selected" row. Real track events (created, renamed, deleted) still
+  // pass through below.
+  const rawNav = event.rawEventType?.toLowerCase();
+  if (
+    rawNav === "track_selected" ||
+    rawNav === "selected_track_focus_snapshot" ||
+    rawNav === "selected_track_snapshot"
+  ) {
     return false;
   }
 

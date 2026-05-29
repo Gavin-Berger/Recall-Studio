@@ -185,12 +185,17 @@ function App() {
     [rawEvents, viewMode],
   );
 
+  // Curation is persisted per session. Saved sessions have stable event IDs;
+  // for live capture we key on the active session so notes survive a reload.
+  const curationSessionId =
+    viewMode === "saved" ? selectedSessionId : (activeSession?.id ?? null);
+
   const {
     allItems,
     visibleItems,
     freeNotes,
     actions: curationActions,
-  } = useTimelineCuration(creativeEvents);
+  } = useTimelineCuration(creativeEvents, curationSessionId);
 
   const activityBlocks = useActivityBlocks(creativeEvents);
 
@@ -562,7 +567,11 @@ function normalizeBackendEvent(
     readStringDeep(event, ["source", "payload.source"]) ??
     "Max_for_Live";
 
+  // Prefer the backend-assigned SQLite rowid so a live event keeps the same
+  // identity once the session is saved and reloaded (stable curation keys).
+  // Live events carry a numeric `id`; saved events carry it as a string.
   const id =
+    (typeof raw.id === "number" ? String(raw.id) : undefined) ??
     readStringDeep(event, ["id", "event_id", "eventId"]) ??
     `${rawEventType ?? type}-${timestamp}-${index}`;
 

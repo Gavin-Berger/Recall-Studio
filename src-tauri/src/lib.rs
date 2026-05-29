@@ -6,7 +6,7 @@ mod udp_listener;
 use protocol::RecallEvent;
 use session::{SavedSession, SavedSessionMetadata, SessionState, SessionStatus};
 use std::sync::{Arc, Mutex};
-use storage::{initialize_database, StorageState, StorageStatus};
+use storage::{initialize_database, SessionCuration, StorageState, StorageStatus};
 use tauri::{Manager, State};
 use udp_listener::{get_status, start_udp_listener, ConnectionState, ConnectionStatus};
 
@@ -265,6 +265,71 @@ fn delete_saved_session(
     Ok(next_status)
 }
 
+#[tauri::command]
+fn set_event_curation(
+    state: State<'_, AppState>,
+    session_id: String,
+    event_id: String,
+    hidden: bool,
+    title_override: Option<String>,
+    description_override: Option<String>,
+) -> Result<(), String> {
+    let storage = state.storage.lock().expect("Storage state lock failed");
+    storage.set_event_curation(
+        &session_id,
+        &event_id,
+        hidden,
+        title_override.as_deref(),
+        description_override.as_deref(),
+    )
+}
+
+#[tauri::command]
+fn list_session_curation(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<SessionCuration, String> {
+    let storage = state.storage.lock().expect("Storage state lock failed");
+    storage.list_session_curation(&session_id)
+}
+
+#[tauri::command]
+fn add_session_note(
+    state: State<'_, AppState>,
+    session_id: String,
+    note_id: String,
+    linked_event_id: Option<String>,
+    text: String,
+    session_timecode: String,
+    created_at_ms: u64,
+) -> Result<(), String> {
+    let storage = state.storage.lock().expect("Storage state lock failed");
+    storage.add_session_note(
+        &session_id,
+        &note_id,
+        linked_event_id.as_deref(),
+        &text,
+        &session_timecode,
+        created_at_ms,
+    )
+}
+
+#[tauri::command]
+fn update_session_note(
+    state: State<'_, AppState>,
+    note_id: String,
+    text: String,
+) -> Result<(), String> {
+    let storage = state.storage.lock().expect("Storage state lock failed");
+    storage.update_session_note(&note_id, &text)
+}
+
+#[tauri::command]
+fn delete_session_note(state: State<'_, AppState>, note_id: String) -> Result<(), String> {
+    let storage = state.storage.lock().expect("Storage state lock failed");
+    storage.delete_session_note(&note_id)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let connection_state = Arc::new(Mutex::new(ConnectionState {
@@ -362,7 +427,12 @@ pub fn run() {
             list_saved_sessions,
             load_session_events,
             start_new_session,
-            delete_saved_session
+            delete_saved_session,
+            set_event_curation,
+            list_session_curation,
+            add_session_note,
+            update_session_note,
+            delete_session_note
         ])
         .run(tauri::generate_context!())
         .expect("error while running Recall Studio");

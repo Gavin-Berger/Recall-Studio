@@ -2,6 +2,11 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RecallEvent {
+    // SQLite rowid, stamped in once the event is persisted. Carried into the
+    // live-emitted event so a live event shares the same identity it will have
+    // when the session is later loaded from the database. None until persisted.
+    #[serde(default)]
+    pub id: Option<i64>,
     pub protocol: String,
     pub source: String,
     pub event_type: String,

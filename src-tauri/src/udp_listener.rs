@@ -418,7 +418,7 @@ fn assign_session_if_active(event: &mut RecallEvent, session: &Arc<Mutex<Session
     }
 }
 
-fn persist_event_if_session_owned(event: &RecallEvent, storage: &Arc<Mutex<StorageState>>) {
+fn persist_event_if_session_owned(event: &mut RecallEvent, storage: &Arc<Mutex<StorageState>>) {
     // Heartbeats are connection-health signals — never persisted.
     // They generate ~3600 useless rows per hour and contain no creative information.
     if event.event_type == "heartbeat" {
@@ -432,11 +432,14 @@ fn persist_event_if_session_owned(event: &RecallEvent, storage: &Arc<Mutex<Stora
     let storage_state = storage.lock().expect("Storage state lock failed");
 
     match storage_state.save_event(event) {
-        Ok(_) => {
+        Ok(rowid) => {
+            // Stamp the stable identity so the live event matches its saved self.
+            event.id = rowid;
+
             if VERBOSE_UDP_LOGGING {
                 println!(
-                    "EVENT PERSISTED -> event_type: {}, session_id: {:?}",
-                    event.event_type, event.session_id
+                    "EVENT PERSISTED -> id: {:?}, event_type: {}, session_id: {:?}",
+                    event.id, event.event_type, event.session_id
                 );
             }
         }
@@ -511,7 +514,7 @@ pub fn start_udp_listener(
                             }
 
                             assign_session_if_active(&mut event, &session);
-                            persist_event_if_session_owned(&event, &storage);
+                            persist_event_if_session_owned(&mut event, &storage);
                             push_event(&events, event.clone());
 
                             // Push to frontend in real-time.

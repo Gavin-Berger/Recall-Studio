@@ -14,6 +14,29 @@ pub struct StorageStatus {
     pub db_path: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct EventCuration {
+    pub event_id: String,
+    pub hidden: bool,
+    pub title_override: Option<String>,
+    pub description_override: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct StoredSessionNote {
+    pub id: String,
+    pub linked_event_id: Option<String>,
+    pub text: String,
+    pub session_timecode: String,
+    pub created_at_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SessionCuration {
+    pub curations: Vec<EventCuration>,
+    pub notes: Vec<StoredSessionNote>,
+}
+
 #[derive(Debug, Clone)]
 pub struct StorageState {
     db_path: Option<PathBuf>,
@@ -251,6 +274,20 @@ impl StorageState {
             )
             .map_err(|error| format!("Failed to delete session events: {}", error))?;
 
+        transaction
+            .execute(
+                "DELETE FROM event_curation WHERE session_id = ?1",
+                params![session_id],
+            )
+            .map_err(|error| format!("Failed to delete session curation: {}", error))?;
+
+        transaction
+            .execute(
+                "DELETE FROM session_notes WHERE session_id = ?1",
+                params![session_id],
+            )
+            .map_err(|error| format!("Failed to delete session notes: {}", error))?;
+
         let deleted_sessions = transaction
             .execute("DELETE FROM sessions WHERE id = ?1", params![session_id])
             .map_err(|error| format!("Failed to delete session: {}", error))?;
@@ -320,9 +357,11 @@ impl StorageState {
         Ok(())
     }
 
-    pub fn save_event(&self, event: &RecallEvent) -> Result<(), String> {
+    // Returns the inserted rowid so the caller can stamp a stable identity onto
+    // the live event. Returns None when the event is not session-owned (not saved).
+    pub fn save_event(&self, event: &RecallEvent) -> Result<Option<i64>, String> {
         if event.session_id.is_none() {
-            return Ok(());
+            return Ok(None);
         }
 
         let connection = self.open_connection()?;
@@ -356,6 +395,178 @@ impl StorageState {
                 ],
             )
             .map_err(|error| format!("Failed to save event: {}", error))?;
+
+        Ok(Some(connection.last_insert_rowid()))
+    }
+
+    pub fn set_event_curation(
+        &self,
+        session_id: &str,
+        event_id: &str,
+        hidden: bool,
+        title_override: Option<&str>,
+        description_override: Option<&str>,
+    ) -> Result<(), String> {
+        let connection = self.open_connection()?;
+
+        // No curation left on this event — drop the row to keep the table sparse.
+        if !hidden && title_override.is_none() && description_override.is_none() {
+            connection
+                .execute(
+                    "DELETE FROM event_curation WHERE session_id = ?1 AND event_id = ?2",
+                    params![session_id, event_id],
+                )
+                .map_err(|error| format!("Failed to clear event curation: {}", error))?;
+
+            return Ok(());
+        }
+
+        connection
+            .execute(
+                "
+                INSERT INTO event_curation (
+                    session_id,
+                    event_id,
+                    hidden,
+                    title_override,
+                    description_override,
+                    updated_at_ms
+                )
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                ON CONFLICT(session_id, event_id) DO UPDATE SET
+                    hidden = excluded.hidden,
+                    title_override = excluded.title_override,
+                    description_override = excluded.description_override,
+                    updated_at_ms = excluded.updated_at_ms
+                ",
+                params![
+                    session_id,
+                    event_id,
+                    hidden as i64,
+                    title_override,
+                    description_override,
+                    now_ms() as i64,
+                ],
+            )
+            .map_err(|error| format!("Failed to save event curation: {}", error))?;
+
+        Ok(())
+    }
+
+    pub fn list_session_curation(&self, session_id: &str) -> Result<SessionCuration, String> {
+        let connection = self.open_connection()?;
+
+        let mut curation_statement = connection
+            .prepare(
+                "
+                SELECT event_id, hidden, title_override, description_override
+                FROM event_curation
+                WHERE session_id = ?1
+                ",
+            )
+            .map_err(|error| format!("Failed to prepare curation query: {}", error))?;
+
+        let curations = curation_statement
+            .query_map(params![session_id], |row| {
+                Ok(EventCuration {
+                    event_id: row.get(0)?,
+                    hidden: row.get::<_, i64>(1)? != 0,
+                    title_override: row.get(2)?,
+                    description_override: row.get(3)?,
+                })
+            })
+            .map_err(|error| format!("Failed to read curation: {}", error))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| format!("Failed to collect curation: {}", error))?;
+
+        let mut note_statement = connection
+            .prepare(
+                "
+                SELECT id, linked_event_id, text, session_timecode, created_at_ms
+                FROM session_notes
+                WHERE session_id = ?1
+                ORDER BY created_at_ms ASC
+                ",
+            )
+            .map_err(|error| format!("Failed to prepare notes query: {}", error))?;
+
+        let notes = note_statement
+            .query_map(params![session_id], |row| {
+                Ok(StoredSessionNote {
+                    id: row.get(0)?,
+                    linked_event_id: row.get(1)?,
+                    text: row.get(2)?,
+                    session_timecode: row.get(3)?,
+                    created_at_ms: row.get::<_, i64>(4)? as u64,
+                })
+            })
+            .map_err(|error| format!("Failed to read notes: {}", error))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| format!("Failed to collect notes: {}", error))?;
+
+        Ok(SessionCuration { curations, notes })
+    }
+
+    pub fn add_session_note(
+        &self,
+        session_id: &str,
+        note_id: &str,
+        linked_event_id: Option<&str>,
+        text: &str,
+        session_timecode: &str,
+        created_at_ms: u64,
+    ) -> Result<(), String> {
+        let connection = self.open_connection()?;
+
+        connection
+            .execute(
+                "
+                INSERT INTO session_notes (
+                    id,
+                    session_id,
+                    linked_event_id,
+                    text,
+                    session_timecode,
+                    created_at_ms
+                )
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                ",
+                params![
+                    note_id,
+                    session_id,
+                    linked_event_id,
+                    text,
+                    session_timecode,
+                    created_at_ms as i64,
+                ],
+            )
+            .map_err(|error| format!("Failed to add session note: {}", error))?;
+
+        Ok(())
+    }
+
+    pub fn update_session_note(&self, note_id: &str, text: &str) -> Result<(), String> {
+        let connection = self.open_connection()?;
+
+        connection
+            .execute(
+                "UPDATE session_notes SET text = ?1 WHERE id = ?2",
+                params![text, note_id],
+            )
+            .map_err(|error| format!("Failed to update session note: {}", error))?;
+
+        Ok(())
+    }
+
+    pub fn delete_session_note(&self, note_id: &str) -> Result<(), String> {
+        let connection = self.open_connection()?;
+
+        connection
+            .execute(
+                "DELETE FROM session_notes WHERE id = ?1",
+                params![note_id],
+            )
+            .map_err(|error| format!("Failed to delete session note: {}", error))?;
 
         Ok(())
     }
@@ -420,6 +631,28 @@ pub fn initialize_database(db_path: &Path) -> rusqlite::Result<()> {
 
         CREATE INDEX IF NOT EXISTS idx_events_timestamp_ms
         ON events(timestamp_ms);
+
+        CREATE TABLE IF NOT EXISTS event_curation (
+            session_id TEXT NOT NULL,
+            event_id TEXT NOT NULL,
+            hidden INTEGER NOT NULL DEFAULT 0,
+            title_override TEXT,
+            description_override TEXT,
+            updated_at_ms INTEGER NOT NULL,
+            PRIMARY KEY (session_id, event_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS session_notes (
+            id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL,
+            linked_event_id TEXT,
+            text TEXT NOT NULL,
+            session_timecode TEXT NOT NULL,
+            created_at_ms INTEGER NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_session_notes_session
+        ON session_notes(session_id);
         ",
     )?;
 

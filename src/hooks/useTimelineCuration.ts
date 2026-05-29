@@ -1,4 +1,5 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import type { RecallTimelineMoment } from "../types/recall";
 import type {
   AddNoteOptions,
@@ -9,9 +10,11 @@ import type {
   TimelineItemEdits,
 } from "../types/timeline";
 
-// NOTE: Curation state is local (in-memory) only.
-// Hidden items and edits do NOT persist across app restarts.
-// Persistence requires backend support — wire it up when available.
+// Curation (edits, hidden state, notes) is persisted per session in SQLite via
+// the Rust backend. It is keyed by (sessionId, eventId). Saved sessions have
+// stable rowid-backed event IDs, so curation rehydrates reliably on reload.
+// Live-mode event IDs are positional and ephemeral, so curation is only
+// persisted when a sessionId is supplied (review/saved surface).
 
 type ItemCuration = {
   edits: TimelineItemEdits;
@@ -25,13 +28,83 @@ type UseTimelineCurationReturn = {
   actions: TimelineCurationActions;
 };
 
+type BackendEventCuration = {
+  event_id: string;
+  hidden: boolean;
+  title_override: string | null;
+  description_override: string | null;
+};
+
+type BackendSessionNote = {
+  id: string;
+  linked_event_id: string | null;
+  text: string;
+  session_timecode: string;
+  created_at_ms: number;
+};
+
+type BackendSessionCuration = {
+  curations: BackendEventCuration[];
+  notes: BackendSessionNote[];
+};
+
 export function useTimelineCuration(
   events: RecallTimelineMoment[],
+  sessionId: string | null,
 ): UseTimelineCurationReturn {
   const [itemCuration, setItemCuration] = useState<Map<string, ItemCuration>>(
     () => new Map(),
   );
   const [notes, setNotes] = useState<SessionNote[]>([]);
+
+  // Hydrate curation from the backend whenever the session changes.
+  useEffect(() => {
+    let cancelled = false;
+
+    if (!sessionId) {
+      setItemCuration(new Map());
+      setNotes([]);
+      return;
+    }
+
+    async function hydrate(id: string) {
+      try {
+        const result = await invoke<BackendSessionCuration>(
+          "list_session_curation",
+          { sessionId: id },
+        );
+        if (cancelled) return;
+
+        const map = new Map<string, ItemCuration>();
+        for (const c of result.curations) {
+          const edits: TimelineItemEdits = {};
+          if (c.title_override !== null) edits.title = c.title_override;
+          if (c.description_override !== null)
+            edits.description = c.description_override;
+          map.set(c.event_id, { edits, isHidden: c.hidden });
+        }
+        setItemCuration(map);
+
+        setNotes(
+          result.notes.map((n) => ({
+            id: n.id,
+            text: n.text,
+            createdAt: n.created_at_ms,
+            sessionTimecode: n.session_timecode,
+            linkedEventId: n.linked_event_id,
+          })),
+        );
+      } catch (error) {
+        console.error("Failed to load session curation:", error);
+      }
+    }
+
+    hydrate(sessionId);
+
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionId]);
 
   const allItems = useMemo<TimelineItem[]>(() => {
     return events.map((event) => {
@@ -61,6 +134,17 @@ export function useTimelineCuration(
     [notes],
   );
 
+  function persistCuration(id: string, curation: ItemCuration) {
+    if (!sessionId) return;
+    invoke("set_event_curation", {
+      sessionId,
+      eventId: id,
+      hidden: curation.isHidden,
+      titleOverride: curation.edits.title ?? null,
+      descriptionOverride: curation.edits.description ?? null,
+    }).catch((error) => console.error("Failed to persist curation:", error));
+  }
+
   function editItem(id: string, payload: EditItemPayload) {
     setItemCuration((prev) => {
       const next = new Map(prev);
@@ -80,7 +164,9 @@ export function useTimelineCuration(
         newEdits.description = payload.description;
       }
 
-      next.set(id, { ...existing, edits: newEdits });
+      const updated = { ...existing, edits: newEdits };
+      next.set(id, updated);
+      persistCuration(id, updated);
       return next;
     });
   }
@@ -89,7 +175,9 @@ export function useTimelineCuration(
     setItemCuration((prev) => {
       const next = new Map(prev);
       const existing = next.get(id) ?? { edits: {}, isHidden: false };
-      next.set(id, { ...existing, isHidden: true });
+      const updated = { ...existing, isHidden: true };
+      next.set(id, updated);
+      persistCuration(id, updated);
       return next;
     });
   }
@@ -98,7 +186,9 @@ export function useTimelineCuration(
     setItemCuration((prev) => {
       const next = new Map(prev);
       const existing = next.get(id) ?? { edits: {}, isHidden: false };
-      next.set(id, { ...existing, isHidden: false });
+      const updated = { ...existing, isHidden: false };
+      next.set(id, updated);
+      persistCuration(id, updated);
       return next;
     });
   }
@@ -112,16 +202,40 @@ export function useTimelineCuration(
       linkedEventId: options?.linkedEventId ?? null,
     };
     setNotes((prev) => [...prev, note]);
+
+    if (sessionId) {
+      invoke("add_session_note", {
+        sessionId,
+        noteId: note.id,
+        linkedEventId: note.linkedEventId,
+        text: note.text,
+        sessionTimecode: note.sessionTimecode,
+        createdAtMs: note.createdAt,
+      }).catch((error) => console.error("Failed to persist note:", error));
+    }
   }
 
   function deleteNote(noteId: string) {
     setNotes((prev) => prev.filter((n) => n.id !== noteId));
+
+    if (sessionId) {
+      invoke("delete_session_note", { noteId }).catch((error) =>
+        console.error("Failed to delete note:", error),
+      );
+    }
   }
 
   function editNote(noteId: string, text: string) {
+    const trimmed = text.trim();
     setNotes((prev) =>
-      prev.map((n) => (n.id === noteId ? { ...n, text: text.trim() } : n)),
+      prev.map((n) => (n.id === noteId ? { ...n, text: trimmed } : n)),
     );
+
+    if (sessionId) {
+      invoke("update_session_note", { noteId, text: trimmed }).catch((error) =>
+        console.error("Failed to update note:", error),
+      );
+    }
   }
 
   const actions: TimelineCurationActions = {

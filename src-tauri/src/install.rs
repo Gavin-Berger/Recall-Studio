@@ -26,6 +26,9 @@ pub struct InstallDetection {
     // The path the UI should pre-fill: the first candidate that exists, else the
     // platform default so the user can install (and create) it in one click.
     pub recommended: Option<String>,
+    // Version of the bridge script the app ships, so the setup screen can show
+    // what would be installed before the user clicks. None if running unbundled.
+    pub bridge_version: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -114,9 +117,14 @@ pub fn detect_bridge_install_targets(app: AppHandle) -> InstallDetection {
                 .map(|c| c.path.clone())
         });
 
+    let bridge_version = bundled_device_dir(&app)
+        .ok()
+        .and_then(|dir| parse_bridge_version(&dir.join(BRIDGE_SCRIPT_FILE)));
+
     InstallDetection {
         candidates,
         recommended,
+        bridge_version,
     }
 }
 

@@ -1,22 +1,9 @@
-import { useEffect, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
 import type {
   ConnectionStatus,
   PlaybackState,
   SessionStats,
   SessionViewMode,
 } from "../types/recall";
-
-type InstallTarget = { path: string; exists: boolean };
-type InstallDetection = {
-  candidates: InstallTarget[];
-  recommended: string | null;
-};
-type InstallResult = {
-  installed_dir: string;
-  files: string[];
-  bridge_version: string | null;
-};
 
 type CaptureReadinessPanelProps = {
   connection: ConnectionStatus;
@@ -69,8 +56,6 @@ export function CaptureReadinessPanel({
         </span>
       </div>
 
-      {viewMode === "live" && !connection.connected && <BridgeInstaller />}
-
       <div className="capture-readiness__steps">
         {readinessSteps.map((step) => (
           <div className={step.complete ? "is-complete" : ""} key={step.label}>
@@ -104,91 +89,6 @@ export function CaptureReadinessPanel({
         <pre>{buildPreviewText(playback)}</pre>
       </div>
     </section>
-  );
-}
-
-function BridgeInstaller() {
-  const [path, setPath] = useState("");
-  const [detected, setDetected] = useState(false);
-  const [installing, setInstalling] = useState(false);
-  const [result, setResult] = useState<InstallResult | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    invoke<InstallDetection>("detect_bridge_install_targets")
-      .then((detection) => {
-        if (cancelled) return;
-        if (detection.recommended) setPath(detection.recommended);
-        setDetected(true);
-      })
-      .catch(() => {
-        if (!cancelled) setDetected(true);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  async function handleInstall() {
-    setInstalling(true);
-    setError(null);
-    setResult(null);
-    try {
-      const res = await invoke<InstallResult>("install_bridge", {
-        targetRoot: path,
-      });
-      setResult(res);
-    } catch (e) {
-      setError(typeof e === "string" ? e : "Install failed.");
-    } finally {
-      setInstalling(false);
-    }
-  }
-
-  return (
-    <div className="bridge-installer">
-      <div className="bridge-installer__head">
-        <span className="eyebrow">Step 1 — Install the Ableton bridge</span>
-        <p>
-          Drops the Recall Studio device into your Ableton User Library. Then in
-          Live: add it to a track from the browser and hit <strong>start
-          bridge</strong>.
-        </p>
-      </div>
-
-      <label className="bridge-installer__field">
-        <span>Ableton User Library</span>
-        <input
-          type="text"
-          value={path}
-          onChange={(e) => setPath(e.target.value)}
-          placeholder={
-            detected ? "Path to your Ableton User Library" : "Detecting…"
-          }
-          spellCheck={false}
-        />
-      </label>
-
-      <button
-        type="button"
-        className="bridge-installer__btn"
-        onClick={handleInstall}
-        disabled={installing || !path.trim()}
-      >
-        {installing ? "Installing…" : "Install Bridge to Ableton"}
-      </button>
-
-      {result && (
-        <p className="bridge-installer__ok">
-          Installed{result.bridge_version ? ` v${result.bridge_version}` : ""} to{" "}
-          <code>{result.installed_dir}</code>. Restart Live (or rescan the
-          browser) if it doesn't appear yet.
-        </p>
-      )}
-
-      {error && <p className="bridge-installer__err">{error}</p>}
-    </div>
   );
 }
 

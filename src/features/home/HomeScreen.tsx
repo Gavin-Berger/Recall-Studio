@@ -1,4 +1,5 @@
 import { RecallMark } from "../../components/RecallMark";
+import { BridgeSetup } from "./BridgeSetup";
 import type { ConnectionStatus, SavedSessionMetadata } from "../../types/recall";
 
 type HomeScreenProps = {
@@ -44,6 +45,8 @@ export function HomeScreen({
       </header>
 
       <div className="home-screen__body">
+        <BridgeSetup connection={connection} />
+
         {activeSession && (
           <section className="home-active-session">
             <div className="home-active-session__info">

@@ -393,6 +393,176 @@
   background: var(--sage);
 }
 
+/* Bridge setup / device install */
+.bridge-setup {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 18px 20px;
+  border: 1px solid rgba(197, 111, 77, 0.28);
+  border-radius: var(--radius-sm);
+  background:
+    radial-gradient(circle at 12% 0%, rgba(197, 111, 77, 0.08), transparent 22rem),
+    var(--panel-2);
+}
+
+.bridge-setup__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.bridge-setup__header h2 {
+  margin: 5px 0 0;
+  font-family: var(--font-display);
+  font-size: 1.12rem;
+  line-height: 1.15;
+  color: var(--paper-strong);
+}
+
+.bridge-setup__versions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.bridge-setup__chip {
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--panel-3);
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.bridge-setup__chip--live {
+  color: var(--sage);
+  border-color: rgba(127, 146, 126, 0.32);
+  background: rgba(127, 146, 126, 0.06);
+}
+
+.bridge-setup__columns {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr);
+  gap: 22px;
+}
+
+.bridge-setup__block h3,
+.bridge-setup__notes h3 {
+  margin: 0 0 8px;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--faint);
+}
+
+.bridge-setup__list {
+  margin: 0;
+  padding-left: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.bridge-setup__list li {
+  font-size: 0.84rem;
+  line-height: 1.45;
+  color: var(--muted);
+}
+
+.bridge-setup__list strong {
+  color: var(--paper-strong);
+  font-weight: 600;
+}
+
+.bridge-setup__hint {
+  margin: 0 0 10px;
+  font-size: 0.82rem;
+  line-height: 1.45;
+  color: var(--muted);
+}
+
+.bridge-setup__field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 10px;
+}
+
+.bridge-setup__field span {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--faint);
+}
+
+.bridge-setup__field input {
+  padding: 9px 11px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+}
+
+.bridge-setup__field input:focus {
+  outline: none;
+  border-color: var(--brass);
+}
+
+.bridge-setup__btn {
+  align-self: flex-start;
+  padding: 10px 18px;
+  background: var(--brass);
+  border: 0;
+  border-radius: 8px;
+  color: #1a1410;
+  font-size: 0.85rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: opacity 120ms ease;
+}
+
+.bridge-setup__btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.bridge-setup__btn:not(:disabled):hover {
+  opacity: 0.9;
+}
+
+.bridge-setup__ok,
+.bridge-setup__err {
+  margin: 10px 0 0;
+  font-size: 0.8rem;
+  line-height: 1.5;
+}
+
+.bridge-setup__ok {
+  color: var(--muted);
+}
+
+.bridge-setup__ok code {
+  font-family: var(--font-mono);
+  font-size: 0.73rem;
+  color: var(--paper-strong);
+  word-break: break-all;
+}
+
+.bridge-setup__err {
+  color: #d98b6a;
+}
+
+.bridge-setup__notes {
+  border-top: 1px solid var(--line);
+  padding-top: 14px;
+}
+
 /* Active session callout */
 .home-active-session {
   display: flex;
@@ -2274,100 +2444,6 @@
   padding: 12px;
 }
 
-.bridge-installer {
-  grid-column: 1 / -1;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  padding: 14px;
-  border: 1px solid rgba(197, 111, 77, 0.3);
-  border-radius: 12px;
-  background: rgba(197, 111, 77, 0.06);
-}
-
-.bridge-installer__head p {
-  margin: 4px 0 0;
-  color: var(--muted);
-  font-size: 0.84rem;
-  line-height: 1.5;
-}
-
-.bridge-installer__head strong {
-  color: var(--paper-strong);
-  font-weight: 600;
-}
-
-.bridge-installer__field {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.bridge-installer__field span {
-  font-size: 0.72rem;
-  text-transform: uppercase;
-  letter-spacing: 0.07em;
-  color: var(--faint);
-}
-
-.bridge-installer__field input {
-  padding: 9px 11px;
-  background: var(--panel-2);
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  color: var(--ink);
-  font-family: var(--font-mono);
-  font-size: 0.8rem;
-}
-
-.bridge-installer__field input:focus {
-  outline: none;
-  border-color: var(--brass);
-}
-
-.bridge-installer__btn {
-  align-self: flex-start;
-  padding: 10px 18px;
-  background: var(--brass);
-  border: 0;
-  border-radius: 8px;
-  color: #1a1410;
-  font-size: 0.86rem;
-  font-weight: 700;
-  cursor: pointer;
-  transition: opacity 120ms ease;
-}
-
-.bridge-installer__btn:disabled {
-  opacity: 0.5;
-  cursor: default;
-}
-
-.bridge-installer__btn:not(:disabled):hover {
-  opacity: 0.9;
-}
-
-.bridge-installer__ok,
-.bridge-installer__err {
-  margin: 0;
-  font-size: 0.8rem;
-  line-height: 1.5;
-}
-
-.bridge-installer__ok {
-  color: var(--muted);
-}
-
-.bridge-installer__ok code {
-  font-family: var(--font-mono);
-  font-size: 0.74rem;
-  color: var(--paper-strong);
-  word-break: break-all;
-}
-
-.bridge-installer__err {
-  color: #d98b6a;
-}
 
 .capture-readiness__promise h2 {
   margin: 6px 0 8px;

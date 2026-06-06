@@ -24,6 +24,11 @@ pub struct RecallEvent {
     // Fields are optional because older v1 events may not include them.
     #[serde(default)]
     pub track_name: Option<String>,
+    // The kind of track the event is about: "audio", "midi", "return", "group",
+    // or "master". Lets the timeline say *what* a producer was working on, not
+    // just its name — audio vs MIDI vs a bus are different creative contexts.
+    #[serde(default)]
+    pub track_type: Option<String>,
     #[serde(default)]
     pub device_name: Option<String>,
     #[serde(default)]

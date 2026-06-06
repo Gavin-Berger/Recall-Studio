@@ -1,3 +1,4 @@
+mod event_catalog;
 mod install;
 mod metrics;
 mod protocol;

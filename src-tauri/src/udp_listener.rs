@@ -1,3 +1,6 @@
+use crate::event_catalog::{
+    classify_priority, description_for_event_type, title_for_event_type, EventPriority,
+};
 use crate::metrics::BridgeMetrics;
 use crate::protocol::RecallEvent;
 use crate::session::SessionState;
@@ -35,37 +38,9 @@ const PERSIST_BATCH_MAX: usize = 256;
 // sessions from SQLite, so trimming the oldest live events is safe.
 const LIVE_BUFFER_MAX: usize = 50_000;
 
-// Event priority for graceful overload. Critical creative actions must never be
-// dropped; coalescible high-frequency telemetry is the first to shed when the
-// queue is saturated.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum EventPriority {
-    Critical,
-    Important,
-    Coalescible,
-}
-
-fn classify_priority(event_type: &str) -> EventPriority {
-    match event_type {
-        // Discrete creative actions and lifecycle — must always be captured.
-        "track_created" | "track_deleted" | "track_name_changed" | "clip_created"
-        | "clip_deleted" | "clip_recording_started" | "clip_recording_stopped" | "device_added"
-        | "device_removed" | "device_chain_changed" | "creative_decision" | "bridge_started"
-        | "bridge_stopped" | "session_snapshot" | "automation_created"
-        | "track_muted" | "track_unmuted" | "track_soloed" | "track_unsoloed"
-        | "track_armed" | "track_unarmed"
-        | "sample_added" | "audio_clip_added" | "midi_clip_created" => EventPriority::Critical,
-
-        // Meaningful context worth keeping unless truly saturated.
-        "tempo_changed" | "transport_play" | "transport_stop" | "scene_launched"
-        | "clip_launched" | "device_selected" | "project_file_changed" | "live_set_snapshot" => {
-            EventPriority::Important
-        }
-
-        // High-frequency / re-derivable telemetry — safe to shed under pressure.
-        _ => EventPriority::Coalescible,
-    }
-}
+// Event priority (overload shedding) now lives in `event_catalog.rs` alongside
+// the rest of each event's static metadata. `classify_priority` and
+// `EventPriority` are imported at the top of this file.
 
 #[derive(Debug, Clone)]
 pub struct ConnectionState {
@@ -117,127 +92,9 @@ fn protocol_is_supported(protocol: &str) -> bool {
     matches!(protocol, "recall.v1" | "recall.v2" | "recall.protocol.v1")
 }
 
-fn title_for_event_type(event_type: &str) -> String {
-    match event_type {
-        "heartbeat" => "Heartbeat Received".to_string(),
-        "bridge_started" => "Ableton Bridge Started".to_string(),
-        "bridge_stopped" => "Ableton Bridge Stopped".to_string(),
-
-        "tempo_changed" => "Tempo Changed".to_string(),
-        "transport_play" => "Playback Started".to_string(),
-        "transport_stop" => "Playback Stopped".to_string(),
-        "playback_state_changed" => "Playback State Changed".to_string(),
-        "beat_time_changed" => "Beat Time Changed".to_string(),
-        "transport_changed" => "Transport Changed".to_string(),
-        "recording_state_changed" => "Recording State Changed".to_string(),
-
-        "track_name_changed" => "Track Name Changed".to_string(),
-        "track_selected" => "Track Selected".to_string(),
-        "track_created" => "Track Created".to_string(),
-        "track_deleted" => "Track Deleted".to_string(),
-        "track_event" => "Track Event".to_string(),
-
-        "clip_event" => "Clip Event".to_string(),
-        "clip_created" => "Clip Created".to_string(),
-        "sample_added" => "Sample Added".to_string(),
-        "audio_clip_added" => "Audio Clip Added".to_string(),
-        "midi_clip_created" => "MIDI Clip Created".to_string(),
-        "automation_created" => "Automation Created".to_string(),
-        "track_muted" => "Track Muted".to_string(),
-        "track_unmuted" => "Track Unmuted".to_string(),
-        "track_soloed" => "Track Soloed".to_string(),
-        "track_unsoloed" => "Track Unsoloed".to_string(),
-        "track_armed" => "Track Armed".to_string(),
-        "track_unarmed" => "Track Unarmed".to_string(),
-        "clip_launched" => "Clip Launched".to_string(),
-        "clip_stopped" => "Clip Stopped".to_string(),
-        "clip_deleted" => "Clip Deleted".to_string(),
-        "clip_recording_started" => "Clip Recording Started".to_string(),
-        "clip_recording_stopped" => "Clip Recording Stopped".to_string(),
-
-        "scene_changed" => "Scene Changed".to_string(),
-        "scene_launched" => "Scene Launched".to_string(),
-
-        "device_added" => "Device Added".to_string(),
-        "device_removed" => "Device Removed".to_string(),
-        "device_chain_changed" => "Signal Chain Changed".to_string(),
-        "device_event" => "Device Event".to_string(),
-        "device_selected" => "Device Selected".to_string(),
-        "device_parameter_changed" | "parameter_changed" => "Parameter Changed".to_string(),
-
-        "group_focused" => "Group Focused".to_string(),
-        "live_set_snapshot" => "Live Set Snapshot".to_string(),
-        "project_file_changed" => "Project File Changed".to_string(),
-        "session_snapshot" => "Session Snapshot".to_string(),
-        "creative_decision" => "Creative Decision".to_string(),
-
-        "raw_max_message" => "Raw Max Message".to_string(),
-
-        _ => format!("Recall Event: {}", event_type),
-    }
-}
-
-fn description_for_event_type(event_type: &str) -> String {
-    match event_type {
-        "heartbeat" => "Heartbeat received from the Max for Live bridge.".to_string(),
-        "bridge_started" => "The Max for Live bridge started sending events.".to_string(),
-        "bridge_stopped" => "The Max for Live bridge stopped sending events.".to_string(),
-
-        "tempo_changed" => "Ableton tempo changed.".to_string(),
-        "transport_play" => "Ableton playback started.".to_string(),
-        "transport_stop" => "Ableton playback stopped.".to_string(),
-        "playback_state_changed" => "Ableton playback state changed.".to_string(),
-        "beat_time_changed" => "Ableton beat position changed.".to_string(),
-        "transport_changed" => "Ableton transport state changed.".to_string(),
-        "recording_state_changed" => "Ableton recording state changed.".to_string(),
-
-        "track_name_changed" => "Ableton track name changed.".to_string(),
-        "track_selected" => "Ableton selected track changed.".to_string(),
-        "track_created" => "A track was created in Ableton.".to_string(),
-        "track_deleted" => "A track was deleted in Ableton.".to_string(),
-        "track_event" => "Ableton track event received.".to_string(),
-
-        "clip_event" => "Ableton clip event received.".to_string(),
-        "clip_created" => "A clip was created in Ableton.".to_string(),
-        "sample_added" => "A sample was added to a track in Ableton.".to_string(),
-        "audio_clip_added" => "An audio clip was added to a track in Ableton.".to_string(),
-        "midi_clip_created" => "A MIDI clip was created in Ableton.".to_string(),
-        "automation_created" => "Automation was written on a parameter in Ableton.".to_string(),
-        "track_muted" => "A track was muted in Ableton.".to_string(),
-        "track_unmuted" => "A track was unmuted in Ableton.".to_string(),
-        "track_soloed" => "A track was soloed in Ableton.".to_string(),
-        "track_unsoloed" => "A track was unsoloed in Ableton.".to_string(),
-        "track_armed" => "A track was armed for recording in Ableton.".to_string(),
-        "track_unarmed" => "A track was unarmed in Ableton.".to_string(),
-        "clip_launched" => "An Ableton clip was launched.".to_string(),
-        "clip_stopped" => "An Ableton clip was stopped.".to_string(),
-        "clip_deleted" => "An Ableton clip was deleted.".to_string(),
-        "clip_recording_started" => "Ableton clip recording started.".to_string(),
-        "clip_recording_stopped" => "Ableton clip recording stopped.".to_string(),
-
-        "scene_changed" => "Ableton scene selection changed.".to_string(),
-        "scene_launched" => "An Ableton scene was launched.".to_string(),
-
-        "device_added" => "A device was added to the chain.".to_string(),
-        "device_removed" => "A device was removed from the chain.".to_string(),
-        "device_chain_changed" => "The device chain on the selected track changed.".to_string(),
-        "device_event" => "Ableton device event received.".to_string(),
-        "device_selected" => "Ableton selected device changed.".to_string(),
-        "device_parameter_changed" | "parameter_changed" => {
-            "A device parameter was adjusted.".to_string()
-        }
-
-        "group_focused" => "A group track was focused.".to_string(),
-        "live_set_snapshot" => "Ableton live set snapshot received.".to_string(),
-        "project_file_changed" => "Ableton project file activity was detected.".to_string(),
-        "session_snapshot" => "Ableton session snapshot received.".to_string(),
-        "creative_decision" => "Creative decision marker received.".to_string(),
-
-        "raw_max_message" => "Raw Max message received for debugging.".to_string(),
-
-        _ => format!("Recall event received: {}", event_type),
-    }
-}
+// Per-event fallback titles and descriptions now live in `event_catalog.rs`.
+// `title_for_event_type` and `description_for_event_type` are imported at the top
+// of this file and used by `normalize_udp_json` when the bridge omits its own.
 
 fn payload_to_string(value: Option<&Value>) -> String {
     match value {
@@ -398,6 +255,7 @@ fn normalize_udp_json(mut value: Value) -> Result<Value, String> {
             "selected_track_name",
         ],
     );
+    let track_type = find_string(object, payload_obj, &["track_type", "trackType"]);
     let device_name = find_string(
         object,
         payload_obj,
@@ -434,6 +292,10 @@ fn normalize_udp_json(mut value: Value) -> Result<Value, String> {
     match track_name {
         Some(v) => object.insert("track_name".to_string(), Value::String(v)),
         None => object.insert("track_name".to_string(), Value::Null),
+    };
+    match track_type {
+        Some(v) => object.insert("track_type".to_string(), Value::String(v)),
+        None => object.insert("track_type".to_string(), Value::Null),
     };
     match device_name {
         Some(v) => object.insert("device_name".to_string(), Value::String(v)),
@@ -584,7 +446,7 @@ fn run_persistence_worker(
 
             match storage_state.save_events_batch(&batch) {
                 Ok(rowids) => {
-                    for (event, rowid) in batch.iter_mut().zip(rowids.into_iter()) {
+                    for (event, rowid) in batch.iter_mut().zip(rowids) {
                         if let Some(id) = rowid {
                             event.id = Some(id);
                             metrics.incr_persisted();
@@ -764,5 +626,137 @@ pub fn get_status(state: Arc<Mutex<ConnectionState>>) -> ConnectionStatus {
         last_heartbeat_ms: connection.last_heartbeat_ms,
         last_message: connection.last_message.clone(),
         bridge_version: connection.bridge_version.clone(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! Tests for the pure ingestion logic — the part of the UDP path that has no
+    //! sockets or threads and can be exercised directly: pulling JSON out of a raw
+    //! datagram, gating the protocol version, and normalizing a packet into the
+    //! flat, fully-populated shape the rest of the app relies on.
+    use super::*;
+    use serde_json::json;
+
+    /// Normalize a packet and return its object map, panicking on rejection.
+    /// Keeps each test focused on assertions rather than unwrapping boilerplate.
+    fn normalized(value: Value) -> Map<String, Value> {
+        normalize_udp_json(value)
+            .expect("packet should normalize")
+            .as_object()
+            .expect("normalized packet is always an object")
+            .clone()
+    }
+
+    #[test]
+    fn extract_json_object_pulls_object_from_noisy_bytes() {
+        // Max's [udpsend] can wrap the JSON in stray bytes; we slice from the first
+        // '{' to the last '}'.
+        let extracted = extract_json_object(b"garbage{\"a\":1}trailing").unwrap();
+        assert_eq!(extracted, "{\"a\":1}");
+    }
+
+    #[test]
+    fn extract_json_object_errors_without_braces() {
+        assert!(extract_json_object(b"no json here").is_err());
+    }
+
+    #[test]
+    fn protocol_gate_accepts_known_versions_only() {
+        assert!(protocol_is_supported("recall.v2"));
+        assert!(protocol_is_supported("recall.v1"));
+        assert!(protocol_is_supported("recall.protocol.v1"));
+        assert!(!protocol_is_supported("recall.v9"));
+        assert!(!protocol_is_supported("nonsense"));
+    }
+
+    #[test]
+    fn normalize_rejects_unsupported_protocol() {
+        let result = normalize_udp_json(json!({ "protocol": "recall.v9", "event_type": "x" }));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn normalize_fills_missing_envelope_defaults() {
+        // A minimal packet (just an event_type) must come out fully addressed:
+        // source defaulted, timestamp stamped, title/description from the catalog,
+        // and session_id present (null) for the backend to fill later.
+        let obj = normalized(json!({ "event_type": "track_created" }));
+        assert_eq!(obj["source"], json!("max_for_live"));
+        assert!(obj["timestamp_ms"].as_u64().unwrap() > 0);
+        assert_eq!(obj["title"], json!("Track Created"));
+        assert_eq!(obj["description"], json!("A track was created in Ableton."));
+        assert!(obj.contains_key("session_id"));
+    }
+
+    #[test]
+    fn normalize_keeps_a_title_the_bridge_supplied() {
+        // The producer-facing title from the bridge must win over the catalog
+        // fallback.
+        let obj = normalized(json!({
+            "event_type": "sample_added",
+            "title": "Dropped in vocal.wav"
+        }));
+        assert_eq!(obj["title"], json!("Dropped in vocal.wav"));
+    }
+
+    #[test]
+    fn normalize_passes_top_level_canonical_fields_through() {
+        // The v2 happy path: the bridge already lifted fields to the top level.
+        let obj = normalized(json!({
+            "protocol": "recall.v2",
+            "event_type": "sample_added",
+            "track_name": "Vocals",
+            "track_type": "audio",
+            "sample_name": "Deep_House_Vocal_120bpm.wav",
+            "file_path": "C:/Splice/Deep_House_Vocal_120bpm.wav"
+        }));
+        assert_eq!(obj["track_name"], json!("Vocals"));
+        assert_eq!(obj["track_type"], json!("audio"));
+        assert_eq!(obj["sample_name"], json!("Deep_House_Vocal_120bpm.wav"));
+        assert_eq!(obj["file_path"], json!("C:/Splice/Deep_House_Vocal_120bpm.wav"));
+    }
+
+    #[test]
+    fn normalize_recovers_canonical_fields_from_payload() {
+        // A minimal sender that only nested the data inside `payload` still works:
+        // the backend digs it out and promotes it to the top level.
+        let obj = normalized(json!({
+            "event_type": "sample_added",
+            "payload": { "sample_name": "kick.wav", "track_type": "audio" }
+        }));
+        assert_eq!(obj["sample_name"], json!("kick.wav"));
+        assert_eq!(obj["track_type"], json!("audio"));
+    }
+
+    #[test]
+    fn normalize_sets_absent_canonical_fields_to_null() {
+        // The frontend relies on a flat, predictable shape — every canonical field
+        // is always present, even when null, so it never has to dig through payload.
+        let obj = normalized(json!({ "event_type": "tempo_changed", "bpm": 124.0 }));
+        assert_eq!(obj["bpm"], json!(124.0));
+        assert!(obj["track_name"].is_null());
+        assert!(obj["track_type"].is_null());
+        assert!(obj["sample_name"].is_null());
+        assert!(obj["device_name"].is_null());
+    }
+
+    #[test]
+    fn normalized_packet_round_trips_into_recall_event() {
+        // The normalized object must deserialize into the typed RecallEvent the
+        // persistence worker and frontend consume — including the new fields.
+        let value = normalize_udp_json(json!({
+            "protocol": "recall.v2",
+            "event_type": "sample_added",
+            "track_name": "Vocals",
+            "track_type": "audio",
+            "sample_name": "vox.wav"
+        }))
+        .unwrap();
+
+        let event: RecallEvent = serde_json::from_value(value).unwrap();
+        assert_eq!(event.event_type, "sample_added");
+        assert_eq!(event.track_type.as_deref(), Some("audio"));
+        assert_eq!(event.sample_name.as_deref(), Some("vox.wav"));
     }
 }

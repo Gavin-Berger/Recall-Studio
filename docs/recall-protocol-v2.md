@@ -4,6 +4,15 @@ This document is the canonical contract between the Max for Live bridge and Reca
 The Rust backend and TypeScript frontend both rely on this spec. Do not add synonyms or
 alternative field names — pick one and use it everywhere.
 
+> **Audience note.** This is the engineering wire contract — `event_type` strings and field
+> names are technical on purpose; producers never see them. The **"What the producer sees"**
+> column shows the plain-language, musical phrasing the timeline renders from each event.
+> That column is the source of truth for tone: anything producer-facing must read like a
+> producer wrote it, never like a debug log.
+
+Implemented by bridge **v0.9.0**. When the bridge and this doc disagree, the bridge is
+right and this doc is a bug — update it.
+
 ## Packet format
 
 Every event is a flat JSON object sent over UDP to `127.0.0.1:9000`.
@@ -11,106 +20,202 @@ Every event is a flat JSON object sent over UDP to `127.0.0.1:9000`.
 ```json
 {
   "protocol":        "recall.v2",
-  "event_type":      "track_selected",
+  "source":          "max_for_live",
+  "event_type":      "sample_added",
   "timestamp_ms":    1716900000000,
+  "title":           "Sample Added",
+  "description":     "Sample \"Deep_House_Vocal_120bpm.wav\" was added to \"Vocals\".",
   "track_name":      "Vocals",
-  "device_name":     null,
-  "parameter_name":  null,
-  "parameter_value": null,
-  "clip_name":       null,
-  "bpm":             128.0,
-  "playing":         false
+  "sample_name":     "Deep_House_Vocal_120bpm.wav",
+  "file_path":       "C:/Splice/samples/Deep_House_Vocal_120bpm.wav",
+  "clip_name":       "Deep_House_Vocal_120bpm",
+  "payload":         { "...": "raw detail, debugging only" },
+  "session_id":      null
 }
 ```
 
-## Required fields
+## Envelope fields
 
-| Field | Type | Description |
+| Field | Type | Who sets it | Notes |
+|---|---|---|---|
+| `protocol` | `"recall.v2"` | bridge | Version gate. `recall.v1` / `recall.protocol.v1` still accepted (see bottom). |
+| `source` | string | bridge | `"max_for_live"` for the M4L bridge, `"ableton_extension_sdk"` for the experimental SDK path. |
+| `event_type` | string | bridge | From the vocabulary below — exact, lowercase. |
+| `timestamp_ms` | integer | bridge | Milliseconds since Unix epoch. |
+| `title` | string | bridge or backend | Human title. If omitted, the backend generates one from `event_type`. |
+| `description` | string | bridge or backend | Human description. Backend generates a fallback if omitted. |
+| `payload` | object | bridge | Raw detail for debugging. Flattened to a string at storage. Never relied on for canonical fields. |
+| `session_id` | null | **backend** | Ableton must NOT assign session ownership — Recall Studio stamps this when a session is active. |
+
+The bridge also tucks `payload._bridge = { device_id, bridge_version, sequence }` into every
+packet. `sequence` increments per event and is the hook for future drop-detection.
+
+## Canonical fields
+
+These are lifted to the **top level** of the packet (not buried in `payload`) so the backend
+reads them directly. Send only what's relevant to the event; send `null` or omit the rest.
+**Never send a stale value carried over from a previous event.**
+
+| Field | Type | When to send | What the producer sees it as |
+|---|---|---|---|
+| `track_name` | string | any event about a specific track | which track they were working on |
+| `device_name` | string | `device_added` / `device_removed` | the instrument or effect, e.g. "Serum 2" |
+| `device_chain` | string | `device_*` | the full signal chain, e.g. "Serum 2 : Saturator : Vocoder" |
+| `parameter_name` | string | `automation_created` (and manual `parameter_changed`) | the knob/control, e.g. "Filter Cutoff" |
+| `parameter_value` | number | manual `parameter_changed` | the settled value |
+| `parameter_value_min` / `_max` | number | manual `parameter_changed` | the range swept during a move |
+| `clip_name` | string | `clip_*`, `sample_added`, `*_clip_*` | the clip's name |
+| `sample_name` | string | `sample_added` | the actual sample file, e.g. "Deep_House_Vocal_120bpm.wav" |
+| `file_path` | string | `sample_added` | where the sample came from on disk (Splice folder, etc.) |
+| `bpm` | number | `tempo_changed`, snapshots | the project tempo |
+| `playing` | boolean | `transport_play/stop`, snapshots | whether the set is playing |
+
+## Event vocabulary
+
+Exact, lowercase strings. The backend maps them to internal categories; unknown strings are
+logged but not classified. The **Shown?** column is how the event surfaces (see "How events
+surface" below).
+
+### Bridge lifecycle (connection health — not shown in the timeline)
+
+| `event_type` | Shown? | What the producer sees |
 |---|---|---|
-| `protocol` | `"recall.v2"` | Literal string — used for version gating |
-| `event_type` | string | From the vocabulary below — exact match, lowercase |
-| `timestamp_ms` | integer | Milliseconds since Unix epoch from Ableton's clock |
+| `heartbeat` | hidden | (drives the "Connected" light only; sent every 2s) |
+| `device_loaded` | hidden | bridge came online |
+| `bridge_started` | hidden | capture started |
+| `bridge_stopped` | hidden | capture stopped |
 
-## Optional fields
+### Transport & tempo
 
-Send these only when relevant to the event type. Send `null` or omit when not applicable.
-**Do not send stale values from a previous event.**
-
-| Field | Type | When to send |
+| `event_type` | Shown? | What the producer sees |
 |---|---|---|
-| `track_name` | string | Any event where a specific track is the subject |
-| `device_name` | string | `device_*` events |
-| `parameter_name` | string | `parameter_changed` |
-| `parameter_value` | number | `parameter_changed` — the settled final value |
-| `parameter_value_min` | number | `parameter_changed` — lowest value during the gesture |
-| `parameter_value_max` | number | `parameter_changed` — highest value during the gesture |
-| `clip_name` | string | `clip_*` events |
-| `bpm` | number | `tempo_changed`, `live_set_snapshot` |
-| `playing` | boolean | `transport_play`, `transport_stop`, `live_set_snapshot` |
+| `transport_play` | analytics | (counted as playbacks, not a timeline row) |
+| `transport_stop` | analytics | (counted, not a row — producers hit stop constantly) |
+| `transport_snapshot` | context | (internal state diff; only surfaces if something real changed) |
+| `tempo_changed` | **shown** | "Changed the tempo to 124 BPM" |
 
-## Event type vocabulary
+### Track work
 
-Use these exact strings. The Rust backend maps them to internal types; unknown strings
-are logged but not classified.
+| `event_type` | Shown? | What the producer sees |
+|---|---|---|
+| `track_selected` | context (hidden) | (navigation — deliberately not a creative moment) |
+| `selected_track_focus_snapshot` | context (hidden) | (internal detail scan of the focused track) |
+| `track_created` | **shown** | "Made a new track" |
+| `track_deleted` | **shown** | "Deleted a track" |
+| `track_name_changed` | **shown** | "Renamed the track to Bass" |
+| `track_muted` / `track_unmuted` | **shown** | "Muted the Drums" / "Unmuted the Drums" |
+| `track_soloed` / `track_unsoloed` | **shown** | "Soloed the Bass" / "Took the Bass off solo" |
+| `track_armed` / `track_unarmed` | **shown** | "Armed the Bass to record" |
 
-### System (not persisted, not shown in timeline)
-- `heartbeat` — Max for Live bridge keepalive, send every 2 seconds
+### Instruments & effects
 
-### Transport (analytics only — counted but not shown in timeline)
-- `transport_play` — user pressed play
-- `transport_stop` — user pressed stop
-- `tempo_changed` — BPM value changed (include `bpm` field)
+| `event_type` | Shown? | What the producer sees |
+|---|---|---|
+| `device_added` | **shown** | "Added Serum 2 to the Bass" |
+| `device_removed` | **shown** | "Removed Saturator from the Bass" |
+| `device_chain_changed` | **shown** | "Reworked the chain on the Bass: Serum 2 : Saturator" |
 
-### Track context (context only — informs grouping but not shown)
-- `track_selected` — user clicked a different track (include `track_name`)
+### Sounds, samples & clips
 
-### Creative actions (shown in timeline)
-- `device_added` — a device was added to a track's chain
-- `device_removed` — a device was removed
-- `clip_created` — a new clip was created
-- `clip_launched` — a clip was triggered
-- `clip_deleted` — a clip was deleted
-- `scene_launched` — a scene was triggered
-- `group_focused` — user expanded/focused a group track
-- `live_set_snapshot` — periodic full session state dump
+| `event_type` | Shown? | What the producer sees |
+|---|---|---|
+| `sample_added` | **shown** | "Dropped in Deep_House_Vocal_120bpm.wav" |
+| `audio_clip_added` | **shown** | "Added an audio clip" (recorded/resampled, no source file) |
+| `midi_clip_created` | **shown** | "Started a new MIDI clip" |
+| `clip_created` | **shown** | "Created a clip" (type unknown) |
+| `clip_deleted` | **shown** | "Deleted a clip" |
 
-### Special
-- `parameter_changed` — a device parameter value changed (see rate-limiting below)
+### Automation
 
-## Parameter rate-limiting (critical for performance)
+| `event_type` | Shown? | What the producer sees |
+|---|---|---|
+| `automation_created` | **shown** | "Automated the Filter Cutoff on Serum 2 at Bar 12" |
 
-**Do NOT send `parameter_changed` on every automation frame.** At 60fps this is 3600 events/minute per parameter — it will saturate both Ableton's M4L thread and the UDP socket.
+### Session snapshots
 
-Instead, in Max for Live:
-1. Start a timer on first change
-2. Reset the timer on each subsequent change
-3. When the timer fires (100ms of silence), send ONE `parameter_changed` event with:
-   - `parameter_value`: the final settled value
-   - `parameter_value_min`: lowest value during the gesture (optional)
-   - `parameter_value_max`: highest value during the gesture (optional)
+| `event_type` | Shown? | What the producer sees |
+|---|---|---|
+| `live_set_snapshot` | context | (full set state; only surfaces on a meaningful change) |
+| `session_snapshot` | context | (manual deep capture of the whole set) |
 
-This turns 50 micro-events into 1 meaningful event.
+### Manual entry points (sent only when a Max message is fired into the `js` object)
+
+These exist for testing/extension and are **not** part of automatic capture:
+`tempo`, `playing`, `beat_time`, `track_name`, `clip_event`, `device_event`,
+`parameter_event`, `deep_snapshot`, plus `raw_max_message` (catch-all for debugging).
+
+## How events surface to the producer
+
+The backend sorts every event into one of four roles. This is the line between "raw
+telemetry" and "the session story."
+
+| Role | Meaning | Example |
+|---|---|---|
+| **hidden** | health/navigation only; never stored as a moment | heartbeat, track selection |
+| **analytics** | counted for stats, not shown as a row | play/stop counts |
+| **context** | informs grouping; only shown if it represents a real change | snapshots |
+| **shown** | a deliberate creative move — always in the timeline | added a device, dropped a sample, wrote automation |
+
+The marketable surface — the session document and activity blocks — is built from the
+**shown** events. Everything else is plumbing.
+
+## Known capture gaps (read before alpha)
+
+The bridge **polls and diffs** Ableton; it is not told what changed. That makes some things
+structurally hard or impossible to catch. State these plainly to testers so a miss reads as
+a known limit, not a broken promise.
+
+1. **Sub-poll actions are invisible.** Anything done and undone between two scans (~2–4s,
+   slower while playing) is never seen. Fast undo/redo flurries won't all register.
+2. **Background-track automation is not captured.** Automation writing is read only on the
+   **selected** track — reading every parameter on every track is the documented Ableton
+   crash trigger. Automate a track you're not looking at and it won't be logged.
+3. **Live knob/fader moves are not captured.** Only automation *creation* is detected
+   (an envelope now exists). Riding a reverb decay by hand in real time isn't logged unless
+   it becomes automation. (`parameter_changed` is reserved/manual-only — see below.)
+4. **Session View clip slots only — Arrangement timeline clips are not diffed yet.** Sample
+   and clip detection watches Session View clip slots. Dropping a sample onto the
+   **Arrangement** timeline may not register. (High-priority gap to close.)
+5. **Background-track adds have latency.** The all-track scan is round-robin (a few tracks
+   per tick), so a device/sample added to a non-focused track can take a few seconds — up to
+   a full sweep — to appear.
+6. **No arrangement edits.** Split, crop, consolidate, warp, nudge, fades — LiveAPI doesn't
+   expose these, so they aren't captured.
+7. **No MIDI note editing.** Adding/moving/velocity of individual notes isn't captured.
+8. **Clip moves / renames / duplicates** aren't tracked (only created/deleted via slot diff).
+
+## Parameter rate-limiting (reserved)
+
+`parameter_changed` is specified but **not auto-emitted** by the current bridge (it would be
+the path to live knob-move capture; see gap #3). If/when enabled, it MUST be debounced:
+
+1. Start a timer on first change; reset it on each subsequent change.
+2. When the timer fires (≈100ms of silence) send ONE `parameter_changed` with the settled
+   `parameter_value` and optional `parameter_value_min` / `_max`.
+
+This turns a 60fps automation sweep (3600 events/min/param — enough to saturate both
+Ableton's M4L thread and the UDP socket) into one meaningful event. Sending per-frame events
+is a hard no.
 
 ## Heartbeat
 
-Send every 2 seconds while Ableton is open. Recall Studio shows "connected" if a heartbeat
+Send every 2 seconds while Ableton is open. Recall Studio shows "Connected" if a heartbeat
 arrived within the last 5 seconds.
 
 ```json
 {
-  "protocol":    "recall.v2",
-  "event_type":  "heartbeat",
+  "protocol":     "recall.v2",
+  "event_type":   "heartbeat",
   "timestamp_ms": 1716900000000
 }
 ```
 
-Heartbeats are **not** persisted to the database and **not** shown in the timeline.
-They are connection health signals only.
+Heartbeats are **not** persisted and **not** shown — connection health only. The bridge
+version travels in the heartbeat payload so the app can show which build is connected.
 
 ## Backwards compatibility
 
-The Rust backend also accepts `"recall.v1"` and `"recall.protocol.v1"` protocol strings
-for events that don't include these structured fields. Those events are still processed
-but the frontend will have to fall back to heuristic field guessing.
-
-New Max for Live patches should always use `"recall.v2"` and the canonical field names above.
+The backend also accepts `"recall.v1"` and `"recall.protocol.v1"` for events without these
+structured fields. Those are still processed, but the frontend falls back to heuristic field
+guessing and saved-session fields are recovered from `payload`. New patches should always use
+`"recall.v2"` and the canonical field names above.

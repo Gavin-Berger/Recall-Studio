@@ -59,6 +59,25 @@ the previous tick.
 - **The LOM *does* support property observers** (callbacks on change). This bridge
   deliberately does **not** use them for the hot paths; see §7 for the trade-off.
 
+### 1.0 Decision: the bridge ships inside an Audio Effect device (not a MIDI effect)
+
+The JavaScript bridge is hosted by an `.amxd` Max device. That device was switched
+from a **MIDI effect** to an **Audio Effect** (`plugin~ → plugout~` passthrough).
+
+**Why it matters.** The bridge observes the *entire* Live Set through `LiveAPI`
+regardless of which track it sits on — the host device type does not change what it can
+read. What it changes is *where a producer can legally drop the device*:
+
+- A **MIDI effect** only loads on MIDI/instrument tracks, and only *before* the
+  instrument. On a session that's mostly audio tracks it has nowhere to live.
+- An **Audio Effect** loads on **any** track — audio, instrument (after the
+  instrument), returns, and the master. The producer can drop it anywhere and capture
+  still works.
+
+So the switch is purely about **placement robustness / setup foolproofness**, not about
+capture capability. The audio passes through untouched (`plugin~`→`plugout~`); the device
+is a telemetry host that happens to sit in the audio path, not an audio processor.
+
 ### 1.1 The two read primitives
 
 Everything the bridge captures is built from exactly two LiveAPI calls:

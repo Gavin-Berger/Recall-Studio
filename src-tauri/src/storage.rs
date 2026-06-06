@@ -201,7 +201,18 @@ impl StorageState {
                     title,
                     description,
                     payload,
-                    session_id
+                    session_id,
+                    track_name,
+                    track_type,
+                    device_name,
+                    device_chain,
+                    parameter_name,
+                    parameter_value,
+                    clip_name,
+                    sample_name,
+                    file_path,
+                    bpm,
+                    playing
                 FROM events
                 WHERE session_id = ?1
                 ORDER BY timestamp_ms ASC, id ASC
@@ -219,10 +230,29 @@ impl StorageState {
                 let description: String = row.get(5)?;
                 let payload: Option<String> = row.get(6)?;
                 let session_id: Option<String> = row.get(7)?;
+
+                // Canonical columns. NULL for rows written before the columns
+                // existed; those fall back to the payload JSON below.
+                let track_name: Option<String> = row.get(8)?;
+                let track_type: Option<String> = row.get(9)?;
+                let device_name: Option<String> = row.get(10)?;
+                let device_chain: Option<String> = row.get(11)?;
+                let parameter_name: Option<String> = row.get(12)?;
+                let parameter_value: Option<f64> = row.get(13)?;
+                let clip_name: Option<String> = row.get(14)?;
+                let sample_name: Option<String> = row.get(15)?;
+                let file_path: Option<String> = row.get(16)?;
+                let bpm: Option<f64> = row.get(17)?;
+                let playing: Option<i64> = row.get(18)?;
+
                 let payload_json = payload
                     .as_deref()
                     .and_then(|payload| serde_json::from_str::<Value>(payload).ok());
+                let pj = payload_json.as_ref();
 
+                // For each field: prefer the first-class column, else recover it
+                // from the payload JSON (legacy rows). This keeps old sessions just
+                // as rich as new ones with no data migration of existing rows.
                 Ok(SavedSessionEvent {
                     id,
                     event_type: event_type.clone(),
@@ -231,12 +261,25 @@ impl StorageState {
                     title,
                     description,
                     source,
-                    track: read_payload_string(payload_json.as_ref(), &["track", "track_name"]),
-                    device: read_payload_string(payload_json.as_ref(), &["device", "device_name"]),
-                    parameter: read_payload_string(
-                        payload_json.as_ref(),
-                        &["parameter", "parameter_name"],
-                    ),
+                    track: track_name.or_else(|| read_payload_string(pj, &["track", "track_name"])),
+                    track_type: track_type.or_else(|| read_payload_string(pj, &["track_type"])),
+                    device: device_name
+                        .or_else(|| read_payload_string(pj, &["device", "device_name"])),
+                    device_chain: device_chain
+                        .or_else(|| read_payload_string(pj, &["device_chain", "chain"])),
+                    parameter: parameter_name
+                        .or_else(|| read_payload_string(pj, &["parameter", "parameter_name"])),
+                    parameter_value: parameter_value
+                        .or_else(|| read_payload_f64(pj, &["parameter_value", "value"])),
+                    clip_name: clip_name.or_else(|| read_payload_string(pj, &["clip_name", "clip"])),
+                    sample_name: sample_name
+                        .or_else(|| read_payload_string(pj, &["sample_name", "sample"])),
+                    file_path: file_path
+                        .or_else(|| read_payload_string(pj, &["file_path", "path"])),
+                    bpm: bpm.or_else(|| read_payload_f64(pj, &["bpm", "tempo"])),
+                    playing: playing
+                        .map(|value| value != 0)
+                        .or_else(|| read_payload_bool(pj, &["playing", "is_playing"])),
                     payload,
                     session_id,
                     is_heartbeat: event_type == "heartbeat",
@@ -385,9 +428,23 @@ impl StorageState {
                         title,
                         description,
                         payload,
+                        track_name,
+                        track_type,
+                        device_name,
+                        device_chain,
+                        parameter_name,
+                        parameter_value,
+                        clip_name,
+                        sample_name,
+                        file_path,
+                        bpm,
+                        playing,
                         created_at_ms
                     )
-                    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                    VALUES (
+                        ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
+                        ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20
+                    )
                     ",
                 )
                 .map_err(|error| format!("Failed to prepare batch insert: {}", error))?;
@@ -408,6 +465,18 @@ impl StorageState {
                         event.title.as_str(),
                         event.description.as_str(),
                         event.payload.as_deref(),
+                        event.track_name.as_deref(),
+                        event.track_type.as_deref(),
+                        event.device_name.as_deref(),
+                        event.device_chain.as_deref(),
+                        event.parameter_name.as_deref(),
+                        event.parameter_value,
+                        event.clip_name.as_deref(),
+                        event.sample_name.as_deref(),
+                        event.file_path.as_deref(),
+                        event.bpm,
+                        // SQLite has no boolean type; store playing as 0/1, NULL if absent.
+                        event.playing.map(|playing| playing as i64),
                         now_ms() as i64,
                     ])
                     .map_err(|error| format!("Failed to save event in batch: {}", error))?;
@@ -622,6 +691,44 @@ fn read_payload_string(payload: Option<&Value>, keys: &[&str]) -> Option<String>
     None
 }
 
+/// Payload fallback for a numeric field — used for legacy rows whose canonical
+/// column is NULL because they were written before the column existed.
+fn read_payload_f64(payload: Option<&Value>, keys: &[&str]) -> Option<f64> {
+    let Some(Value::Object(object)) = payload else {
+        return None;
+    };
+
+    for key in keys {
+        if let Some(value) = object.get(*key).and_then(Value::as_f64) {
+            return Some(value);
+        }
+    }
+
+    None
+}
+
+/// Payload fallback for a boolean field. Accepts a real bool or the numeric 1/0
+/// some v1 senders used.
+fn read_payload_bool(payload: Option<&Value>, keys: &[&str]) -> Option<bool> {
+    let Some(Value::Object(object)) = payload else {
+        return None;
+    };
+
+    for key in keys {
+        match object.get(*key) {
+            Some(Value::Bool(value)) => return Some(*value),
+            Some(Value::Number(number)) => {
+                if let Some(integer) = number.as_i64() {
+                    return Some(integer == 1);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    None
+}
+
 pub fn initialize_database(db_path: &Path) -> rusqlite::Result<()> {
     let connection = Connection::open(db_path)?;
 
@@ -652,6 +759,21 @@ pub fn initialize_database(db_path: &Path) -> rusqlite::Result<()> {
             title TEXT NOT NULL,
             description TEXT NOT NULL,
             payload TEXT,
+            -- Canonical structured fields, stored first-class (not just inside the
+            -- payload JSON) so a reloaded session keeps full fidelity and these
+            -- become directly queryable. See `migrate_event_columns` for the
+            -- upgrade path that adds these to databases created before they existed.
+            track_name TEXT,
+            track_type TEXT,
+            device_name TEXT,
+            device_chain TEXT,
+            parameter_name TEXT,
+            parameter_value REAL,
+            clip_name TEXT,
+            sample_name TEXT,
+            file_path TEXT,
+            bpm REAL,
+            playing INTEGER,
             created_at_ms INTEGER NOT NULL,
             FOREIGN KEY(session_id) REFERENCES sessions(id)
         );
@@ -686,5 +808,236 @@ pub fn initialize_database(db_path: &Path) -> rusqlite::Result<()> {
         ",
     )?;
 
+    // Bring older databases up to the current `events` schema.
+    migrate_event_columns(&connection)?;
+
     Ok(())
+}
+
+/// Add any canonical `events` columns that a pre-existing database is missing.
+///
+/// A freshly created database already has these (they're in the CREATE TABLE
+/// above), so this is a no-op for new installs. For a database created before the
+/// columns existed, it adds them. SQLite's `ALTER TABLE … ADD COLUMN` is a fast,
+/// metadata-only change and the new columns default to NULL on existing rows —
+/// `load_session` falls back to the payload JSON for those legacy rows.
+fn migrate_event_columns(connection: &Connection) -> rusqlite::Result<()> {
+    // Column names currently on the table (column 1 of PRAGMA table_info).
+    let existing: std::collections::HashSet<String> = {
+        let mut statement = connection.prepare("PRAGMA table_info(events)")?;
+        let names = statement.query_map([], |row| row.get::<_, String>(1))?;
+        names.collect::<rusqlite::Result<_>>()?
+    };
+
+    // Every canonical column and its SQLite type. Names are fixed literals, so the
+    // formatted ALTER statements carry no injection risk.
+    const COLUMNS: &[(&str, &str)] = &[
+        ("track_name", "TEXT"),
+        ("track_type", "TEXT"),
+        ("device_name", "TEXT"),
+        ("device_chain", "TEXT"),
+        ("parameter_name", "TEXT"),
+        ("parameter_value", "REAL"),
+        ("clip_name", "TEXT"),
+        ("sample_name", "TEXT"),
+        ("file_path", "TEXT"),
+        ("bpm", "REAL"),
+        ("playing", "INTEGER"),
+    ];
+
+    for (name, sql_type) in COLUMNS {
+        if !existing.contains(*name) {
+            connection.execute_batch(&format!("ALTER TABLE events ADD COLUMN {name} {sql_type};"))?;
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    //! Storage round-trip tests. Each uses a unique temp-file SQLite database
+    //! (rusqlite can't share an in-memory DB across the separate connections this
+    //! module opens), initialized through the real `initialize_database` so the
+    //! schema and migration under test are exactly what ships.
+    use super::*;
+    use crate::protocol::RecallEvent;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    /// An initialized StorageState backed by a fresh temp database file.
+    fn temp_storage() -> (StorageState, PathBuf) {
+        let name = format!(
+            "recall-test-{}-{}.sqlite",
+            std::process::id(),
+            COUNTER.fetch_add(1, Ordering::Relaxed)
+        );
+        let path = std::env::temp_dir().join(name);
+        let _ = std::fs::remove_file(&path);
+
+        initialize_database(&path).expect("initialize test database");
+
+        let mut storage = StorageState::new();
+        storage.configure(path.clone());
+        (storage, path)
+    }
+
+    /// Remove the database and its WAL/SHM sidecars after a test.
+    fn cleanup(path: &Path) {
+        let _ = std::fs::remove_file(path);
+        let _ = std::fs::remove_file(path.with_extension("sqlite-wal"));
+        let _ = std::fs::remove_file(path.with_extension("sqlite-shm"));
+    }
+
+    /// A minimal session-owned event; tests set the fields they care about.
+    fn event(session_id: &str, event_type: &str) -> RecallEvent {
+        RecallEvent {
+            id: None,
+            protocol: "recall.v2".into(),
+            source: "max_for_live".into(),
+            event_type: event_type.into(),
+            timestamp_ms: 1_000,
+            title: "Title".into(),
+            description: "Description".into(),
+            payload: None,
+            session_id: Some(session_id.into()),
+            track_name: None,
+            track_type: None,
+            device_name: None,
+            parameter_name: None,
+            parameter_value: None,
+            clip_name: None,
+            sample_name: None,
+            file_path: None,
+            device_chain: None,
+            bpm: None,
+            playing: None,
+        }
+    }
+
+    #[test]
+    fn canonical_fields_persist_as_columns_and_reload() {
+        let (storage, path) = temp_storage();
+        let session = storage.resume_or_create_active_session().unwrap();
+        let session_id = session.session_id.clone().unwrap();
+
+        let mut sample = event(&session_id, "sample_added");
+        sample.track_name = Some("Vocals".into());
+        sample.track_type = Some("audio".into());
+        sample.sample_name = Some("Deep_House_Vocal_120bpm.wav".into());
+        sample.file_path = Some("C:/Splice/Deep_House_Vocal_120bpm.wav".into());
+        sample.device_chain = Some("Serum 2 : Saturator".into());
+        sample.bpm = Some(124.0);
+        sample.playing = Some(true);
+
+        storage.save_events_batch(&[sample]).unwrap();
+
+        let loaded = storage.load_session(&session_id).unwrap();
+        let event = loaded
+            .events
+            .iter()
+            .find(|e| e.event_type == "sample_added")
+            .expect("saved sample_added event");
+
+        // Every field came back from its first-class column, not payload digging.
+        assert_eq!(event.track.as_deref(), Some("Vocals"));
+        assert_eq!(event.track_type.as_deref(), Some("audio"));
+        assert_eq!(event.sample_name.as_deref(), Some("Deep_House_Vocal_120bpm.wav"));
+        assert_eq!(event.file_path.as_deref(), Some("C:/Splice/Deep_House_Vocal_120bpm.wav"));
+        assert_eq!(event.device_chain.as_deref(), Some("Serum 2 : Saturator"));
+        assert_eq!(event.bpm, Some(124.0));
+        assert_eq!(event.playing, Some(true));
+
+        cleanup(&path);
+    }
+
+    #[test]
+    fn legacy_rows_recover_fields_from_payload() {
+        let (storage, path) = temp_storage();
+        let session = storage.resume_or_create_active_session().unwrap();
+        let session_id = session.session_id.clone().unwrap();
+
+        // Simulate a row written before the canonical columns existed: only the
+        // original column set is populated, with the data living in the payload.
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute(
+                "INSERT INTO events
+                 (session_id, protocol, source, event_type, timestamp_ms, title, description, payload, created_at_ms)
+                 VALUES (?1, 'recall.v1', 'max_for_live', 'sample_added', 1, 'T', 'D', ?2, 1)",
+                params![
+                    session_id,
+                    r#"{"sample_name":"legacy.wav","track":"OldTrack","bpm":90}"#
+                ],
+            )
+            .unwrap();
+        drop(connection);
+
+        let loaded = storage.load_session(&session_id).unwrap();
+        let event = loaded
+            .events
+            .iter()
+            .find(|e| e.event_type == "sample_added")
+            .expect("legacy event");
+
+        // Columns are NULL, so the loader recovered these from the payload JSON.
+        assert_eq!(event.sample_name.as_deref(), Some("legacy.wav"));
+        assert_eq!(event.track.as_deref(), Some("OldTrack"));
+        assert_eq!(event.bpm, Some(90.0));
+
+        cleanup(&path);
+    }
+
+    #[test]
+    fn migration_adds_canonical_columns_to_old_schema() {
+        // Build a database with the ORIGINAL events schema (no canonical columns),
+        // then run the migration and confirm the columns now exist.
+        let name = format!(
+            "recall-test-migrate-{}-{}.sqlite",
+            std::process::id(),
+            COUNTER.fetch_add(1, Ordering::Relaxed)
+        );
+        let path = std::env::temp_dir().join(name);
+        let _ = std::fs::remove_file(&path);
+
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT,
+                    protocol TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    event_type TEXT NOT NULL,
+                    timestamp_ms INTEGER NOT NULL,
+                    title TEXT NOT NULL,
+                    description TEXT NOT NULL,
+                    payload TEXT,
+                    created_at_ms INTEGER NOT NULL
+                );",
+            )
+            .unwrap();
+
+        migrate_event_columns(&connection).unwrap();
+
+        let columns: std::collections::HashSet<String> = {
+            let mut statement = connection.prepare("PRAGMA table_info(events)").unwrap();
+            statement
+                .query_map([], |row| row.get::<_, String>(1))
+                .unwrap()
+                .collect::<rusqlite::Result<_>>()
+                .unwrap()
+        };
+
+        for expected in ["track_name", "track_type", "device_chain", "sample_name", "file_path", "bpm", "playing"] {
+            assert!(columns.contains(expected), "migration missing column: {expected}");
+        }
+
+        // Running it again must be a harmless no-op (idempotent).
+        migrate_event_columns(&connection).unwrap();
+
+        drop(connection);
+        cleanup(&path);
+    }
 }

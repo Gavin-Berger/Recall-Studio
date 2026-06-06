@@ -47,9 +47,22 @@ pub struct SavedSessionEvent {
     pub source: String,
     pub payload: Option<String>,
     pub session_id: Option<String>,
+    // Canonical structured fields, mirrored from the `events` table columns. These
+    // are populated first-class on load (with a payload fallback for legacy rows)
+    // so a reloaded session is as rich as it was live — no payload digging needed.
+    // `track`/`device`/`parameter` keep their short names for frontend back-compat;
+    // they hold the track_name / device_name / parameter_name values.
     pub track: Option<String>,
+    pub track_type: Option<String>,
     pub device: Option<String>,
+    pub device_chain: Option<String>,
     pub parameter: Option<String>,
+    pub parameter_value: Option<f64>,
+    pub clip_name: Option<String>,
+    pub sample_name: Option<String>,
+    pub file_path: Option<String>,
+    pub bpm: Option<f64>,
+    pub playing: Option<bool>,
     pub is_heartbeat: bool,
 }
 
@@ -72,9 +85,18 @@ impl From<RecallEvent> for SavedSessionEvent {
             source: event.source,
             payload: event.payload,
             session_id: event.session_id,
-            track: None,
-            device: None,
-            parameter: None,
+            // Carry the structured fields through instead of dropping them.
+            track: event.track_name,
+            track_type: event.track_type,
+            device: event.device_name,
+            device_chain: event.device_chain,
+            parameter: event.parameter_name,
+            parameter_value: event.parameter_value,
+            clip_name: event.clip_name,
+            sample_name: event.sample_name,
+            file_path: event.file_path,
+            bpm: event.bpm,
+            playing: event.playing,
             is_heartbeat,
         }
     }

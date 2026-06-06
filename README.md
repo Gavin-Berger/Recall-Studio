@@ -1,6 +1,6 @@
 # Recall Studio
 
-Recall Studio is a native desktop application for Ableton Live producers that captures structured session activity, stores local session history, and helps producers review what happened during a creative session.
+Recall Studio is a local first desktop application for Ableton Live producers that captures structured session activity, stores local session history, and helps producers review what happened during a creative session.
 
 The goal is to bring a scientific, version-control-inspired layer to music production. Instead of only saving the final Ableton project file, Recall Studio tracks what changed, when it changed, and how the session evolved over time.
 

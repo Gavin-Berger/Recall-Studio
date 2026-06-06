@@ -43,7 +43,7 @@ outlets = 2;
 var PROTOCOL = "recall.v2";
 var SOURCE = "max_for_live";
 var DEVICE_ID = "recall-m4l-bridge-dev";
-var BRIDGE_VERSION = "0.7.3";
+var BRIDGE_VERSION = "0.9.0";
 
 // Canonical v2 flat fields. emit() lifts any of these from its `fields` arg up
 // to the TOP LEVEL of the packet, because the Rust normalizer reads canonical
@@ -57,6 +57,8 @@ var CANONICAL_FIELDS = [
     "parameter_value_min",
     "parameter_value_max",
     "clip_name",
+    "sample_name",
+    "file_path",
     "device_chain",
     "bpm",
     "playing"
@@ -73,6 +75,12 @@ var deviceLoadedSent = false;
 // tiny heartbeat + lifecycle events.
 var captureTransport = true;
 var captureFocus = true;
+// Shallow round-robin scan across ALL tracks so device/sample/clip additions on
+// non-selected tracks are caught too. Cheap by design: it reuses the same bounded
+// name/clip collectors as the focus scan and does NO parameter reads (automation
+// stays confined to the selected track), so it carries none of the parameter-scan
+// crash risk. Disable with [capture_structure 0] if a huge set feels sticky.
+var captureStructure = true;
 // Off by default. The full live-set summary is the heaviest single scan: it
 // walks every track and serializes them in one packet. On large sets (40+
 // tracks, groups, many active plugins) running it synchronously while audio is
@@ -104,6 +112,15 @@ var TRANSPORT_INTERVAL_MS = 2000;
 var FOCUS_INTERVAL_MS = 4000;
 var AUTO_LIVE_SET_SNAPSHOT_INTERVAL_MS = 0;
 
+// All-track structure scan cadence. Only STRUCTURE_TRACKS_PER_TICK tracks are
+// scanned per tick (round-robin), so a large set is swept over several ticks and
+// no single tick is heavy. Throttled during playback like the focus scan.
+var STRUCTURE_INTERVAL_MS = 4000;
+var STRUCTURE_TRACKS_PER_TICK = 4;
+var STRUCTURE_SKIP_TICKS_WHILE_PLAYING = 2;
+var structureTicksSkippedWhilePlaying = 0;
+var structureScanCursor = 0;
+
 // While transport is PLAYING the audio thread is under the most pressure, so we
 // run the heavy focus scan at a reduced cadence: skip this many focus ticks
 // between scans while playing (2 -> scan every 3rd tick ~= every 12s). When
@@ -134,6 +151,7 @@ var INITIAL_STAGGER_MS = 600;
 var heartbeatTask = new Task(heartbeat_tick, this);
 var transportTask = new Task(transport_tick, this);
 var focusTask = new Task(focus_tick, this);
+var structureTask = new Task(structure_tick, this);
 var liveSetTask = new Task(live_set_tick, this);
 var initialContextTask = new Task(initial_context_tick, this);
 var initialFocusTask = new Task(initial_focus_tick, this);
@@ -148,6 +166,10 @@ var lastPlayingState = null;
 var lastTempo = null;
 var lastSelectedTrackId = null;
 var lastFocusedTrackId = null;
+
+// Track lifecycle diff cache. Keyed by track id so renames, mutes, solos, and
+// arm changes on existing tracks are detected separately from add/delete.
+var lastTrackCacheById = null; // null = not seeded yet
 
 // Diff state for creative-action detection. We compare each focus snapshot of a
 // track against the previous snapshot of THE SAME track to emit discrete
@@ -199,6 +221,7 @@ function start_bridge() {
     heartbeatTask.cancel();
     transportTask.cancel();
     focusTask.cancel();
+    structureTask.cancel();
     liveSetTask.cancel();
     initialContextTask.cancel();
     initialFocusTask.cancel();
@@ -207,6 +230,9 @@ function start_bridge() {
     heartbeatTask.schedule(HEARTBEAT_INTERVAL_MS);
     transportTask.schedule(TRANSPORT_INTERVAL_MS);
     focusTask.schedule(FOCUS_INTERVAL_MS);
+    // Offset the structure scan from the focus scan so they don't fire on the
+    // same tick and stack their LiveAPI work.
+    structureTask.schedule(STRUCTURE_INTERVAL_MS + 2000);
 
     if (AUTO_LIVE_SET_SNAPSHOT_INTERVAL_MS > 0) {
         liveSetTask.schedule(AUTO_LIVE_SET_SNAPSHOT_INTERVAL_MS);
@@ -284,6 +310,7 @@ function stop_bridge() {
     heartbeatTask.cancel();
     transportTask.cancel();
     focusTask.cancel();
+    structureTask.cancel();
     liveSetTask.cancel();
     initialContextTask.cancel();
     initialFocusTask.cancel();
@@ -361,6 +388,83 @@ function focus_tick() {
     }
 
     focusTask.schedule(FOCUS_INTERVAL_MS);
+}
+
+function structure_tick() {
+    if (!bridgeRunning) {
+        return;
+    }
+
+    if (captureStructure) {
+        // Throttle while playing like the focus scan; full cadence resumes the
+        // instant transport stops, so background edits made while paused are
+        // caught promptly.
+        var skipForPlayback =
+            lastPlayingState === true &&
+            structureTicksSkippedWhilePlaying < STRUCTURE_SKIP_TICKS_WHILE_PLAYING;
+
+        if (skipForPlayback) {
+            structureTicksSkippedWhilePlaying++;
+        } else {
+            structureTicksSkippedWhilePlaying = 0;
+
+            try {
+                scan_track_structure_batch();
+            } catch (error) {
+                debug("structure scan failed: " + error);
+            }
+        }
+    }
+
+    structureTask.schedule(STRUCTURE_INTERVAL_MS);
+}
+
+// Round-robin shallow scan across all tracks so device/sample/clip additions on
+// NON-selected tracks are detected too. Only STRUCTURE_TRACKS_PER_TICK tracks are
+// scanned per tick to keep each tick tiny. Reuses the same bounded name/clip
+// collectors and the same per-track diff cache as the focus scan. Crucially it
+// does NOT call detect_automation_created (parameter reads) — automation stays
+// confined to the selected track — so this carries none of the parameter-scan
+// crash risk. The selected track is skipped here since the focus scan owns it.
+function scan_track_structure_batch() {
+    var liveSet = safe_path("live_set");
+
+    if (!liveSet) {
+        return;
+    }
+
+    var trackCount = get_count(liveSet, "tracks", 0);
+
+    if (trackCount <= 0) {
+        return;
+    }
+
+    var selectedId = get_selected_track_id();
+    var scanned = 0;
+
+    while (scanned < STRUCTURE_TRACKS_PER_TICK && scanned < trackCount) {
+        if (structureScanCursor >= trackCount) {
+            structureScanCursor = 0;
+        }
+
+        var index = structureScanCursor;
+        structureScanCursor++;
+        scanned++;
+
+        var snapshot = collect_track_focus_snapshot(index);
+
+        if (!snapshot || !snapshot.available || !snapshot.id) {
+            continue;
+        }
+
+        // The selected track is fully handled (with automation) by the focus
+        // scan. Skip it here so we never double-process it.
+        if (selectedId && snapshot.id === selectedId) {
+            continue;
+        }
+
+        detect_focus_changes(snapshot);
+    }
 }
 
 function live_set_tick() {
@@ -588,7 +692,7 @@ function send_transport_delta_if_changed() {
             }
         }
 
-        if (lastTempo !== null && snapshot.tempo !== lastTempo) {
+        if (lastTempo !== null && snapshot.tempo !== lastTempo && snapshot.tempo > 10) {
             emit("tempo_changed", "Tempo Changed", "Ableton tempo changed.", {
                 tempo: snapshot.tempo,
                 previous_tempo: lastTempo
@@ -613,9 +717,99 @@ function send_transport_delta_if_changed() {
         lastPlayingState = snapshot.playing;
         lastTempo = snapshot.tempo;
         lastSelectedTrackId = snapshot.selected_track_id;
+
+        // Diff track lifecycle against the previous transport snapshot.
+        detect_track_changes(snapshot.tracks);
     }
 
     emit("transport_snapshot", "Transport Snapshot", "Ableton transport state changed.", snapshot);
+}
+
+// Diff the current track list against the previous one and emit discrete events
+// for: track added, track deleted, track renamed, mute toggled, solo toggled,
+// arm toggled. Uses track id as the stable key so reorders don't fire false events.
+function detect_track_changes(currentTracks) {
+    if (!currentTracks || !(currentTracks instanceof Array)) {
+        return;
+    }
+
+    // Build a map of id -> track for fast lookup.
+    var currentById = {};
+    for (var i = 0; i < currentTracks.length; i++) {
+        var t = currentTracks[i];
+        if (t && t.id !== null && t.id !== undefined) {
+            currentById[String(t.id)] = t;
+        }
+    }
+
+    // First call seeds the cache silently — no events for pre-existing tracks.
+    if (lastTrackCacheById === null) {
+        lastTrackCacheById = currentById;
+        return;
+    }
+
+    // Detect added tracks.
+    for (var newId in currentById) {
+        if (!currentById.hasOwnProperty(newId)) { continue; }
+        if (!lastTrackCacheById.hasOwnProperty(newId)) {
+            var added = currentById[newId];
+            emit("track_created", "Track Created", "A new track was created in Ableton.",
+                { track_name: added.name, track_index: added.index },
+                { track_name: added.name });
+        }
+    }
+
+    // Detect deleted tracks.
+    for (var oldId in lastTrackCacheById) {
+        if (!lastTrackCacheById.hasOwnProperty(oldId)) { continue; }
+        if (!currentById.hasOwnProperty(oldId)) {
+            var removed = lastTrackCacheById[oldId];
+            emit("track_deleted", "Track Deleted", "A track was deleted in Ableton.",
+                { track_name: removed.name, track_index: removed.index },
+                { track_name: removed.name });
+        }
+    }
+
+    // Detect changes on existing tracks: rename, mute, solo, arm.
+    for (var id in currentById) {
+        if (!currentById.hasOwnProperty(id) || !lastTrackCacheById.hasOwnProperty(id)) { continue; }
+
+        var cur = currentById[id];
+        var prev = lastTrackCacheById[id];
+
+        if (cur.name !== prev.name) {
+            emit("track_name_changed", "Track Renamed",
+                "Track renamed from \"" + prev.name + "\" to \"" + cur.name + "\".",
+                { track_name: cur.name, previous_name: prev.name },
+                { track_name: cur.name });
+        }
+
+        if (cur.muted !== prev.muted) {
+            emit(cur.muted ? "track_muted" : "track_unmuted",
+                cur.muted ? "Track Muted" : "Track Unmuted",
+                "\"" + cur.name + "\" was " + (cur.muted ? "muted" : "unmuted") + ".",
+                { track_name: cur.name, muted: cur.muted },
+                { track_name: cur.name });
+        }
+
+        if (cur.solo !== prev.solo) {
+            emit(cur.solo ? "track_soloed" : "track_unsoloed",
+                cur.solo ? "Track Soloed" : "Track Unsoloed",
+                "\"" + cur.name + "\" was " + (cur.solo ? "soloed" : "unsoloed") + ".",
+                { track_name: cur.name, solo: cur.solo },
+                { track_name: cur.name });
+        }
+
+        if (cur.can_be_armed && cur.arm !== prev.arm) {
+            emit(cur.arm ? "track_armed" : "track_unarmed",
+                cur.arm ? "Track Armed" : "Track Unarmed",
+                "\"" + cur.name + "\" was " + (cur.arm ? "armed" : "unarmed") + " for recording.",
+                { track_name: cur.name, armed: cur.arm },
+                { track_name: cur.name });
+        }
+    }
+
+    lastTrackCacheById = currentById;
 }
 
 function collect_live_set_snapshot() {
@@ -822,6 +1016,57 @@ function find_track_index_by_id(trackId) {
     return -1;
 }
 
+// Build a focus snapshot for the track at the given index. This is the shared
+// per-track collector used by BOTH the selected-track focus scan and the
+// all-track structure scan. It reads only bounded structural data (track props,
+// device NAMES, clip presence + sample paths) — no device parameters — so it is
+// cheap and safe to run across many tracks.
+function collect_track_focus_snapshot(trackIndex) {
+    var track = safe_path("live_set tracks " + trackIndex);
+
+    if (!track) {
+        return {
+            available: false,
+            index: trackIndex,
+            reason: "track api unavailable"
+        };
+    }
+
+    var trackId = normalize_id(track.id);
+    var canBeArmed = value_to_bool(get_prop(track, "can_be_armed", 0));
+    var isFoldable = value_to_bool(get_prop(track, "is_foldable", 0));
+    var deviceCount = get_count(track, "devices", 0);
+    var clipSlotCount = get_count(track, "clip_slots", 0);
+
+    var devices = collect_focus_devices_for_track(
+        trackIndex,
+        Math.min(deviceCount, MAX_FOCUS_DEVICES)
+    );
+
+    return {
+        available: true,
+        id: trackId,
+        index: trackIndex,
+        name: value_to_string(get_prop(track, "name", null)),
+        color: get_prop(track, "color", null),
+        color_index: get_prop(track, "color_index", null),
+        muted: value_to_bool(get_prop(track, "mute", 0)),
+        solo: value_to_bool(get_prop(track, "solo", 0)),
+        can_be_armed: canBeArmed,
+        arm: canBeArmed ? value_to_bool(get_prop(track, "arm", 0)) : false,
+        is_foldable: isFoldable,
+        fold_state: isFoldable ? get_prop(track, "fold_state", null) : null,
+        device_count: deviceCount,
+        clip_slot_count: clipSlotCount,
+        device_chain: build_device_chain(devices),
+        devices: devices,
+        clips: collect_focus_clips_for_track(
+            trackIndex,
+            Math.min(clipSlotCount, MAX_FOCUS_CLIP_SLOTS)
+        )
+    };
+}
+
 function collect_selected_track_focus_snapshot() {
     var selectedTrackId = get_selected_track_id();
 
@@ -842,49 +1087,7 @@ function collect_selected_track_focus_snapshot() {
         };
     }
 
-    var track = safe_path("live_set tracks " + selectedTrackIndex);
-
-    if (!track) {
-        return {
-            available: false,
-            id: selectedTrackId,
-            index: selectedTrackIndex,
-            reason: "selected track api unavailable"
-        };
-    }
-
-    var canBeArmed = value_to_bool(get_prop(track, "can_be_armed", 0));
-    var isFoldable = value_to_bool(get_prop(track, "is_foldable", 0));
-    var deviceCount = get_count(track, "devices", 0);
-    var clipSlotCount = get_count(track, "clip_slots", 0);
-
-    var devices = collect_focus_devices_for_track(
-        selectedTrackIndex,
-        Math.min(deviceCount, MAX_FOCUS_DEVICES)
-    );
-
-    return {
-        available: true,
-        id: selectedTrackId,
-        index: selectedTrackIndex,
-        name: value_to_string(get_prop(track, "name", null)),
-        color: get_prop(track, "color", null),
-        color_index: get_prop(track, "color_index", null),
-        muted: value_to_bool(get_prop(track, "mute", 0)),
-        solo: value_to_bool(get_prop(track, "solo", 0)),
-        can_be_armed: canBeArmed,
-        arm: canBeArmed ? value_to_bool(get_prop(track, "arm", 0)) : false,
-        is_foldable: isFoldable,
-        fold_state: isFoldable ? get_prop(track, "fold_state", null) : null,
-        device_count: deviceCount,
-        clip_slot_count: clipSlotCount,
-        device_chain: build_device_chain(devices),
-        devices: devices,
-        clips: collect_focus_clips_for_track(
-            selectedTrackIndex,
-            Math.min(clipSlotCount, MAX_FOCUS_CLIP_SLOTS)
-        )
-    };
+    return collect_track_focus_snapshot(selectedTrackIndex);
 }
 
 // Build the producer-readable signal chain for a track as an ordered, colon-
@@ -924,6 +1127,12 @@ function send_selected_track_focus_if_changed() {
     // device_added/clip_created etc. even though the bulky snapshot itself may
     // be deduped away.
     detect_focus_changes(snapshot);
+
+    // Automation detection reads device parameters — the expensive path — so it
+    // runs ONLY here, for the selected track, never in the all-track scan.
+    if (snapshot && snapshot.available && snapshot.id) {
+        detect_automation_created(snapshot, String(snapshot.id), snapshot.name);
+    }
 
     var fp = fingerprint(snapshot);
 
@@ -1017,9 +1226,7 @@ function detect_focus_changes(snapshot) {
             }
             // New clip in a slot, or a different clip replacing the old one.
             if (!oldClips.hasOwnProperty(newSlot) || oldClips[newSlot].id !== newClips[newSlot].id) {
-                emit("clip_created", "Clip Created", "A clip was created on the selected track.",
-                    { track_name: trackName, clip_name: newClips[newSlot].name },
-                    { track_name: trackName, clip_name: newClips[newSlot].name });
+                emit_clip_created(trackName, newClips[newSlot]);
             }
         }
 
@@ -1037,6 +1244,85 @@ function detect_focus_changes(snapshot) {
 
     focusDeviceCacheByTrack[trackKey] = newDevices;
     focusClipCacheByTrack[trackKey] = newClips;
+
+    // NOTE: automation detection (detect_automation_created) is intentionally NOT
+    // called here. It reads device parameters, which is the expensive/crash-prone
+    // path, so it must stay confined to the selected track. The caller
+    // (send_selected_track_focus_if_changed) invokes it directly. The all-track
+    // structure scan calls detect_focus_changes WITHOUT automation, keeping
+    // background-track scanning cheap.
+}
+
+// Cache of paramId -> had_automation per track.
+var automationCacheByTrack = {};
+
+function detect_automation_created(snapshot, trackKey, trackName) {
+    if (!snapshot || !snapshot.available || snapshot.index === null || snapshot.index === undefined) {
+        return;
+    }
+
+    var trackIndex = snapshot.index;
+    var deviceCount = Math.min(snapshot.device_count || 0, MAX_FOCUS_DEVICES);
+    var oldCache = automationCacheByTrack[trackKey] || {};
+    var newCache = {};
+    var isFirstScan = !automationCacheByTrack.hasOwnProperty(trackKey);
+
+    for (var d = 0; d < deviceCount; d++) {
+        var device = safe_path("live_set tracks " + trackIndex + " devices " + d);
+        if (!device) { continue; }
+
+        var deviceName = value_to_string(get_prop(device, "name", null)) || ("Device " + d);
+        var paramCount = Math.min(get_count(device, "parameters", 0), MAX_FOCUS_PARAMETERS_PER_DEVICE);
+
+        for (var p = 0; p < paramCount; p++) {
+            var param = safe_path("live_set tracks " + trackIndex + " devices " + d + " parameters " + p);
+            if (!param) { continue; }
+
+            var paramId = value_to_string(normalize_id(param.id)) || (d + "_" + p);
+            var hasAutomation = value_to_bool(get_prop(param, "automation_state", 0));
+            // automation_state: 0=none, 1=playing, 2=overridden, 3=recording
+            // has_automation is more reliable for "was automation ever written"
+            var automationState = value_to_number(get_prop(param, "automation_state", 0), 0);
+            var hasWrittenAutomation = automationState > 0;
+
+            newCache[paramId] = hasWrittenAutomation;
+
+            // Only emit on the transition from no automation → has automation.
+            // Skip the first scan (seeding baseline) so pre-existing automation
+            // doesn't fire as "created" the moment you select the track.
+            if (!isFirstScan && hasWrittenAutomation && !oldCache[paramId]) {
+                var paramName = value_to_string(get_prop(param, "name", null)) || ("Param " + p);
+
+                // Get current bar position for context.
+                var liveSet = safe_path("live_set");
+                var songTime = liveSet ? value_to_number(get_prop(liveSet, "current_song_time", 0), 0) : 0;
+                var sigNum = liveSet ? value_to_number(get_prop(liveSet, "signature_numerator", 4), 4) : 4;
+                var bar = Math.floor(songTime / sigNum) + 1;
+                var beat = Math.floor(songTime % sigNum) + 1;
+                var position = "Bar " + bar + " Beat " + beat;
+
+                emit(
+                    "automation_created",
+                    "Automation Created",
+                    "Automation written on " + paramName + " (" + deviceName + ") at " + position + ".",
+                    {
+                        track_name: trackName,
+                        device_name: deviceName,
+                        parameter_name: paramName,
+                        song_time: songTime,
+                        position: position
+                    },
+                    {
+                        track_name: trackName,
+                        device_name: deviceName,
+                        parameter_name: paramName
+                    }
+                );
+            }
+        }
+    }
+
+    automationCacheByTrack[trackKey] = newCache;
 }
 
 function build_id_name_map(items, idKey, nameKey) {
@@ -1063,13 +1349,62 @@ function build_clip_slot_map(clips) {
             if (clip && clip.slot_index !== null && clip.slot_index !== undefined) {
                 map[String(clip.slot_index)] = {
                     id: clip.clip_id,
-                    name: clip.name
+                    name: clip.name,
+                    is_audio_clip: clip.is_audio_clip,
+                    is_midi_clip: clip.is_midi_clip,
+                    file_path: clip.file_path,
+                    sample_name: basename(clip.file_path)
                 };
             }
         }
     }
 
     return map;
+}
+
+// Emit the right high-level event for a newly-appeared clip. One drag of a
+// Splice sample becomes ONE sample_added event (with the real file name), not a
+// pile of generic clip-mutation logs. Branching:
+//   audio clip + file_path -> sample_added (imported/dragged sample)
+//   audio clip, no path    -> audio_clip_added (recorded/resampled audio)
+//   midi clip              -> midi_clip_created
+//   anything else          -> clip_created (safe fallback)
+function emit_clip_created(trackName, clip) {
+    if (!clip) {
+        return;
+    }
+
+    var clipName = clip.name || null;
+    var sampleName = clip.sample_name || null;
+    var filePath = clip.file_path || null;
+
+    if (clip.is_audio_clip && sampleName) {
+        emit("sample_added", "Sample Added",
+            "Sample \"" + sampleName + "\" was added to \"" + trackName + "\".",
+            { track_name: trackName, sample_name: sampleName, file_path: filePath, clip_name: clipName },
+            { track_name: trackName, sample_name: sampleName, file_path: filePath, clip_name: clipName });
+        return;
+    }
+
+    if (clip.is_audio_clip) {
+        emit("audio_clip_added", "Audio Clip Added",
+            "An audio clip was added to \"" + trackName + "\".",
+            { track_name: trackName, clip_name: clipName },
+            { track_name: trackName, clip_name: clipName });
+        return;
+    }
+
+    if (clip.is_midi_clip) {
+        emit("midi_clip_created", "MIDI Clip Created",
+            "A MIDI clip was created on \"" + trackName + "\".",
+            { track_name: trackName, clip_name: clipName },
+            { track_name: trackName, clip_name: clipName });
+        return;
+    }
+
+    emit("clip_created", "Clip Created", "A clip was created on the selected track.",
+        { track_name: trackName, clip_name: clipName },
+        { track_name: trackName, clip_name: clipName });
 }
 
 function collect_focus_devices_for_track(trackIndex, limit) {
@@ -1169,11 +1504,31 @@ function collect_focus_clips_for_track(trackIndex, limit) {
             length: clip ? get_prop(clip, "length", null) : null,
             looping: clip ? value_to_bool(get_prop(clip, "looping", 0)) : null,
             is_audio_clip: clip ? value_to_bool(get_prop(clip, "is_audio_clip", 0)) : null,
-            is_midi_clip: clip ? value_to_bool(get_prop(clip, "is_midi_clip", 0)) : null
+            is_midi_clip: clip ? value_to_bool(get_prop(clip, "is_midi_clip", 0)) : null,
+            // file_path is only meaningful for audio clips — it's the on-disk
+            // sample backing the clip (e.g. a Splice drag-in). We read it so the
+            // timeline can name the actual sample, not just "a clip appeared".
+            file_path: (clip && value_to_bool(get_prop(clip, "is_audio_clip", 0)))
+                ? value_to_string(get_prop(clip, "file_path", null))
+                : null
         });
     }
 
     return clips;
+}
+
+// Extract just the file name (with extension) from a full path. Handles both
+// Windows backslashes and POSIX slashes since Live reports native paths.
+function basename(path) {
+    if (!path) {
+        return null;
+    }
+
+    var normalized = String(path).replace(/\\/g, "/");
+    var parts = normalized.split("/");
+    var last = parts[parts.length - 1];
+
+    return last && last.length > 0 ? last : null;
 }
 
 // ------------------------------------------------------------
@@ -1390,6 +1745,7 @@ function session_snapshot() {
 function safe_mode() {
     captureTransport = false;
     captureFocus = false;
+    captureStructure = false;
     captureLiveSet = false;
     debug("SAFE MODE: all LiveAPI scans disabled (heartbeat only)");
 }
@@ -1397,6 +1753,7 @@ function safe_mode() {
 function full_capture() {
     captureTransport = true;
     captureFocus = true;
+    captureStructure = true;
     captureLiveSet = true;
     debug("FULL CAPTURE: all LiveAPI scans enabled");
 }
@@ -1414,6 +1771,11 @@ function capture_focus(value) {
 function capture_live_set(value) {
     captureLiveSet = Number(value) === 1;
     debug("capture_live_set = " + captureLiveSet);
+}
+
+function capture_structure(value) {
+    captureStructure = Number(value) === 1;
+    debug("capture_structure = " + captureStructure);
 }
 
 function deep_snapshot() {

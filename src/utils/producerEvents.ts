@@ -64,6 +64,16 @@ export function isProducerTimelineEvent(event: RecallTimelineMoment): boolean {
     return false;
   }
 
+  // Transport (play / stop / position) is never a creative moment — a producer
+  // does it thousands of times a session. This rejects it no matter how it
+  // arrived: the discrete transport_play/stop events (timelineRole "transport")
+  // AND the periodic transport_snapshot, which resolves to type "transport" but
+  // carries timelineRole "context" and would otherwise slip through the
+  // meaningful-state-change path below and render as "Playback stopped".
+  if (event.type === "transport" || event.timelineRole === "transport") {
+    return false;
+  }
+
   // Track *selection / focus* is navigation, not a creative decision — it's the
   // moment producers hide most. Keep persisting it (raw telemetry is preserved)
   // but exclude it from the curated document. This covers both the discrete
@@ -393,9 +403,11 @@ function hasProducerContext(event: RecallTimelineMoment): boolean {
 }
 
 function isMeaningfulStateChange(event: RecallTimelineMoment): boolean {
+  // Note: "transport" is intentionally absent. A transport state change (play/
+  // stop/position) is not a creative moment, and isProducerTimelineEvent rejects
+  // transport outright before reaching here — keeping it out avoids a contradiction.
   return (
     event.type === "tempo" ||
-    event.type === "transport" ||
     event.type === "track" ||
     event.type === "group" ||
     event.type === "device" ||

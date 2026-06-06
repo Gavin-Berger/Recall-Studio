@@ -182,4 +182,18 @@ describe("noise filtering", () => {
 
     expect(isProducerTimelineEvent(event)).toBe(false);
   });
+
+  it("excludes transport_snapshot even though it carries the 'context' role", () => {
+    // Regression: transport_snapshot resolves to type "transport" but role
+    // "context", so it used to slip past the transport filter and render as
+    // "Playback stopped". Transport must be rejected regardless of role.
+    const event = moment({
+      type: "transport",
+      rawEventType: "transport_snapshot",
+      timelineRole: "context",
+      metadata: { playing: false, songTime: 0 },
+    });
+
+    expect(isProducerTimelineEvent(event)).toBe(false);
+  });
 });

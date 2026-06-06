@@ -46,7 +46,7 @@ const SNAPSHOT_EVENT_TYPES = new Set([
 ]);
 
 const IMPORTANT_EVENT_TYPES = new Set<RecallEventType>([
-  "transport",
+  // transport (play/stop) excluded — too frequent to be a creative signal
   "tempo",
   "track",
   "group",
@@ -78,6 +78,21 @@ export function isProducerTimelineEvent(event: RecallTimelineMoment): boolean {
     rawNav === "selected_track_snapshot"
   ) {
     return false;
+  }
+
+  // Track lifecycle events are always creative decisions — always show them.
+  const TRACK_LIFECYCLE = new Set([
+    "track_created", "track_deleted", "track_name_changed",
+    "track_muted", "track_unmuted", "track_soloed", "track_unsoloed",
+    "track_armed", "track_unarmed",
+  ]);
+  if (rawNav && TRACK_LIFECYCLE.has(rawNav)) {
+    return true;
+  }
+
+  // Automation creation is always a creative decision.
+  if (rawNav === "automation_created") {
+    return true;
   }
 
   const searchable = [
@@ -127,7 +142,10 @@ export function formatProducerMoment(
   const deviceChain = event.deviceChain ?? readString(event.metadata?.deviceChain);
   const parameter = readString(event.metadata?.parameter);
   const clip = readString(event.metadata?.clip);
-  const position = readString(event.metadata?.arrangementPosition);
+  const sample = readString(event.metadata?.sample);
+  const position =
+    readString(event.metadata?.position) ??
+    readString(event.metadata?.arrangementPosition);
   const projectClock = readString(event.metadata?.projectClock);
   const tempo = formatBpm(event.metadata?.bpm);
   const value = formatPrimitive(event.metadata?.value);
@@ -177,15 +195,47 @@ export function formatProducerMoment(
       break;
     }
 
-    case "parameter":
-      title = parameter ? "Parameter changed" : "Control changed";
-      detail = buildParameterDetail(parameter, device, track, groupText, value);
+    case "parameter": {
+      const rawType = event.rawEventType?.toLowerCase();
+      if (rawType === "automation_created" || rawType === "automation_edited") {
+        const verb = rawType === "automation_edited" ? "edited" : "created";
+        title = parameter ? `Automation ${verb}: ${parameter}` : `Automation ${verb}`;
+        detail = buildAutomationDetail(parameter, device, track, groupText, position);
+      } else {
+        title = parameter ? "Parameter changed" : "Control changed";
+        detail = buildParameterDetail(parameter, device, track, groupText, value);
+      }
       break;
+    }
 
-    case "clip":
-      title = clip ? "Clip launched" : "Clip activity";
-      detail = buildClipDetail(clip, track, groupText);
+    case "clip": {
+      const rawType = event.rawEventType?.toLowerCase();
+      const where = track ? (groupText ? `"${track}" inside ${groupText}` : `"${track}"`) : null;
+
+      if (rawType === "sample_added") {
+        const name = sample ?? clip;
+        title = name ? `Sample added: ${name}` : "Sample added";
+        detail = name
+          ? `Dropped "${name}"${where ? ` onto ${where}` : ""}.`
+          : "A sample was added to a track.";
+      } else if (rawType === "audio_clip_added") {
+        title = "Audio clip added";
+        detail = `An audio clip was added${where ? ` to ${where}` : ""}.`;
+      } else if (rawType === "midi_clip_created") {
+        title = clip ? `MIDI clip created: ${clip}` : "MIDI clip created";
+        detail = `A MIDI clip was created${where ? ` on ${where}` : ""}.`;
+      } else if (rawType === "clip_created") {
+        title = clip ? `Clip created: ${clip}` : "Clip created";
+        detail = buildClipDetail(clip, track, groupText);
+      } else if (rawType === "clip_deleted") {
+        title = clip ? `Clip deleted: ${clip}` : "Clip deleted";
+        detail = `A clip was deleted${where ? ` on ${where}` : ""}.`;
+      } else {
+        title = clip ? "Clip launched" : "Clip activity";
+        detail = buildClipDetail(clip, track, groupText);
+      }
       break;
+    }
 
     case "scene":
       title = "Scene triggered";
@@ -242,6 +292,7 @@ export function formatProducerMoment(
       deviceChain,
       parameter,
       clip,
+      sample,
       tempo,
       projectClock,
       position,
@@ -413,6 +464,28 @@ function buildParameterDetail(
   return "A device or mixer control changed in Ableton.";
 }
 
+function buildAutomationDetail(
+  parameter?: string,
+  device?: string,
+  track?: string,
+  group?: string,
+  position?: string,
+): string {
+  const where = track ? (group ? `"${track}" inside ${group}` : `"${track}"`) : null;
+  const at = position ? ` at ${position}` : "";
+
+  if (parameter && device && where) {
+    return `Automation written on ${parameter} (${device}) on ${where}${at}.`;
+  }
+  if (parameter && device) {
+    return `Automation written on ${parameter} (${device})${at}.`;
+  }
+  if (parameter) {
+    return `Automation written on ${parameter}${at}.`;
+  }
+  return `Automation was written${where ? ` on ${where}` : ""}${at}.`;
+}
+
 function buildClipDetail(
   clip?: string,
   track?: string,
@@ -457,6 +530,7 @@ function buildProducerPills(input: {
   deviceChain?: string;
   parameter?: string;
   clip?: string;
+  sample?: string;
   tempo?: string;
   projectClock?: string;
   position?: string;
@@ -469,6 +543,7 @@ function buildProducerPills(input: {
   addPill(pills, "Device", input.device);
   addPill(pills, "Chain", input.deviceChain);
   addPill(pills, "Parameter", input.parameter);
+  addPill(pills, "Sample", input.sample);
   addPill(pills, "Clip", input.clip);
   addPill(pills, "Tempo", input.tempo);
   addPill(pills, "Time", input.projectClock);

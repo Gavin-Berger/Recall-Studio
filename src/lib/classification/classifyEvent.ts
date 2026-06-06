@@ -16,9 +16,20 @@ export function classifyEvent(event: RecallTimelineMoment): EventClass {
     case "tempo":
       return "analytics";
 
-    // Track selection gives grouping context but is not a creative action by itself.
-    case "track":
-      return "context";
+    // Track *selection* is navigation context. Track *lifecycle* (created,
+    // renamed, deleted, muted, soloed, armed) is a deliberate creative action.
+    case "track": {
+      const rawType = event.rawEventType?.toLowerCase();
+      if (
+        rawType === "track_selected" ||
+        rawType === "selected_track_focus_snapshot" ||
+        rawType === "selected_track_snapshot" ||
+        rawType === undefined
+      ) {
+        return "context";
+      }
+      return "visible";
+    }
 
     // Groups (track groups) are meaningful structural events.
     case "group":
@@ -34,8 +45,16 @@ export function classifyEvent(event: RecallTimelineMoment): EventClass {
       return "visible";
 
     // Parameter changes are frequent and noisy — folded into analytics/context.
-    // The grouping layer surfaces a count, not individual changes.
-    case "parameter":
+    // The grouping layer surfaces a count, not individual changes. The exception
+    // is automation creation/editing: that's a deliberate creative act, so it
+    // surfaces as a visible moment rather than being folded into a count.
+    case "parameter": {
+      const rawType = event.rawEventType?.toLowerCase();
+      if (rawType === "automation_created" || rawType === "automation_edited") {
+        return "visible";
+      }
+      return "context";
+    }
     case "mixer":
       return "context";
 

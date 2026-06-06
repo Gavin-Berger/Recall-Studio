@@ -15,10 +15,13 @@ import { readMetadataBoolean, readMetadataNumber, readMetadataString } from "../
 //     appearing as timeline entries.
 //
 // ALWAYS included (deliberate creative actions):
-//   - Track selection, device activity, parameter changes, clip launches,
-//     scene triggers, mixer changes, arrangement edits.
-//   - Explicit transport play/stop events — these are intentional decisions.
-//   - Explicit tempo change events — also intentional decisions.
+//   - Track lifecycle (created, deleted, renamed, muted, armed).
+//   - Device activity (added, removed, chain changed).
+//   - Clip activity, scene triggers, arrangement edits.
+//   - Tempo changes — intentional decisions.
+//
+// NEVER included:
+//   - Transport play/stop — too frequent, not a creative signal.
 //
 // This boundary is the contract between raw telemetry and the curated timeline.
 // Do not relax these rules without updating the comment above.
@@ -33,6 +36,15 @@ export function buildCreativeTimeline(
 
   for (const event of events) {
     if (event.type === "heartbeat") {
+      continue;
+    }
+
+    // Play/stop is not a creative decision — producers do it thousands of times
+    // per session. Keep it in the DB for analytics (playback count) but never
+    // show it in the curated timeline.
+    if (event.timelineRole === "transport") {
+      const playing = readMetadataBoolean(event, "playing");
+      if (typeof playing === "boolean") previousPlaying = playing;
       continue;
     }
 

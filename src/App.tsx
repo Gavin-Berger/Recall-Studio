@@ -442,6 +442,8 @@ type BackendEvent = {
   parameter_name?: string | null;
   parameter_value?: number | null;
   clip_name?: string | null;
+  sample_name?: string | null;
+  file_path?: string | null;
   device_chain?: string | null;
   bpm?: number | null;
   playing?: boolean | null;
@@ -468,6 +470,12 @@ const EVENT_TYPE_MAP: Record<string, RecallEventType> = {
   track_deleted: "track",
   track_name_changed: "track",
   track_event: "track",
+  track_muted: "track",
+  track_unmuted: "track",
+  track_soloed: "track",
+  track_unsoloed: "track",
+  track_armed: "track",
+  track_unarmed: "track",
   // Device
   device_added: "device",
   device_removed: "device",
@@ -477,6 +485,8 @@ const EVENT_TYPE_MAP: Record<string, RecallEventType> = {
   // Parameter
   device_parameter_changed: "parameter",
   parameter_changed: "parameter",
+  automation_created: "parameter",
+  automation_edited: "parameter",
   // Clip
   clip_created: "clip",
   clip_launched: "clip",
@@ -485,6 +495,10 @@ const EVENT_TYPE_MAP: Record<string, RecallEventType> = {
   clip_event: "clip",
   clip_recording_started: "clip",
   clip_recording_stopped: "clip",
+  // Samples / audio + midi clip additions
+  sample_added: "clip",
+  audio_clip_added: "clip",
+  midi_clip_created: "clip",
   // Scene
   scene_launched: "scene",
   scene_changed: "scene",
@@ -562,6 +576,18 @@ function normalizeBackendEvent(
     typeof raw.clip_name === "string"
       ? raw.clip_name
       : readStringDeep(event, ["clip", "clip_name", "payload.clip_name", "payload.clip"]);
+
+  // Sample backing an audio clip (e.g. Splice drag-in). Top-level for v2 live
+  // events; payload fallback so saved sessions recover it without a DB column.
+  const sampleName =
+    typeof raw.sample_name === "string"
+      ? raw.sample_name
+      : readStringDeep(event, ["sample_name", "sample", "payload.sample_name", "payload.sample"]);
+
+  const filePath =
+    typeof raw.file_path === "string"
+      ? raw.file_path
+      : readStringDeep(event, ["file_path", "payload.file_path", "payload.path"]);
 
   // Top-level for live events; payload fallback for saved sessions (no column).
   const deviceChain =
@@ -645,7 +671,7 @@ function normalizeBackendEvent(
     source,
     metadata: buildMetadata(event, {
       trackName, groupName, groupPath, deviceName, deviceChain,
-      parameterName, clipName, bpm, previousBpm, state,
+      parameterName, clipName, sampleName, filePath, bpm, previousBpm, state,
       playing, songTime, projectTimeSeconds,
     }),
   };
@@ -1050,6 +1076,8 @@ function buildMetadata(
     deviceChain?: string;
     parameterName?: string;
     clipName?: string;
+    sampleName?: string;
+    filePath?: string;
     bpm?: number;
     previousBpm?: number;
     state?: string;
@@ -1069,6 +1097,8 @@ function buildMetadata(
   if (known.deviceChain) metadata.deviceChain = known.deviceChain;
   if (known.parameterName) metadata.parameter = known.parameterName;
   if (known.clipName) metadata.clip = known.clipName;
+  if (known.sampleName) metadata.sample = known.sampleName;
+  if (known.filePath) metadata.filePath = known.filePath;
   if (typeof known.previousBpm === "number") metadata.previousBpm = known.previousBpm;
   if (typeof known.playing === "boolean") metadata.playing = known.playing;
   if (typeof known.songTime === "number") {

@@ -155,14 +155,48 @@ export function formatProducerMoment(
   let detail = event.detail;
 
   switch (event.type) {
-    case "track":
-      title = "Track selected";
-      detail = track
-        ? groupText
-          ? `Selected "${track}" inside ${groupText}.`
-          : `Selected "${track}".`
-        : "Track focus changed in Ableton.";
+    case "track": {
+      const rawType = event.rawEventType?.toLowerCase();
+      const named = track ? `"${track}"` : "the track";
+
+      if (rawType === "track_created") {
+        title = track ? `Added track "${track}"` : "Made a new track";
+        detail = track ? `Created a new track, "${track}".` : "Created a new track.";
+      } else if (rawType === "track_deleted") {
+        title = track ? `Deleted "${track}"` : "Deleted a track";
+        detail = track ? `Removed the track "${track}".` : "Removed a track.";
+      } else if (rawType === "track_name_changed") {
+        title = track ? `Renamed to "${track}"` : "Renamed a track";
+        detail = track ? `Renamed a track to "${track}".` : "Renamed a track.";
+      } else if (rawType === "track_muted") {
+        title = `Muted ${named}`;
+        detail = `Muted ${named}.`;
+      } else if (rawType === "track_unmuted") {
+        title = `Unmuted ${named}`;
+        detail = `Brought ${named} back in.`;
+      } else if (rawType === "track_soloed") {
+        title = `Soloed ${named}`;
+        detail = `Soloed ${named} to hear it on its own.`;
+      } else if (rawType === "track_unsoloed") {
+        title = `Took ${named} off solo`;
+        detail = `Took ${named} off solo.`;
+      } else if (rawType === "track_armed") {
+        title = `Armed ${named} to record`;
+        detail = `Armed ${named} for recording.`;
+      } else if (rawType === "track_unarmed") {
+        title = `Disarmed ${named}`;
+        detail = `Disarmed ${named}.`;
+      } else {
+        // track_selected / focus snapshot — navigation context, normally hidden.
+        title = "Track selected";
+        detail = track
+          ? groupText
+            ? `Selected "${track}" inside ${groupText}.`
+            : `Selected "${track}".`
+          : "Track focus changed in Ableton.";
+      }
       break;
+    }
 
     case "group":
       title = "Group focus changed";
@@ -176,20 +210,20 @@ export function formatProducerMoment(
       const where = track ? (groupText ? `"${track}" inside ${groupText}` : `"${track}"`) : null;
 
       if (rawType === "device_chain_changed") {
-        title = "Signal chain changed";
+        title = "Reworked the chain";
         detail = deviceChain
           ? where
             ? `Chain on ${where} is now ${deviceChain}.`
-            : `Signal chain is now ${deviceChain}.`
-          : "The device chain on the selected track changed.";
+            : `Chain is now ${deviceChain}.`
+          : "Changed the chain on the selected track.";
       } else if (rawType === "device_added") {
-        title = device ? `Added ${device}` : "Device added";
+        title = device ? `Added ${device}` : "Added a device";
         detail = buildChainEdit("Added", device, where, deviceChain);
       } else if (rawType === "device_removed") {
-        title = device ? `Removed ${device}` : "Device removed";
+        title = device ? `Removed ${device}` : "Removed a device";
         detail = buildChainEdit("Removed", device, where, deviceChain);
       } else {
-        title = device ? "Device activity" : "Device changed";
+        title = device ? `Worked on ${device}` : "Worked on a device";
         detail = buildDeviceDetail(device, track, groupText);
       }
       break;
@@ -198,11 +232,11 @@ export function formatProducerMoment(
     case "parameter": {
       const rawType = event.rawEventType?.toLowerCase();
       if (rawType === "automation_created" || rawType === "automation_edited") {
-        const verb = rawType === "automation_edited" ? "edited" : "created";
-        title = parameter ? `Automation ${verb}: ${parameter}` : `Automation ${verb}`;
+        const verb = rawType === "automation_edited" ? "Reworked automation on" : "Automated";
+        title = parameter ? `${verb} ${parameter}` : (rawType === "automation_edited" ? "Reworked automation" : "Wrote automation");
         detail = buildAutomationDetail(parameter, device, track, groupText, position);
       } else {
-        title = parameter ? "Parameter changed" : "Control changed";
+        title = parameter ? `Tweaked ${parameter}` : "Tweaked a control";
         detail = buildParameterDetail(parameter, device, track, groupText, value);
       }
       break;
@@ -214,32 +248,32 @@ export function formatProducerMoment(
 
       if (rawType === "sample_added") {
         const name = sample ?? clip;
-        title = name ? `Sample added: ${name}` : "Sample added";
+        title = name ? `Dropped in ${name}` : "Dropped in a sample";
         detail = name
           ? `Dropped "${name}"${where ? ` onto ${where}` : ""}.`
-          : "A sample was added to a track.";
+          : "Added a sample to a track.";
       } else if (rawType === "audio_clip_added") {
-        title = "Audio clip added";
-        detail = `An audio clip was added${where ? ` to ${where}` : ""}.`;
+        title = "Added an audio clip";
+        detail = `Added an audio clip${where ? ` to ${where}` : ""}.`;
       } else if (rawType === "midi_clip_created") {
-        title = clip ? `MIDI clip created: ${clip}` : "MIDI clip created";
-        detail = `A MIDI clip was created${where ? ` on ${where}` : ""}.`;
+        title = clip ? `New MIDI clip "${clip}"` : "Started a MIDI clip";
+        detail = `Started a new MIDI clip${where ? ` on ${where}` : ""}.`;
       } else if (rawType === "clip_created") {
-        title = clip ? `Clip created: ${clip}` : "Clip created";
+        title = clip ? `Made the clip "${clip}"` : "Made a clip";
         detail = buildClipDetail(clip, track, groupText);
       } else if (rawType === "clip_deleted") {
-        title = clip ? `Clip deleted: ${clip}` : "Clip deleted";
-        detail = `A clip was deleted${where ? ` on ${where}` : ""}.`;
+        title = clip ? `Deleted "${clip}"` : "Deleted a clip";
+        detail = `Deleted a clip${where ? ` on ${where}` : ""}.`;
       } else {
-        title = clip ? "Clip launched" : "Clip activity";
+        title = clip ? `Launched "${clip}"` : "Launched a clip";
         detail = buildClipDetail(clip, track, groupText);
       }
       break;
     }
 
     case "scene":
-      title = "Scene triggered";
-      detail = "Session View scene activity was captured.";
+      title = "Launched a scene";
+      detail = "Launched a scene in Session View.";
       break;
 
     case "mixer":
@@ -257,10 +291,10 @@ export function formatProducerMoment(
       break;
 
     case "tempo":
-      title = tempo ? `Tempo changed to ${tempo}` : "Tempo changed";
+      title = tempo ? `Changed the tempo to ${tempo}` : "Changed the tempo";
       detail = projectClock
-        ? `Project tempo changed at ${projectClock}${position ? ` (${position})` : ""}.`
-        : "Project tempo changed in Ableton Live.";
+        ? `Changed the tempo at ${projectClock}${position ? ` (${position})` : ""}.`
+        : "Changed the project tempo.";
       break;
 
     case "session":

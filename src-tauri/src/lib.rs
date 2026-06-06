@@ -361,7 +361,7 @@ pub fn run() {
     let storage_state_for_setup = storage_state.clone();
     let bridge_metrics_for_setup = bridge_metrics.clone();
 
-    println!("Starting Recall Studio backend...");
+    println!("Starting Recall Studio backend... (PID {})", std::process::id());
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())

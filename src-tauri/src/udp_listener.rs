@@ -51,7 +51,10 @@ fn classify_priority(event_type: &str) -> EventPriority {
         "track_created" | "track_deleted" | "track_name_changed" | "clip_created"
         | "clip_deleted" | "clip_recording_started" | "clip_recording_stopped" | "device_added"
         | "device_removed" | "device_chain_changed" | "creative_decision" | "bridge_started"
-        | "bridge_stopped" | "session_snapshot" => EventPriority::Critical,
+        | "bridge_stopped" | "session_snapshot" | "automation_created"
+        | "track_muted" | "track_unmuted" | "track_soloed" | "track_unsoloed"
+        | "track_armed" | "track_unarmed"
+        | "sample_added" | "audio_clip_added" | "midi_clip_created" => EventPriority::Critical,
 
         // Meaningful context worth keeping unless truly saturated.
         "tempo_changed" | "transport_play" | "transport_stop" | "scene_launched"
@@ -136,6 +139,16 @@ fn title_for_event_type(event_type: &str) -> String {
 
         "clip_event" => "Clip Event".to_string(),
         "clip_created" => "Clip Created".to_string(),
+        "sample_added" => "Sample Added".to_string(),
+        "audio_clip_added" => "Audio Clip Added".to_string(),
+        "midi_clip_created" => "MIDI Clip Created".to_string(),
+        "automation_created" => "Automation Created".to_string(),
+        "track_muted" => "Track Muted".to_string(),
+        "track_unmuted" => "Track Unmuted".to_string(),
+        "track_soloed" => "Track Soloed".to_string(),
+        "track_unsoloed" => "Track Unsoloed".to_string(),
+        "track_armed" => "Track Armed".to_string(),
+        "track_unarmed" => "Track Unarmed".to_string(),
         "clip_launched" => "Clip Launched".to_string(),
         "clip_stopped" => "Clip Stopped".to_string(),
         "clip_deleted" => "Clip Deleted".to_string(),
@@ -186,6 +199,16 @@ fn description_for_event_type(event_type: &str) -> String {
 
         "clip_event" => "Ableton clip event received.".to_string(),
         "clip_created" => "A clip was created in Ableton.".to_string(),
+        "sample_added" => "A sample was added to a track in Ableton.".to_string(),
+        "audio_clip_added" => "An audio clip was added to a track in Ableton.".to_string(),
+        "midi_clip_created" => "A MIDI clip was created in Ableton.".to_string(),
+        "automation_created" => "Automation was written on a parameter in Ableton.".to_string(),
+        "track_muted" => "A track was muted in Ableton.".to_string(),
+        "track_unmuted" => "A track was unmuted in Ableton.".to_string(),
+        "track_soloed" => "A track was soloed in Ableton.".to_string(),
+        "track_unsoloed" => "A track was unsoloed in Ableton.".to_string(),
+        "track_armed" => "A track was armed for recording in Ableton.".to_string(),
+        "track_unarmed" => "A track was unarmed in Ableton.".to_string(),
         "clip_launched" => "An Ableton clip was launched.".to_string(),
         "clip_stopped" => "An Ableton clip was stopped.".to_string(),
         "clip_deleted" => "An Ableton clip was deleted.".to_string(),
@@ -305,10 +328,12 @@ fn find_bool(
 }
 
 fn normalize_udp_json(mut value: Value) -> Result<Value, String> {
+    // Reject anything that isn't a JSON object — we can't normalize a bare array or scalar.
     let object = value
         .as_object_mut()
         .ok_or_else(|| "UDP JSON was not an object".to_string())?;
 
+    // Reject packets from protocol versions we don't understand.
     let protocol = object
         .get("protocol")
         .and_then(Value::as_str)
@@ -325,6 +350,9 @@ fn normalize_udp_json(mut value: Value) -> Result<Value, String> {
         .unwrap_or("unknown")
         .to_string();
 
+    // Fill in required envelope fields that older/minimal senders may have omitted.
+    // or_insert leaves existing values untouched; insert overwrites (protocol, event_type
+    // are always normalised to the resolved string so type coercions don't leak through).
     object.insert("protocol".to_string(), Value::String(protocol));
     object
         .entry("source".to_string())
@@ -343,18 +371,22 @@ fn normalize_udp_json(mut value: Value) -> Result<Value, String> {
         .entry("session_id".to_string())
         .or_insert(Value::Null);
 
+    // Flatten the nested payload object to a JSON string so RecallEvent can store it
+    // as a plain String field rather than a recursive serde_json::Value.
     let payload_string = payload_to_string(object.get("payload"));
     object.insert("payload".to_string(), Value::String(payload_string));
 
     // ── Extract structured fields ─────────────────────────────────────────────
-    // Parse the payload JSON to look for fields that may be nested inside it.
+    // Parse the payload string back out so we can look for canonical fields that
+    // the bridge may have placed inside it rather than at the top level.
     let payload_parsed: Option<Value> = object
         .get("payload")
         .and_then(|v| v.as_str())
         .and_then(|s| serde_json::from_str(s).ok());
     let payload_obj = payload_parsed.as_ref().and_then(|v| v.as_object());
 
-    // Canonical v2 name first, then common v1 synonyms.
+    // Each find_* call checks the top-level object first, then the payload, trying
+    // the canonical v2 name first and then common v1 synonyms in order.
     let track_name = find_string(
         object,
         payload_obj,
@@ -377,6 +409,16 @@ fn normalize_udp_json(mut value: Value) -> Result<Value, String> {
         &["parameter_name", "parameter", "param_name", "param"],
     );
     let clip_name = find_string(object, payload_obj, &["clip_name", "clip"]);
+    let sample_name = find_string(
+        object,
+        payload_obj,
+        &["sample_name", "sample", "file_name", "fileName"],
+    );
+    let file_path = find_string(
+        object,
+        payload_obj,
+        &["file_path", "filePath", "path", "sample_path"],
+    );
     let device_chain = find_string(object, payload_obj, &["device_chain", "chain"]);
     let bpm = find_f64(object, payload_obj, &["bpm", "tempo"]);
     let playing = find_bool(object, payload_obj, &["playing", "is_playing"]);
@@ -386,9 +428,9 @@ fn normalize_udp_json(mut value: Value) -> Result<Value, String> {
         &["parameter_value", "value", "param_value"],
     );
 
-    // Write resolved fields back to the top-level object.
-    // These override any null placeholders and become top-level struct fields
-    // in RecallEvent, so the frontend accesses them with zero guessing.
+    // Write every canonical field back to the top level — present value or explicit null.
+    // This guarantees the frontend always sees a flat, predictable shape with no
+    // payload digging, regardless of which protocol version sent the event.
     match track_name {
         Some(v) => object.insert("track_name".to_string(), Value::String(v)),
         None => object.insert("track_name".to_string(), Value::Null),
@@ -404,6 +446,14 @@ fn normalize_udp_json(mut value: Value) -> Result<Value, String> {
     match clip_name {
         Some(v) => object.insert("clip_name".to_string(), Value::String(v)),
         None => object.insert("clip_name".to_string(), Value::Null),
+    };
+    match sample_name {
+        Some(v) => object.insert("sample_name".to_string(), Value::String(v)),
+        None => object.insert("sample_name".to_string(), Value::Null),
+    };
+    match file_path {
+        Some(v) => object.insert("file_path".to_string(), Value::String(v)),
+        None => object.insert("file_path".to_string(), Value::Null),
     };
     match device_chain {
         Some(v) => object.insert("device_chain".to_string(), Value::String(v)),

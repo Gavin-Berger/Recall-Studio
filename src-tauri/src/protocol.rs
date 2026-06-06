@@ -32,6 +32,12 @@ pub struct RecallEvent {
     pub parameter_value: Option<f64>,
     #[serde(default)]
     pub clip_name: Option<String>,
+    // Sample/file backing an audio clip (e.g. a Splice drag-in). sample_name is
+    // the bare file name for display; file_path is the full on-disk source.
+    #[serde(default)]
+    pub sample_name: Option<String>,
+    #[serde(default)]
+    pub file_path: Option<String>,
     // Ordered, colon-separated device chain for the selected track, e.g.
     // "Serum 2 : Saturator : Vocoder". Read straight from Ableton via the bridge.
     #[serde(default)]

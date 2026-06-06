@@ -8,6 +8,7 @@ import { AppShell } from "./components/AppShell";
 import type { AppSurface } from "./components/AppShell";
 import { ConnectionPanel } from "./components/ConnectionPanel";
 import { ProducerInsights } from "./components/ProducerInsights";
+import { ProductionCheatSheet } from "./components/ProductionCheatSheet";
 import { SessionDocument } from "./components/SessionDocument";
 import { SessionOverview } from "./components/SessionOverview";
 import { SessionTimeline } from "./components/SessionTimeline";
@@ -405,6 +406,7 @@ function App() {
         />
       }
       analytics={<ProducerInsights events={creativeEvents} stats={stats} />}
+      glossary={<ProductionCheatSheet />}
       inspector={
         <ConnectionPanel
           connection={connection}

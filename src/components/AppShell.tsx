@@ -5,7 +5,8 @@ export type AppSurface =
   | "home"
   | "capture"
   | "timeline"
-  | "analytics";
+  | "analytics"
+  | "glossary";
 
 type NavItem = {
   id: AppSurface;
@@ -18,6 +19,7 @@ const NAV_ITEMS: NavItem[] = [
   { id: "capture", label: "Capture", hint: "Incoming signal" },
   { id: "timeline", label: "Documentation", hint: "Session document" },
   { id: "analytics", label: "Analytics", hint: "Producer insights" },
+  { id: "glossary", label: "Cheat Sheet", hint: "Producer glossary" },
 ];
 
 type AppShellProps = {
@@ -29,6 +31,7 @@ type AppShellProps = {
   timeline: ReactNode;
   document: ReactNode;
   analytics: ReactNode;
+  glossary: ReactNode;
   inspector: ReactNode;
   statusStrip: ReactNode;
 };
@@ -42,6 +45,7 @@ export function AppShell({
   timeline,
   document,
   analytics,
+  glossary,
   inspector,
   statusStrip,
 }: AppShellProps) {
@@ -98,6 +102,8 @@ export function AppShell({
             <div className="document-surface">{document}</div>
           ) : surface === "analytics" ? (
             <div className="document-surface">{analytics}</div>
+          ) : surface === "glossary" ? (
+            <div className="document-surface">{glossary}</div>
           ) : (
             <section
               className={`studio-layout studio-layout--${surface}`}

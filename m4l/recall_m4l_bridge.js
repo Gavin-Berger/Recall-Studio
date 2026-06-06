@@ -43,7 +43,7 @@ outlets = 2;
 var PROTOCOL = "recall.v2";
 var SOURCE = "max_for_live";
 var DEVICE_ID = "recall-m4l-bridge-dev";
-var BRIDGE_VERSION = "0.9.0";
+var BRIDGE_VERSION = "0.10.0";
 
 // Canonical v2 flat fields. emit() lifts any of these from its `fields` arg up
 // to the TOP LEVEL of the packet, because the Rust normalizer reads canonical
@@ -95,6 +95,10 @@ var MAX_SCENE_SUMMARIES = 16;
 var MAX_FOCUS_DEVICES = 8;
 var MAX_FOCUS_PARAMETERS_PER_DEVICE = 12;
 var MAX_FOCUS_CLIP_SLOTS = 16;
+// How many tracks the lightweight lifecycle roster scan covers each transport
+// tick. Only cheap props are read per track (name/mute/solo/arm), so this can be
+// generous; tracks beyond it won't get create/rename/mute/solo/arm detection.
+var MAX_TRACK_STATES = 32;
 
 // Manual deep capture limits.
 var MAX_DEEP_TRACKS = 64;
@@ -433,6 +437,12 @@ function scan_track_structure_batch() {
         return;
     }
 
+    // The master and return tracks live OUTSIDE the regular `live_set tracks`
+    // list, so the round-robin below never sees them. Scan them each tick so
+    // adding a plugin to the master (mixdown/mastering) or a return (send FX) is
+    // captured — there are only a handful of buses, so this is cheap.
+    scan_bus_tracks();
+
     var trackCount = get_count(liveSet, "tracks", 0);
 
     if (trackCount <= 0) {
@@ -464,6 +474,66 @@ function scan_track_structure_batch() {
         }
 
         detect_focus_changes(snapshot);
+    }
+}
+
+// Build a device-only focus snapshot for a bus track (the master or a return) by
+// path. Buses have no clip slots, so clips is always empty and detect_focus_changes
+// only diffs devices + chain — exactly the "added a plugin to the master" case.
+function collect_bus_devices_snapshot(trackPath) {
+    var track = safe_path(trackPath);
+
+    if (!track) {
+        return null;
+    }
+
+    var trackId = normalize_id(track.id);
+
+    if (!trackId) {
+        return null;
+    }
+
+    var deviceCount = get_count(track, "devices", 0);
+    var devices = collect_focus_devices_for_path(
+        trackPath,
+        Math.min(deviceCount, MAX_FOCUS_DEVICES)
+    );
+
+    return {
+        available: true,
+        id: trackId,
+        index: -1,
+        name: value_to_string(get_prop(track, "name", null)),
+        device_count: deviceCount,
+        device_chain: build_device_chain(devices),
+        devices: devices,
+        clips: []
+    };
+}
+
+// Diff the master track and every return track for device/chain changes. They
+// live outside `live_set tracks`, so the round-robin scan never reaches them.
+// Reuses the same per-track diff cache (keyed by track id) and emits the same
+// device_added / device_removed / device_chain_changed events, now attributed to
+// "Master" or the return's name.
+function scan_bus_tracks() {
+    var liveSet = safe_path("live_set");
+
+    if (!liveSet) {
+        return;
+    }
+
+    var master = collect_bus_devices_snapshot("live_set master_track");
+    if (master && master.id) {
+        detect_focus_changes(master);
+    }
+
+    var returnCount = get_count(liveSet, "return_tracks", 0);
+    for (var i = 0; i < returnCount && i < MAX_TRACK_STATES; i++) {
+        var returnTrack = collect_bus_devices_snapshot("live_set return_tracks " + i);
+        if (returnTrack && returnTrack.id) {
+            detect_focus_changes(returnTrack);
+        }
     }
 }
 
@@ -653,6 +723,23 @@ function collect_transport_snapshot() {
 
 function send_transport_delta_if_changed() {
     var snapshot = collect_transport_snapshot();
+
+    // Track lifecycle (create / delete / rename / mute / solo / arm) is diffed
+    // here on its own lightweight roster scan, and crucially BEFORE the transport
+    // dedup below. A mute or arm toggle doesn't change the transport fingerprint
+    // (track_count and the selected track are unchanged), so if this ran after the
+    // early return it would be swallowed. detect_track_changes only emits on a real
+    // change, so running it every tick is cheap and correct.
+    if (snapshot.available) {
+        try {
+            detect_track_changes(
+                collect_track_states(Math.min(snapshot.track_count, MAX_TRACK_STATES))
+            );
+        } catch (error) {
+            debug("track roster scan failed: " + error);
+        }
+    }
+
     var summaryFingerprint = fingerprint({
         available: snapshot.available,
         playing: snapshot.playing,
@@ -717,9 +804,7 @@ function send_transport_delta_if_changed() {
         lastPlayingState = snapshot.playing;
         lastTempo = snapshot.tempo;
         lastSelectedTrackId = snapshot.selected_track_id;
-
-        // Diff track lifecycle against the previous transport snapshot.
-        detect_track_changes(snapshot.tracks);
+        // (track lifecycle is diffed at the top of this function, before the dedup)
     }
 
     emit("transport_snapshot", "Transport Snapshot", "Ableton transport state changed.", snapshot);
@@ -890,6 +975,35 @@ function collect_track_summaries(limit) {
     }
 
     return tracks;
+}
+
+// Lightweight per-track roster used for lifecycle diffing on every transport tick.
+// Unlike collect_track_summaries this reads ONLY the cheap props detect_track_changes
+// needs (no device/clip counts), so it's safe to run frequently across many tracks.
+function collect_track_states(limit) {
+    var states = [];
+
+    for (var i = 0; i < limit; i++) {
+        var track = safe_path("live_set tracks " + i);
+
+        if (!track) {
+            continue;
+        }
+
+        var canBeArmed = value_to_bool(get_prop(track, "can_be_armed", 0));
+
+        states.push({
+            index: i,
+            id: normalize_id(track.id),
+            name: value_to_string(get_prop(track, "name", null)),
+            muted: value_to_bool(get_prop(track, "mute", 0)),
+            solo: value_to_bool(get_prop(track, "solo", 0)),
+            can_be_armed: canBeArmed,
+            arm: canBeArmed ? value_to_bool(get_prop(track, "arm", 0)) : false
+        });
+    }
+
+    return states;
 }
 
 function collect_scene_summaries(limit) {
@@ -1408,10 +1522,17 @@ function emit_clip_created(trackName, clip) {
 }
 
 function collect_focus_devices_for_track(trackIndex, limit) {
+    return collect_focus_devices_for_path("live_set tracks " + trackIndex, limit);
+}
+
+// Path-based device collector so it works for ANY track object: regular tracks
+// ("live_set tracks N"), the master track ("live_set master_track"), and return
+// tracks ("live_set return_tracks N").
+function collect_focus_devices_for_path(trackPath, limit) {
     var devices = [];
 
     for (var i = 0; i < limit; i++) {
-        var device = safe_path("live_set tracks " + trackIndex + " devices " + i);
+        var device = safe_path(trackPath + " devices " + i);
 
         if (!device) {
             continue;

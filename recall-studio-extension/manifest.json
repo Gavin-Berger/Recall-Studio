@@ -1,0 +1,7 @@
+{
+    "name": "recall-studio-extension",
+    "author": "Gavin Berger",
+    "version": "0.1.0",
+    "entry": "dist/extension.js",
+    "minimumApiVersion": "1.0.0"
+}

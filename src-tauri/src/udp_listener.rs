@@ -337,18 +337,48 @@ fn normalize_udp_json(mut value: Value) -> Result<Value, String> {
     Ok(value)
 }
 
+// Event types traced to the console as "XXX:EVENT LOGGED". Edit this list to add or
+// remove the events you want to watch — it's the easy knob for targeted debugging.
+// To firehose EVERY incoming event instead, flip VERBOSE_UDP_LOGGING (top of file)
+// to true; the list is then ignored.
+const LOGGED_EVENT_TYPES: &[&str] = &[
+    // Track lifecycle
+    "track_created",
+    "track_deleted",
+    "track_name_changed",
+    // Devices
+    "device_added",
+    "device_removed",
+    "device_chain_changed",
+    // Parameters & automation
+    "parameter_changed",
+    "automation_created",
+    // Clips & samples
+    "sample_added",
+    "audio_clip_added",
+    "midi_clip_created",
+    "clip_created",
+    // Deep snapshots that feed the schema projection
+    "live_set_snapshot",
+    "session_snapshot",
+    // Tempo
+    "tempo_changed",
+];
+
+// Console tracing for incoming events. Prints anything in LOGGED_EVENT_TYPES (or
+// everything when VERBOSE_UDP_LOGGING is on), tagged with its event_type so it's
+// easy to grep in the Tauri console.
 fn log_events(normalized_json: &Value) {
     let event_type = normalized_json
         .get("event_type")
         .and_then(Value::as_str)
         .unwrap_or("");
-    if event_type != "track_created" {
+
+    if !VERBOSE_UDP_LOGGING && !LOGGED_EVENT_TYPES.contains(&event_type) {
         return;
     }
 
-    //if VERBOSE_UDP_LOGGING {
-    println!("XXX:EVENT LOGGED -> {}", normalized_json);
-    //}
+    println!("XXX:EVENT LOGGED [{}] -> {}", event_type, normalized_json);
 }
 
 fn update_connection_if_heartbeat(normalized_json: &Value, state: &Arc<Mutex<ConnectionState>>) {

@@ -1,12 +1,10 @@
 import type { ReactNode } from "react";
 import { RecallMark } from "./RecallMark";
 
-export type AppSurface =
-  | "home"
-  | "capture"
-  | "timeline"
-  | "analytics"
-  | "glossary";
+// The milestone surfaces: the landing page, the schema-driven timeline, and the
+// producer glossary. Capture/Analytics/Document were retired in favour of the
+// single schema timeline experience.
+export type AppSurface = "home" | "timeline" | "glossary";
 
 type NavItem = {
   id: AppSurface;
@@ -16,9 +14,7 @@ type NavItem = {
 
 const NAV_ITEMS: NavItem[] = [
   { id: "home", label: "Current Session", hint: "Live overview" },
-  { id: "capture", label: "Capture", hint: "Incoming signal" },
-  { id: "timeline", label: "Documentation", hint: "Session document" },
-  { id: "analytics", label: "Analytics", hint: "Producer insights" },
+  { id: "timeline", label: "Timeline", hint: "Schema & moments" },
   { id: "glossary", label: "Cheat Sheet", hint: "Producer glossary" },
 ];
 
@@ -27,13 +23,8 @@ type AppShellProps = {
   onChangeSurface: (surface: AppSurface) => void;
   connected: boolean;
   home: ReactNode;
-  rail: ReactNode;
   timeline: ReactNode;
-  document: ReactNode;
-  analytics: ReactNode;
   glossary: ReactNode;
-  inspector: ReactNode;
-  statusStrip: ReactNode;
 };
 
 export function AppShell({
@@ -41,16 +32,9 @@ export function AppShell({
   onChangeSurface,
   connected,
   home,
-  rail,
   timeline,
-  document,
-  analytics,
   glossary,
-  inspector,
-  statusStrip,
 }: AppShellProps) {
-  // Document and analytics are self-contained, full-width views. Only capture
-  // is a true three-column workspace (rail + live stage + inspector).
   return (
     <main className={`recall-app recall-app--${surface}`}>
       <div className="ecosystem-background" aria-hidden="true">
@@ -98,28 +82,10 @@ export function AppShell({
         <div className="recall-frame__content">
           {surface === "home" ? (
             <div className="home-surface">{home}</div>
-          ) : surface === "timeline" ? (
-            <div className="document-surface">{document}</div>
-          ) : surface === "analytics" ? (
-            <div className="document-surface">{analytics}</div>
           ) : surface === "glossary" ? (
             <div className="document-surface">{glossary}</div>
           ) : (
-            <section
-              className={`studio-layout studio-layout--${surface}`}
-              aria-label="Recall Studio workspace"
-            >
-              <div className="ecosystem-pane ecosystem-pane--rail">{rail}</div>
-
-              <div className="memory-workbench">
-                {timeline}
-                {statusStrip}
-              </div>
-
-              <div className="ecosystem-pane ecosystem-pane--inspector">
-                {inspector}
-              </div>
-            </section>
+            <div className="schema-surface">{timeline}</div>
           )}
         </div>
       </div>

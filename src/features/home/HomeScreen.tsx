@@ -7,7 +7,7 @@ type HomeScreenProps = {
   sessions: SavedSessionMetadata[];
   activeSession: SavedSessionMetadata | null;
   onStartNewSession: () => void;
-  onGoToCapture: () => void;
+  onOpenTimeline: () => void;
   onOpenSession: (sessionId: string) => void;
 };
 
@@ -16,7 +16,7 @@ export function HomeScreen({
   sessions,
   activeSession,
   onStartNewSession,
-  onGoToCapture,
+  onOpenTimeline,
   onOpenSession,
 }: HomeScreenProps) {
   const recentSessions = sessions.slice(0, 7);
@@ -58,9 +58,9 @@ export function HomeScreen({
             <button
               type="button"
               className="home-action home-action--primary"
-              onClick={onGoToCapture}
+              onClick={onOpenTimeline}
             >
-              Resume Capture
+              Open Timeline
             </button>
           </section>
         )}
@@ -119,9 +119,9 @@ export function HomeScreen({
         <button
           type="button"
           className="home-action"
-          onClick={onGoToCapture}
+          onClick={onOpenTimeline}
         >
-          {activeSession ? "Open Capture View" : "Go to Capture"}
+          Open Timeline
         </button>
       </footer>
     </div>

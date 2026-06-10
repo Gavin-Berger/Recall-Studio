@@ -2,12 +2,14 @@ mod event_catalog;
 mod install;
 mod metrics;
 mod protocol;
+mod schema_projection;
 mod session;
 mod storage;
 mod udp_listener;
 
 use metrics::{BridgeMetrics, BridgeMetricsSnapshot};
 use protocol::RecallEvent;
+use schema_projection::{CreativeMoment, CreativeMomentTarget, ParameterChange, ProjectSchema};
 use session::{SavedSession, SavedSessionMetadata, SessionState, SessionStatus};
 use std::sync::{Arc, Mutex};
 use storage::{initialize_database, SessionCuration, StorageState, StorageStatus};
@@ -340,6 +342,116 @@ fn delete_session_note(state: State<'_, AppState>, note_id: String) -> Result<()
     storage.delete_session_note(&note_id)
 }
 
+// ── Normalized schema + creative memory ──────────────────────────────────────
+
+#[tauri::command]
+fn materialize_session_schema(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<(), String> {
+    let storage = state.storage.lock().expect("Storage state lock failed");
+    storage.materialize_session_schema(&session_id)
+}
+
+#[tauri::command]
+fn get_project_schema(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<ProjectSchema, String> {
+    let storage = state.storage.lock().expect("Storage state lock failed");
+    storage.get_project_schema(&session_id)
+}
+
+#[tauri::command]
+fn get_parameter_changes(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<Vec<ParameterChange>, String> {
+    let storage = state.storage.lock().expect("Storage state lock failed");
+    storage.get_parameter_changes(&session_id)
+}
+
+#[tauri::command]
+fn list_creative_moments(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<Vec<CreativeMoment>, String> {
+    let storage = state.storage.lock().expect("Storage state lock failed");
+    storage.list_creative_moments(&session_id)
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+fn create_creative_moment(
+    state: State<'_, AppState>,
+    id: String,
+    session_id: String,
+    title: String,
+    moment_type: String,
+    timeline_start_ms: Option<u64>,
+    timeline_end_ms: Option<u64>,
+    note: Option<String>,
+    tags: Vec<String>,
+    confidence: String,
+    targets: Vec<CreativeMomentTarget>,
+) -> Result<(), String> {
+    let storage = state.storage.lock().expect("Storage state lock failed");
+    storage.create_creative_moment(
+        &id,
+        &session_id,
+        &title,
+        &moment_type,
+        timeline_start_ms,
+        timeline_end_ms,
+        note.as_deref(),
+        &tags,
+        &confidence,
+        &targets,
+    )
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+fn update_creative_moment(
+    state: State<'_, AppState>,
+    id: String,
+    title: String,
+    moment_type: String,
+    timeline_start_ms: Option<u64>,
+    timeline_end_ms: Option<u64>,
+    note: Option<String>,
+    tags: Vec<String>,
+    confidence: String,
+) -> Result<(), String> {
+    let storage = state.storage.lock().expect("Storage state lock failed");
+    storage.update_creative_moment(
+        &id,
+        &title,
+        &moment_type,
+        timeline_start_ms,
+        timeline_end_ms,
+        note.as_deref(),
+        &tags,
+        &confidence,
+    )
+}
+
+#[tauri::command]
+fn set_creative_moment_targets(
+    state: State<'_, AppState>,
+    moment_id: String,
+    targets: Vec<CreativeMomentTarget>,
+) -> Result<(), String> {
+    let storage = state.storage.lock().expect("Storage state lock failed");
+    storage.set_creative_moment_targets(&moment_id, &targets)
+}
+
+#[tauri::command]
+fn delete_creative_moment(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    let storage = state.storage.lock().expect("Storage state lock failed");
+    storage.delete_creative_moment(&id)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let connection_state = Arc::new(Mutex::new(ConnectionState {
@@ -450,6 +562,14 @@ pub fn run() {
             add_session_note,
             update_session_note,
             delete_session_note,
+            materialize_session_schema,
+            get_project_schema,
+            get_parameter_changes,
+            list_creative_moments,
+            create_creative_moment,
+            update_creative_moment,
+            set_creative_moment_targets,
+            delete_creative_moment,
             install::detect_bridge_install_targets,
             install::install_bridge
         ])

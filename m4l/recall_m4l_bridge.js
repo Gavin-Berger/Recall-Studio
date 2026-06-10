@@ -43,7 +43,7 @@ outlets = 2;
 var PROTOCOL = "recall.v2";
 var SOURCE = "max_for_live";
 var DEVICE_ID = "recall-m4l-bridge-dev";
-var BRIDGE_VERSION = "0.10.0";
+var BRIDGE_VERSION = "0.11.0";
 
 // Canonical v2 flat fields. emit() lifts any of these from its `fields` arg up
 // to the TOP LEVEL of the packet, because the Rust normalizer reads canonical
@@ -671,6 +671,26 @@ function value_to_number(value, fallbackValue) {
     }
 
     return n;
+}
+
+// Classify a device by its chain role from the Live API Device.type integer.
+// Live Object Model: 1 = instrument, 2 = audio_effect, 4 = midi_effect (0 =
+// undefined). The app reads this `role` string directly, so the MIDI chain
+// (midi_effects -> instrument -> audio_effects) is recoverable downstream without
+// re-guessing. If a future Live build changes these integers, this is the one
+// place to adjust.
+function device_role(device) {
+    var type = get_prop(device, "type", null);
+
+    if (type === 1) {
+        return "instrument";
+    }
+
+    if (type === 4) {
+        return "midi_effect";
+    }
+
+    return "audio_effect";
 }
 
 function value_to_bool(value) {
@@ -1554,6 +1574,7 @@ function collect_focus_devices_for_path(trackPath, limit) {
             name: value_to_string(get_prop(device, "name", null)),
             class_name: value_to_string(get_prop(device, "class_name", null)),
             type: get_prop(device, "type", null),
+            role: device_role(device),
             is_active: value_to_bool(get_prop(device, "is_active", 0)),
             parameter_count: get_count(device, "parameters", 0)
         });
@@ -1680,19 +1701,54 @@ function collect_deep_session_snapshot() {
 
     var trackCount = get_count(liveSet, "tracks", 0);
     var sceneCount = get_count(liveSet, "scenes", 0);
+    var returnTrackCount = get_count(liveSet, "return_tracks", 0);
 
     return {
         available: true,
         transport: collect_transport_snapshot(),
         counts: {
             tracks: trackCount,
-            return_tracks: get_count(liveSet, "return_tracks", 0),
+            return_tracks: returnTrackCount,
             scenes: sceneCount
         },
         selected_track: collect_selected_track_focus_snapshot(),
         tracks: collect_deep_tracks_snapshot(Math.min(trackCount, MAX_DEEP_TRACKS)),
+        return_tracks: collect_deep_return_tracks_snapshot(Math.min(returnTrackCount, MAX_DEEP_TRACKS)),
         scenes: collect_scene_summaries(Math.min(sceneCount, MAX_DEEP_SCENES))
     };
+}
+
+// Return tracks live in a separate Live collection, so they need their own pass.
+// We capture name + effect chain (via the shared path-based device collector) but
+// skip per-parameter reads — a return's identity is its name + audio-effect chain,
+// and the heavy parameter scan isn't worth it here. The app types these as Return.
+function collect_deep_return_tracks_snapshot(limit) {
+    var tracks = [];
+
+    for (var i = 0; i < limit; i++) {
+        var path = "live_set return_tracks " + i;
+        var track = safe_path(path);
+
+        if (!track) {
+            continue;
+        }
+
+        var deviceCount = get_count(track, "devices", 0);
+
+        tracks.push({
+            index: i,
+            id: normalize_id(track.id),
+            name: value_to_string(get_prop(track, "name", null)),
+            color: get_prop(track, "color", null),
+            device_count: deviceCount,
+            devices: collect_focus_devices_for_path(
+                path,
+                Math.min(deviceCount, MAX_DEEP_DEVICES_PER_TRACK)
+            )
+        });
+    }
+
+    return tracks;
 }
 
 function collect_deep_tracks_snapshot(limit) {
@@ -1722,6 +1778,11 @@ function collect_deep_tracks_snapshot(limit) {
             arm: canBeArmed ? value_to_bool(get_prop(track, "arm", 0)) : false,
             is_foldable: isFoldable,
             fold_state: isFoldable ? get_prop(track, "fold_state", null) : null,
+            // has_midi_input cleanly separates MIDI tracks from audio tracks; the
+            // app reads it to type the track. group_track_id is the parent group
+            // track (null when ungrouped), which rebuilds the Group -> Track nesting.
+            has_midi_input: value_to_bool(get_prop(track, "has_midi_input", 0)),
+            group_track_id: normalize_id(get_prop(track, "group_track", null)),
             device_count: deviceCount,
             clip_slot_count: clipSlotCount,
             devices: collect_deep_devices_for_track(
@@ -1756,6 +1817,7 @@ function collect_deep_devices_for_track(trackIndex, limit) {
             name: value_to_string(get_prop(device, "name", null)),
             class_name: value_to_string(get_prop(device, "class_name", null)),
             type: get_prop(device, "type", null),
+            role: device_role(device),
             is_active: value_to_bool(get_prop(device, "is_active", 0)),
             parameter_count: parameterCount,
             parameters: collect_deep_parameters_for_device(

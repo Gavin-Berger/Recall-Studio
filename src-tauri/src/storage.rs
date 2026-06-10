@@ -1,9 +1,15 @@
 use crate::protocol::RecallEvent;
+use crate::schema_projection::{
+    build_parameter_changes, parse_session_tree, ChangeEvent, CreativeMoment, CreativeMomentTarget,
+    DeviceObj, DeviceRole, ParameterChange, ParameterObj, ParsedParam, ParsedTrack, ProjectSchema,
+    TrackObj, TrackType,
+};
 use crate::session::{SavedSession, SavedSessionEvent, SavedSessionMetadata, SessionStatus};
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde::Serialize;
 use serde_json::Value;
 use std::{
+    collections::HashMap,
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -663,6 +669,487 @@ impl StorageState {
 
         Ok(())
     }
+
+    // ── Normalized schema projection ─────────────────────────────────────────
+
+    /// Rebuild the normalized schema tables for one session from its event log.
+    /// Idempotent: deletes and re-inserts tracks/devices/parameters/parameter_changes
+    /// from the latest deep snapshot + the parameter-change event stream. Never
+    /// touches creative_moments (those are user-authored and persist).
+    pub fn materialize_session_schema(&self, session_id: &str) -> Result<(), String> {
+        let mut connection = self.open_connection()?;
+
+        // Read source data before opening the write transaction.
+        let tree = latest_session_tree(&connection, session_id)?;
+        let change_events = collect_change_events(&connection, session_id)?;
+
+        let transaction = connection
+            .transaction()
+            .map_err(|error| format!("Failed to start schema materialization: {}", error))?;
+
+        for table in ["parameter_changes", "parameters", "devices", "tracks"] {
+            transaction
+                .execute(
+                    &format!("DELETE FROM {table} WHERE session_id = ?1"),
+                    params![session_id],
+                )
+                .map_err(|error| format!("Failed to clear {table}: {}", error))?;
+        }
+
+        // ableton track id -> stable track id, for resolving group parents.
+        let mut track_id_by_ableton: HashMap<String, String> = HashMap::new();
+        // (track, device, parameter) names -> parameter id, for change linking.
+        let mut parameter_lookup: HashMap<(String, String, String), String> = HashMap::new();
+
+        // Insert tracks (group_id resolved in a second pass once all ids exist).
+        for (t_index, track) in tree.iter().enumerate() {
+            let track_id = make_id(session_id, "t", track.ableton_id.as_deref(), t_index);
+            if let Some(ableton) = &track.ableton_id {
+                track_id_by_ableton.insert(ableton.clone(), track_id.clone());
+            }
+
+            transaction
+                .execute(
+                    "INSERT INTO tracks
+                     (id, session_id, ableton_id, name, number, type, color, group_id, chain_index)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, ?8)",
+                    params![
+                        track_id,
+                        session_id,
+                        track.ableton_id,
+                        track.name,
+                        track.number,
+                        track.track_type.as_str(),
+                        track.color,
+                        t_index as i64
+                    ],
+                )
+                .map_err(|error| format!("Failed to insert track: {}", error))?;
+        }
+
+        for (t_index, track) in tree.iter().enumerate() {
+            if let Some(group_ableton) = &track.group_ableton_id {
+                if let Some(group_id) = track_id_by_ableton.get(group_ableton) {
+                    let track_id = make_id(session_id, "t", track.ableton_id.as_deref(), t_index);
+                    transaction
+                        .execute(
+                            "UPDATE tracks SET group_id = ?1 WHERE id = ?2",
+                            params![group_id, track_id],
+                        )
+                        .map_err(|error| format!("Failed to set track group: {}", error))?;
+                }
+            }
+        }
+
+        // Insert devices + parameters (one level of nested children supported).
+        for (t_index, track) in tree.iter().enumerate() {
+            let track_id = make_id(session_id, "t", track.ableton_id.as_deref(), t_index);
+
+            for (d_index, device) in track.devices.iter().enumerate() {
+                let device_id =
+                    make_child_id(&track_id, "d", device.ableton_id.as_deref(), d_index);
+
+                transaction
+                    .execute(
+                        "INSERT INTO devices
+                         (id, session_id, track_id, ableton_id, name, role, vendor,
+                          plugin_format, preset_name, chain_index, enabled)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, NULL, NULL, ?7, ?8)",
+                        params![
+                            device_id,
+                            session_id,
+                            track_id,
+                            device.ableton_id,
+                            device.name,
+                            device.role.as_str(),
+                            d_index as i64,
+                            device.enabled as i64
+                        ],
+                    )
+                    .map_err(|error| format!("Failed to insert device: {}", error))?;
+
+                for (p_index, param) in device.params.iter().enumerate() {
+                    let param_id =
+                        make_child_id(&device_id, "p", param.ableton_id.as_deref(), p_index);
+                    insert_parameter(
+                        &transaction,
+                        session_id,
+                        &device_id,
+                        None,
+                        &param_id,
+                        param,
+                        p_index,
+                    )?;
+
+                    if let (Some(track_name), Some(device_name), Some(param_name)) =
+                        (&track.name, &device.name, &param.name)
+                    {
+                        parameter_lookup.insert(
+                            (track_name.clone(), device_name.clone(), param_name.clone()),
+                            param_id.clone(),
+                        );
+                    }
+
+                    for (c_index, child) in param.children.iter().enumerate() {
+                        let child_id = format!("{param_id}::c::{c_index}");
+                        insert_parameter(
+                            &transaction,
+                            session_id,
+                            &device_id,
+                            Some(&param_id),
+                            &child_id,
+                            child,
+                            c_index,
+                        )?;
+                    }
+                }
+            }
+        }
+
+        let changes = build_parameter_changes(change_events, &parameter_lookup);
+        {
+            let mut statement = transaction
+                .prepare_cached(
+                    "INSERT INTO parameter_changes
+                     (id, session_id, parameter_id, track_name, device_name, parameter_name,
+                      before_value, after_value, unit, reason, changed_at_ms, source_event_id)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                )
+                .map_err(|error| format!("Failed to prepare parameter_changes insert: {}", error))?;
+
+            for change in &changes {
+                let source_event_id: Option<i64> =
+                    change.id.strip_prefix("pc::").and_then(|id| id.parse().ok());
+
+                statement
+                    .execute(params![
+                        change.id,
+                        session_id,
+                        change.parameter_id,
+                        change.track_name,
+                        change.device_name,
+                        change.parameter_name,
+                        change.before_value,
+                        change.after_value,
+                        change.unit,
+                        change.reason,
+                        change.changed_at_ms as i64,
+                        source_event_id
+                    ])
+                    .map_err(|error| format!("Failed to insert parameter change: {}", error))?;
+            }
+        }
+
+        transaction
+            .commit()
+            .map_err(|error| format!("Failed to commit schema materialization: {}", error))?;
+
+        Ok(())
+    }
+
+    /// Assemble the normalized Project → Track → Device → Parameter tree from the
+    /// materialized tables. Call `materialize_session_schema` first.
+    pub fn get_project_schema(&self, session_id: &str) -> Result<ProjectSchema, String> {
+        let connection = self.open_connection()?;
+
+        // Parameters, grouped by device (children resolved via parent id).
+        let params_by_device = load_parameters_by_device(&connection, session_id)?;
+        let devices_by_track = load_devices_by_track(&connection, session_id, &params_by_device)?;
+
+        let mut track_statement = connection
+            .prepare(
+                "SELECT id, ableton_id, name, number, type, color, group_id, chain_index
+                 FROM tracks WHERE session_id = ?1
+                 ORDER BY chain_index ASC, number ASC",
+            )
+            .map_err(|error| format!("Failed to prepare tracks query: {}", error))?;
+
+        let mut tracks = track_statement
+            .query_map(params![session_id], |row| {
+                let id: String = row.get(0)?;
+                let track_type: String = row.get(4)?;
+                Ok(TrackObj {
+                    devices: devices_by_track.get(&id).cloned().unwrap_or_default(),
+                    id,
+                    ableton_id: row.get(1)?,
+                    name: row.get(2)?,
+                    number: row.get(3)?,
+                    track_type: TrackType::from_str(&track_type),
+                    color: row.get(5)?,
+                    group_id: row.get(6)?,
+                    chain_index: row.get::<_, Option<i64>>(7)?.unwrap_or(0),
+                })
+            })
+            .map_err(|error| format!("Failed to read tracks: {}", error))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| format!("Failed to collect tracks: {}", error))?;
+
+        tracks.sort_by_key(|track| track.chain_index);
+
+        let started_at = self
+            .list_saved_sessions()?
+            .into_iter()
+            .find(|session| session.id == session_id)
+            .map(|session| session.started_at_ms)
+            .unwrap_or(0);
+
+        Ok(ProjectSchema {
+            has_snapshot: !tracks.is_empty(),
+            name: session_name(session_id, started_at),
+            session_id: session_id.to_string(),
+            tracks,
+        })
+    }
+
+    /// Parameter changes for a session, in chronological order, with before/after.
+    pub fn get_parameter_changes(&self, session_id: &str) -> Result<Vec<ParameterChange>, String> {
+        let connection = self.open_connection()?;
+
+        let mut statement = connection
+            .prepare(
+                "SELECT id, parameter_id, track_name, device_name, parameter_name,
+                        before_value, after_value, unit, reason, changed_at_ms
+                 FROM parameter_changes WHERE session_id = ?1
+                 ORDER BY changed_at_ms ASC, id ASC",
+            )
+            .map_err(|error| format!("Failed to prepare parameter_changes query: {}", error))?;
+
+        let rows = statement
+            .query_map(params![session_id], |row| {
+                Ok(ParameterChange {
+                    id: row.get(0)?,
+                    parameter_id: row.get(1)?,
+                    track_name: row.get(2)?,
+                    device_name: row.get(3)?,
+                    parameter_name: row.get(4)?,
+                    before_value: row.get(5)?,
+                    after_value: row.get(6)?,
+                    unit: row.get(7)?,
+                    reason: row.get(8)?,
+                    changed_at_ms: row.get::<_, i64>(9)? as u64,
+                })
+            })
+            .map_err(|error| format!("Failed to read parameter_changes: {}", error))?;
+
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|error| format!("Failed to collect parameter_changes: {}", error))
+    }
+
+    // ── Creative moments (user-authored) ─────────────────────────────────────
+
+    pub fn list_creative_moments(&self, session_id: &str) -> Result<Vec<CreativeMoment>, String> {
+        let connection = self.open_connection()?;
+
+        let mut targets_by_moment: HashMap<String, Vec<CreativeMomentTarget>> = HashMap::new();
+        {
+            let mut statement = connection
+                .prepare(
+                    "SELECT target.moment_id, target.target_type, target.target_id
+                     FROM creative_moment_targets target
+                     JOIN creative_moments moment ON moment.id = target.moment_id
+                     WHERE moment.session_id = ?1",
+                )
+                .map_err(|error| format!("Failed to prepare targets query: {}", error))?;
+
+            let rows = statement
+                .query_map(params![session_id], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        CreativeMomentTarget {
+                            target_type: row.get(1)?,
+                            target_id: row.get(2)?,
+                        },
+                    ))
+                })
+                .map_err(|error| format!("Failed to read moment targets: {}", error))?;
+
+            for row in rows {
+                let (moment_id, target) =
+                    row.map_err(|error| format!("Failed to read moment target: {}", error))?;
+                targets_by_moment.entry(moment_id).or_default().push(target);
+            }
+        }
+
+        let mut statement = connection
+            .prepare(
+                "SELECT id, title, type, timeline_start_ms, timeline_end_ms, note, tags,
+                        confidence, created_at_ms, updated_at_ms
+                 FROM creative_moments WHERE session_id = ?1
+                 ORDER BY COALESCE(timeline_start_ms, created_at_ms) ASC, created_at_ms ASC",
+            )
+            .map_err(|error| format!("Failed to prepare creative_moments query: {}", error))?;
+
+        let rows = statement
+            .query_map(params![session_id], |row| {
+                let id: String = row.get(0)?;
+                let tags_json: Option<String> = row.get(6)?;
+                Ok(CreativeMoment {
+                    targets: targets_by_moment.remove(&id).unwrap_or_default(),
+                    id,
+                    session_id: session_id.to_string(),
+                    title: row.get(1)?,
+                    moment_type: row.get(2)?,
+                    timeline_start_ms: row.get::<_, Option<i64>>(3)?.map(|value| value as u64),
+                    timeline_end_ms: row.get::<_, Option<i64>>(4)?.map(|value| value as u64),
+                    note: row.get(5)?,
+                    tags: tags_json
+                        .as_deref()
+                        .and_then(|json| serde_json::from_str::<Vec<String>>(json).ok())
+                        .unwrap_or_default(),
+                    confidence: row.get(7)?,
+                    created_at_ms: row.get::<_, i64>(8)? as u64,
+                    updated_at_ms: row.get::<_, i64>(9)? as u64,
+                })
+            })
+            .map_err(|error| format!("Failed to read creative_moments: {}", error))?;
+
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|error| format!("Failed to collect creative_moments: {}", error))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_creative_moment(
+        &self,
+        id: &str,
+        session_id: &str,
+        title: &str,
+        moment_type: &str,
+        timeline_start_ms: Option<u64>,
+        timeline_end_ms: Option<u64>,
+        note: Option<&str>,
+        tags: &[String],
+        confidence: &str,
+        targets: &[CreativeMomentTarget],
+    ) -> Result<(), String> {
+        let mut connection = self.open_connection()?;
+        let now = now_ms();
+        let tags_json = serde_json::to_string(tags).unwrap_or_else(|_| "[]".to_string());
+
+        let transaction = connection
+            .transaction()
+            .map_err(|error| format!("Failed to start creative moment insert: {}", error))?;
+
+        transaction
+            .execute(
+                "INSERT INTO creative_moments
+                 (id, session_id, title, type, timeline_start_ms, timeline_end_ms, note, tags,
+                  confidence, created_at_ms, updated_at_ms)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                params![
+                    id,
+                    session_id,
+                    title,
+                    moment_type,
+                    timeline_start_ms.map(|value| value as i64),
+                    timeline_end_ms.map(|value| value as i64),
+                    note,
+                    tags_json,
+                    confidence,
+                    now as i64,
+                    now as i64
+                ],
+            )
+            .map_err(|error| format!("Failed to insert creative moment: {}", error))?;
+
+        write_moment_targets(&transaction, id, targets)?;
+
+        transaction
+            .commit()
+            .map_err(|error| format!("Failed to commit creative moment: {}", error))?;
+
+        Ok(())
+    }
+
+    pub fn update_creative_moment(
+        &self,
+        id: &str,
+        title: &str,
+        moment_type: &str,
+        timeline_start_ms: Option<u64>,
+        timeline_end_ms: Option<u64>,
+        note: Option<&str>,
+        tags: &[String],
+        confidence: &str,
+    ) -> Result<(), String> {
+        let connection = self.open_connection()?;
+        let tags_json = serde_json::to_string(tags).unwrap_or_else(|_| "[]".to_string());
+
+        let updated = connection
+            .execute(
+                "UPDATE creative_moments
+                 SET title = ?2, type = ?3, timeline_start_ms = ?4, timeline_end_ms = ?5,
+                     note = ?6, tags = ?7, confidence = ?8, updated_at_ms = ?9
+                 WHERE id = ?1",
+                params![
+                    id,
+                    title,
+                    moment_type,
+                    timeline_start_ms.map(|value| value as i64),
+                    timeline_end_ms.map(|value| value as i64),
+                    note,
+                    tags_json,
+                    confidence,
+                    now_ms() as i64
+                ],
+            )
+            .map_err(|error| format!("Failed to update creative moment: {}", error))?;
+
+        if updated == 0 {
+            return Err(format!("Creative moment not found: {}", id));
+        }
+
+        Ok(())
+    }
+
+    pub fn set_creative_moment_targets(
+        &self,
+        moment_id: &str,
+        targets: &[CreativeMomentTarget],
+    ) -> Result<(), String> {
+        let mut connection = self.open_connection()?;
+        let transaction = connection
+            .transaction()
+            .map_err(|error| format!("Failed to start target update: {}", error))?;
+
+        transaction
+            .execute(
+                "DELETE FROM creative_moment_targets WHERE moment_id = ?1",
+                params![moment_id],
+            )
+            .map_err(|error| format!("Failed to clear moment targets: {}", error))?;
+
+        write_moment_targets(&transaction, moment_id, targets)?;
+
+        transaction
+            .commit()
+            .map_err(|error| format!("Failed to commit moment targets: {}", error))?;
+
+        Ok(())
+    }
+
+    pub fn delete_creative_moment(&self, id: &str) -> Result<(), String> {
+        let mut connection = self.open_connection()?;
+        let transaction = connection
+            .transaction()
+            .map_err(|error| format!("Failed to start moment delete: {}", error))?;
+
+        transaction
+            .execute(
+                "DELETE FROM creative_moment_targets WHERE moment_id = ?1",
+                params![id],
+            )
+            .map_err(|error| format!("Failed to delete moment targets: {}", error))?;
+
+        transaction
+            .execute("DELETE FROM creative_moments WHERE id = ?1", params![id])
+            .map_err(|error| format!("Failed to delete creative moment: {}", error))?;
+
+        transaction
+            .commit()
+            .map_err(|error| format!("Failed to commit moment delete: {}", error))?;
+
+        Ok(())
+    }
 }
 
 fn session_name(id: &str, started_at_ms: u64) -> String {
@@ -727,6 +1214,264 @@ fn read_payload_bool(payload: Option<&Value>, keys: &[&str]) -> Option<bool> {
     }
 
     None
+}
+
+// ── Schema-projection helpers (used by the StorageState methods above) ────────
+
+/// Build a stable, deterministic id for a top-level entity. Re-materialization
+/// produces the same id for the same Ableton object, so creative-moment targets
+/// keep pointing at the right thing across rebuilds.
+fn make_id(session_id: &str, kind: &str, ableton_id: Option<&str>, index: usize) -> String {
+    match ableton_id {
+        Some(id) if !id.trim().is_empty() => format!("{session_id}::{kind}::{id}"),
+        _ => format!("{session_id}::{kind}::idx{index}"),
+    }
+}
+
+fn make_child_id(parent_id: &str, kind: &str, ableton_id: Option<&str>, index: usize) -> String {
+    match ableton_id {
+        Some(id) if !id.trim().is_empty() => format!("{parent_id}::{kind}::{id}"),
+        _ => format!("{parent_id}::{kind}::idx{index}"),
+    }
+}
+
+fn insert_parameter(
+    transaction: &Transaction,
+    session_id: &str,
+    device_id: &str,
+    parent_id: Option<&str>,
+    param_id: &str,
+    param: &ParsedParam,
+    index: usize,
+) -> Result<(), String> {
+    transaction
+        .execute(
+            "INSERT INTO parameters
+             (id, session_id, device_id, parent_parameter_id, name, value, unit, min, max,
+              normalized_value, chain_index)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, ?7, ?8, ?9, ?10)",
+            params![
+                param_id,
+                session_id,
+                device_id,
+                parent_id,
+                param.name,
+                param.value,
+                param.min,
+                param.max,
+                param.normalized_value,
+                index as i64
+            ],
+        )
+        .map_err(|error| format!("Failed to insert parameter: {}", error))?;
+
+    Ok(())
+}
+
+fn write_moment_targets(
+    transaction: &Transaction,
+    moment_id: &str,
+    targets: &[CreativeMomentTarget],
+) -> Result<(), String> {
+    let mut statement = transaction
+        .prepare_cached(
+            "INSERT OR IGNORE INTO creative_moment_targets (moment_id, target_type, target_id)
+             VALUES (?1, ?2, ?3)",
+        )
+        .map_err(|error| format!("Failed to prepare target insert: {}", error))?;
+
+    for target in targets {
+        statement
+            .execute(params![moment_id, target.target_type, target.target_id])
+            .map_err(|error| format!("Failed to insert moment target: {}", error))?;
+    }
+
+    Ok(())
+}
+
+/// The most recent snapshot for a session, preferring a deep capture (tracks with
+/// devices) over a shallow one. Returns an empty tree if none exists.
+fn latest_session_tree(connection: &Connection, session_id: &str) -> Result<Vec<ParsedTrack>, String> {
+    let mut statement = connection
+        .prepare(
+            "SELECT payload FROM events
+             WHERE session_id = ?1
+               AND event_type IN ('live_set_snapshot', 'session_snapshot', 'set_snapshot')
+             ORDER BY timestamp_ms DESC, id DESC",
+        )
+        .map_err(|error| format!("Failed to prepare snapshot query: {}", error))?;
+
+    let payloads = statement
+        .query_map(params![session_id], |row| row.get::<_, Option<String>>(0))
+        .map_err(|error| format!("Failed to read snapshots: {}", error))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("Failed to collect snapshots: {}", error))?;
+
+    let mut fallback: Option<Vec<ParsedTrack>> = None;
+    for payload in payloads.into_iter().flatten() {
+        let Ok(value) = serde_json::from_str::<Value>(&payload) else {
+            continue;
+        };
+        let tree = parse_session_tree(&value);
+        if tree.is_empty() {
+            continue;
+        }
+        if tree.iter().any(|track| !track.devices.is_empty()) {
+            return Ok(tree);
+        }
+        if fallback.is_none() {
+            fallback = Some(tree);
+        }
+    }
+
+    Ok(fallback.unwrap_or_default())
+}
+
+fn collect_change_events(
+    connection: &Connection,
+    session_id: &str,
+) -> Result<Vec<ChangeEvent>, String> {
+    let mut statement = connection
+        .prepare(
+            "SELECT id, timestamp_ms, track_name, device_name, parameter_name, parameter_value
+             FROM events
+             WHERE session_id = ?1
+               AND event_type IN ('parameter_changed', 'device_parameter_changed', 'automation_created')
+             ORDER BY timestamp_ms ASC, id ASC",
+        )
+        .map_err(|error| format!("Failed to prepare change events query: {}", error))?;
+
+    let rows = statement
+        .query_map(params![session_id], |row| {
+            Ok(ChangeEvent {
+                event_id: row.get::<_, i64>(0)?,
+                timestamp_ms: row.get::<_, i64>(1)? as u64,
+                track_name: row.get(2)?,
+                device_name: row.get(3)?,
+                parameter_name: row.get(4)?,
+                value: row.get(5)?,
+            })
+        })
+        .map_err(|error| format!("Failed to read change events: {}", error))?;
+
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("Failed to collect change events: {}", error))
+}
+
+/// A flat parameter row from the DB, assembled into a nested tree afterwards.
+struct ParamRow {
+    id: String,
+    device_id: String,
+    parent: Option<String>,
+    name: Option<String>,
+    value: Option<f64>,
+    unit: Option<String>,
+    min: Option<f64>,
+    max: Option<f64>,
+    normalized: Option<f64>,
+}
+
+fn load_parameters_by_device(
+    connection: &Connection,
+    session_id: &str,
+) -> Result<HashMap<String, Vec<ParameterObj>>, String> {
+    let mut statement = connection
+        .prepare(
+            "SELECT id, device_id, parent_parameter_id, name, value, unit, min, max, normalized_value
+             FROM parameters WHERE session_id = ?1
+             ORDER BY chain_index ASC, id ASC",
+        )
+        .map_err(|error| format!("Failed to prepare parameters query: {}", error))?;
+
+    let rows = statement
+        .query_map(params![session_id], |row| {
+            Ok(ParamRow {
+                id: row.get(0)?,
+                device_id: row.get(1)?,
+                parent: row.get(2)?,
+                name: row.get(3)?,
+                value: row.get(4)?,
+                unit: row.get(5)?,
+                min: row.get(6)?,
+                max: row.get(7)?,
+                normalized: row.get(8)?,
+            })
+        })
+        .map_err(|error| format!("Failed to read parameters: {}", error))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("Failed to collect parameters: {}", error))?;
+
+    let mut by_device: HashMap<String, Vec<ParamRow>> = HashMap::new();
+    for row in rows {
+        by_device.entry(row.device_id.clone()).or_default().push(row);
+    }
+
+    let mut result = HashMap::new();
+    for (device_id, device_rows) in by_device {
+        result.insert(device_id, build_param_objs(None, &device_rows));
+    }
+
+    Ok(result)
+}
+
+fn build_param_objs(parent: Option<&str>, rows: &[ParamRow]) -> Vec<ParameterObj> {
+    rows.iter()
+        .filter(|row| row.parent.as_deref() == parent)
+        .map(|row| ParameterObj {
+            id: row.id.clone(),
+            device_id: row.device_id.clone(),
+            parent_parameter_id: row.parent.clone(),
+            name: row.name.clone(),
+            value: row.value,
+            unit: row.unit.clone(),
+            min: row.min,
+            max: row.max,
+            normalized_value: row.normalized,
+            children: build_param_objs(Some(&row.id), rows),
+        })
+        .collect()
+}
+
+fn load_devices_by_track(
+    connection: &Connection,
+    session_id: &str,
+    params_by_device: &HashMap<String, Vec<ParameterObj>>,
+) -> Result<HashMap<String, Vec<DeviceObj>>, String> {
+    let mut statement = connection
+        .prepare(
+            "SELECT id, track_id, ableton_id, name, role, chain_index, enabled
+             FROM devices WHERE session_id = ?1
+             ORDER BY chain_index ASC, id ASC",
+        )
+        .map_err(|error| format!("Failed to prepare devices query: {}", error))?;
+
+    let rows = statement
+        .query_map(params![session_id], |row| {
+            let id: String = row.get(0)?;
+            let role: String = row.get(4)?;
+            Ok(DeviceObj {
+                parameters: params_by_device.get(&id).cloned().unwrap_or_default(),
+                id,
+                track_id: row.get(1)?,
+                ableton_id: row.get(2)?,
+                name: row.get(3)?,
+                role: DeviceRole::from_str(&role),
+                chain_index: row.get::<_, Option<i64>>(5)?.unwrap_or(0),
+                enabled: row.get::<_, i64>(6)? != 0,
+            })
+        })
+        .map_err(|error| format!("Failed to read devices: {}", error))?;
+
+    let mut by_track: HashMap<String, Vec<DeviceObj>> = HashMap::new();
+    for row in rows {
+        let device = row.map_err(|error| format!("Failed to read device: {}", error))?;
+        by_track
+            .entry(device.track_id.clone())
+            .or_default()
+            .push(device);
+    }
+
+    Ok(by_track)
 }
 
 pub fn initialize_database(db_path: &Path) -> rusqlite::Result<()> {
@@ -805,6 +1550,111 @@ pub fn initialize_database(db_path: &Path) -> rusqlite::Result<()> {
 
         CREATE INDEX IF NOT EXISTS idx_session_notes_session
         ON session_notes(session_id);
+
+        -- ── Normalized schema (rebuildable projection of the events log) ──────────
+        -- These tables are a derived view of the immutable `events` table. They are
+        -- DELETEd + re-INSERTed per session by `materialize_session_schema`, so they
+        -- can always be rebuilt from the raw events without data loss. The one
+        -- exception is the creative-memory tables below, which are user-authored and
+        -- never touched by materialization.
+        CREATE TABLE IF NOT EXISTS tracks (
+            id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL,
+            ableton_id TEXT,
+            name TEXT,
+            number INTEGER,
+            type TEXT NOT NULL,            -- midi | audio | return | group
+            color TEXT,
+            group_id TEXT,                 -- parent group track id (nullable)
+            chain_index INTEGER,
+            FOREIGN KEY(session_id) REFERENCES sessions(id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_tracks_session ON tracks(session_id);
+
+        CREATE TABLE IF NOT EXISTS devices (
+            id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL,
+            track_id TEXT NOT NULL,
+            ableton_id TEXT,
+            name TEXT,
+            role TEXT NOT NULL,            -- instrument | midi_effect | audio_effect
+            vendor TEXT,
+            plugin_format TEXT,            -- native | vst | vst3 | au | aax | unknown
+            preset_name TEXT,
+            chain_index INTEGER NOT NULL,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            FOREIGN KEY(session_id) REFERENCES sessions(id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_devices_session ON devices(session_id);
+        CREATE INDEX IF NOT EXISTS idx_devices_track ON devices(track_id);
+
+        CREATE TABLE IF NOT EXISTS parameters (
+            id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL,
+            device_id TEXT NOT NULL,
+            parent_parameter_id TEXT,      -- nested params (children[])
+            name TEXT,
+            value REAL,
+            unit TEXT,
+            min REAL,
+            max REAL,
+            normalized_value REAL,
+            chain_index INTEGER,
+            FOREIGN KEY(session_id) REFERENCES sessions(id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_parameters_session ON parameters(session_id);
+        CREATE INDEX IF NOT EXISTS idx_parameters_device ON parameters(device_id);
+
+        CREATE TABLE IF NOT EXISTS parameter_changes (
+            id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL,
+            parameter_id TEXT,             -- null if no matching tree param (legacy)
+            track_name TEXT,
+            device_name TEXT,
+            parameter_name TEXT,
+            before_value REAL,
+            after_value REAL,
+            unit TEXT,
+            reason TEXT,
+            changed_at_ms INTEGER NOT NULL,
+            source_event_id INTEGER,
+            FOREIGN KEY(session_id) REFERENCES sessions(id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_parameter_changes_session
+        ON parameter_changes(session_id);
+        CREATE INDEX IF NOT EXISTS idx_parameter_changes_changed_at
+        ON parameter_changes(changed_at_ms);
+
+        -- ── Creative memory (user-authored, persistent across re-materialization) ──
+        CREATE TABLE IF NOT EXISTS creative_moments (
+            id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL,
+            title TEXT NOT NULL,
+            type TEXT NOT NULL,            -- sound_design|arrangement|mix_move|automation|routing|happy_accident|idea_to_revisit
+            timeline_start_ms INTEGER,
+            timeline_end_ms INTEGER,
+            note TEXT,
+            tags TEXT,                     -- JSON array of strings
+            confidence TEXT NOT NULL DEFAULT 'rough',  -- rough|working|keeper|final
+            created_at_ms INTEGER NOT NULL,
+            updated_at_ms INTEGER NOT NULL,
+            FOREIGN KEY(session_id) REFERENCES sessions(id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_creative_moments_session
+        ON creative_moments(session_id);
+
+        CREATE TABLE IF NOT EXISTS creative_moment_targets (
+            moment_id TEXT NOT NULL,
+            target_type TEXT NOT NULL,     -- track|device|parameter|parameter_change|clip
+            target_id TEXT NOT NULL,
+            PRIMARY KEY (moment_id, target_type, target_id),
+            FOREIGN KEY(moment_id) REFERENCES creative_moments(id)
+        );
         ",
     )?;
 
@@ -1038,6 +1888,147 @@ mod tests {
         migrate_event_columns(&connection).unwrap();
 
         drop(connection);
+        cleanup(&path);
+    }
+
+    /// A live_set_snapshot event carrying a deep payload, for materialization tests.
+    fn snapshot_event(session_id: &str, payload: serde_json::Value) -> RecallEvent {
+        let mut event = event(session_id, "live_set_snapshot");
+        event.payload = Some(payload.to_string());
+        event
+    }
+
+    /// A parameter_changed event with the canonical fields the materializer reads.
+    fn param_change(
+        session_id: &str,
+        timestamp_ms: u64,
+        track: &str,
+        device: &str,
+        parameter: &str,
+        value: f64,
+    ) -> RecallEvent {
+        let mut event = event(session_id, "parameter_changed");
+        event.timestamp_ms = timestamp_ms;
+        event.track_name = Some(track.into());
+        event.device_name = Some(device.into());
+        event.parameter_name = Some(parameter.into());
+        event.parameter_value = Some(value);
+        event
+    }
+
+    #[test]
+    fn materialize_builds_typed_tree_and_parameter_changes() {
+        let (storage, path) = temp_storage();
+        let session_id = storage
+            .resume_or_create_active_session()
+            .unwrap()
+            .session_id
+            .unwrap();
+
+        let snapshot = serde_json::json!({
+            "tracks": [
+                {
+                    "index": 0, "id": "100", "name": "Bass 1", "has_midi_input": true,
+                    "devices": [
+                        { "id": "200", "name": "Synth", "role": "instrument", "is_active": true,
+                          "parameters": [{ "id": "300", "name": "Cutoff", "value": 0.2, "min": 0.0, "max": 1.0 }] },
+                        { "id": "201", "name": "Sat", "role": "audio_effect", "is_active": true, "parameters": [] }
+                    ]
+                },
+                {
+                    "index": 1, "id": "101", "name": "Vox", "has_midi_input": false,
+                    "devices": [{ "id": "210", "name": "EQ", "role": "audio_effect", "is_active": true, "parameters": [] }]
+                }
+            ]
+        });
+
+        storage
+            .save_events_batch(&[
+                snapshot_event(&session_id, snapshot),
+                param_change(&session_id, 1_000, "Bass 1", "Synth", "Cutoff", 0.2),
+                param_change(&session_id, 2_000, "Bass 1", "Synth", "Cutoff", 0.5),
+            ])
+            .unwrap();
+
+        storage.materialize_session_schema(&session_id).unwrap();
+
+        let schema = storage.get_project_schema(&session_id).unwrap();
+        assert!(schema.has_snapshot);
+        assert_eq!(schema.tracks.len(), 2);
+
+        let bass = schema
+            .tracks
+            .iter()
+            .find(|t| t.name.as_deref() == Some("Bass 1"))
+            .expect("bass track");
+        assert_eq!(bass.track_type, TrackType::Midi);
+        assert_eq!(bass.devices.len(), 2);
+        assert_eq!(bass.devices[0].role, DeviceRole::Instrument);
+        assert_eq!(bass.devices[0].parameters.len(), 1);
+        assert_eq!(bass.devices[1].role, DeviceRole::AudioEffect);
+
+        let vox = schema
+            .tracks
+            .iter()
+            .find(|t| t.name.as_deref() == Some("Vox"))
+            .expect("vox track");
+        assert_eq!(vox.track_type, TrackType::Audio);
+
+        let changes = storage.get_parameter_changes(&session_id).unwrap();
+        assert_eq!(changes.len(), 2);
+        assert_eq!(changes[0].before_value, None);
+        assert_eq!(changes[0].after_value, Some(0.2));
+        assert!(changes[0].parameter_id.is_some(), "change links to tree param");
+        assert_eq!(changes[1].before_value, Some(0.2));
+        assert_eq!(changes[1].after_value, Some(0.5));
+
+        cleanup(&path);
+    }
+
+    #[test]
+    fn rematerialize_preserves_creative_moments() {
+        let (storage, path) = temp_storage();
+        let session_id = storage
+            .resume_or_create_active_session()
+            .unwrap()
+            .session_id
+            .unwrap();
+
+        let snapshot = serde_json::json!({
+            "tracks": [{ "index": 0, "id": "1", "name": "Drums", "is_foldable": true, "devices": [] }]
+        });
+        storage
+            .save_events_batch(&[snapshot_event(&session_id, snapshot)])
+            .unwrap();
+        storage.materialize_session_schema(&session_id).unwrap();
+
+        storage
+            .create_creative_moment(
+                "moment-1",
+                &session_id,
+                "Found the bass tone",
+                "sound_design",
+                Some(1_000),
+                Some(2_000),
+                Some("the saturation made it"),
+                &["bass".to_string()],
+                "keeper",
+                &[CreativeMomentTarget {
+                    target_type: "track".into(),
+                    target_id: format!("{session_id}::t::1"),
+                }],
+            )
+            .unwrap();
+
+        // Re-materialization wipes the derived tables but must leave the moment alone.
+        storage.materialize_session_schema(&session_id).unwrap();
+
+        let moments = storage.list_creative_moments(&session_id).unwrap();
+        assert_eq!(moments.len(), 1);
+        assert_eq!(moments[0].confidence, "keeper");
+        assert_eq!(moments[0].tags, vec!["bass".to_string()]);
+        assert_eq!(moments[0].targets.len(), 1);
+
         cleanup(&path);
     }
 }

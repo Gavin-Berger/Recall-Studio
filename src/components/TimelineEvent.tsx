@@ -139,7 +139,7 @@ export function TimelineEvent({
             className={`event-glyph event-glyph--${item.raw.type}`}
             aria-hidden="true"
           >
-            {producerEventIcon(item.raw.type)}
+            {producerEventIcon(item.raw.type, item.raw.rawEventType)}
           </span>
 
           <span className="timeline-event__main">

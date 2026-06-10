@@ -18,7 +18,13 @@ export type ActivityAnalytics = {
   playbackCount: number;
   parameterChangeCount: number;
   devicesAdded: string[];
+  // Samples dropped in (by file/sample name) — kept distinct from clipsCreated so
+  // a Splice drag-in reads as "Dropped in X", not a generic created clip.
+  samplesAdded: string[];
   clipsCreated: string[];
+  // Parameters a producer wrote automation on (e.g. "Filter Cutoff") — distinct
+  // from the raw parameterChangeCount, since writing automation is a creative act.
+  automationTargets: string[];
   tracksVisited: string[];
 };
 

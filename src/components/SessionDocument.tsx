@@ -143,7 +143,7 @@ export function SessionDocument({
   const filterOptions = useMemo(() => {
     const counts = new Map<ProducerEventCategory, number>();
     for (const item of visibleItems) {
-      const category = categoryForEvent(item.raw.type);
+      const category = categoryForEvent(item.raw.type, item.raw.rawEventType);
       counts.set(category, (counts.get(category) ?? 0) + 1);
     }
     return [...counts.entries()]
@@ -156,7 +156,7 @@ export function SessionDocument({
       return visibleItems;
     }
     return visibleItems.filter((item) =>
-      activeFilters.has(categoryForEvent(item.raw.type)),
+      activeFilters.has(categoryForEvent(item.raw.type, item.raw.rawEventType)),
     );
   }, [visibleItems, activeFilters]);
 
@@ -289,7 +289,7 @@ export function SessionDocument({
                           className={`event-glyph event-glyph--${item.raw.type} event-glyph--sm`}
                           aria-hidden="true"
                         >
-                          {producerEventIcon(item.raw.type)}
+                          {producerEventIcon(item.raw.type, item.raw.rawEventType)}
                         </span>
                         <div className="doc-event-content">
                           {editingId === item.id ? (

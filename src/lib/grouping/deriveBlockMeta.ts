@@ -1,5 +1,42 @@
 import type { RecallTimelineMoment } from "../../types/recall";
 import type { ActivityAnalytics, ActivityCategory } from "../../types/activities";
+import {
+  SAMPLE_EVENT_TYPES,
+  AUTOMATION_EVENT_TYPES,
+} from "../../utils/producerEvents";
+
+// Small helpers so analytics agree with the producer-facing category split:
+// a sample drag-in is a sample (not a clip), and automation is automation (not a
+// raw parameter tweak). Both read off the canonical raw-type sets.
+function isSampleEvent(event: RecallTimelineMoment): boolean {
+  const raw = event.rawEventType?.toLowerCase();
+  return !!raw && SAMPLE_EVENT_TYPES.has(raw);
+}
+
+function isAutomationEvent(event: RecallTimelineMoment): boolean {
+  const raw = event.rawEventType?.toLowerCase();
+  return !!raw && AUTOMATION_EVENT_TYPES.has(raw);
+}
+
+// Recording a take is its own mode of working ("tracking"), distinct from
+// building clips. Covers both the clip-slot recording events the bridge emits
+// today and the arrangement-level recording events reserved in the catalog.
+const RECORDING_EVENT_TYPES = new Set([
+  "clip_recording_started",
+  "clip_recording_stopped",
+  "recording_started",
+  "recording_stopped",
+]);
+
+function isRecordingEvent(event: RecallTimelineMoment): boolean {
+  const raw = event.rawEventType?.toLowerCase();
+  return !!raw && RECORDING_EVENT_TYPES.has(raw);
+}
+
+function readMeta(event: RecallTimelineMoment, key: string): string | undefined {
+  const value = event.metadata?.[key];
+  return typeof value === "string" && value.trim() ? value : undefined;
+}
 
 // ── Primary track ────────────────────────────────────────────────────────────
 
@@ -33,13 +70,41 @@ export function deriveCategory(
   }
 
   const deviceCount = events.filter((e) => e.type === "device").length;
-  const paramCount = events.filter((e) => e.type === "parameter").length;
-  const clipCount = events.filter((e) => e.type === "clip").length;
+  const sampleCount = events.filter(isSampleEvent).length;
+  const automationCount = events.filter(isAutomationEvent).length;
+  // Raw parameter tweaks, excluding automation writes (their own creative act).
+  const paramCount = events.filter(
+    (e) => e.type === "parameter" && !isAutomationEvent(e),
+  ).length;
+  // Real clips only — exclude samples (sound selection) and recordings (tracking),
+  // which are counted as their own signals below.
+  const realClipCount = events.filter(
+    (e) => e.type === "clip" && !isSampleEvent(e) && !isRecordingEvent(e),
+  ).length;
+  const sceneCount = events.filter((e) => e.type === "scene").length;
   const arrangementCount = events.filter((e) => e.type === "arrangement").length;
+  const recordingSignal = events.filter(isRecordingEvent).length;
 
-  if (clipCount > deviceCount + paramCount) return "arrangement";
-  if (arrangementCount > clipCount + deviceCount) return "arrangement";
-  if (deviceCount > 0 || paramCount > 3) return "sound_design";
+  // Sound-shaping: loading devices, choosing samples, writing automation, and
+  // heavy parameter tweaking are all "designing the sound".
+  const soundDesignSignal =
+    deviceCount + sampleCount + automationCount + (paramCount > 3 ? 1 : 0);
+  // Structure: building MIDI/audio clips, scenes, and arrangement edits.
+  const arrangementSignal = realClipCount + sceneCount + arrangementCount;
+
+  // Recording a take is a distinct mode — when it's the dominant activity in the
+  // block, the producer was tracking, not designing or arranging.
+  if (
+    recordingSignal > 0 &&
+    recordingSignal >= soundDesignSignal &&
+    recordingSignal >= arrangementSignal
+  ) {
+    return "tracking";
+  }
+  if (arrangementSignal > soundDesignSignal && arrangementSignal > 0) {
+    return "arrangement";
+  }
+  if (soundDesignSignal > 0) return "sound_design";
 
   return "general";
 }
@@ -55,12 +120,34 @@ export function buildAnalytics(events: RecallTimelineMoment[]): ActivityAnalytic
     ),
   ];
 
+  // Samples dropped in — by their file/sample name (falling back to clip name).
+  const samplesAdded = [
+    ...new Set(
+      events
+        .filter(isSampleEvent)
+        .map((e) => readMeta(e, "sample") ?? readMeta(e, "clip"))
+        .filter((name): name is string => Boolean(name)),
+    ),
+  ];
+
+  // Real clips only — samples are tracked separately above, so exclude them here
+  // to avoid double-counting a Splice drag-in as both a sample and a clip.
   const clipsCreated = [
     ...new Set(
       events
-        .filter((e) => e.type === "clip")
+        .filter((e) => e.type === "clip" && !isSampleEvent(e))
         .map((e) => (e.metadata?.clip as string | undefined) ?? e.summary)
         .filter(Boolean),
+    ),
+  ];
+
+  // Parameters automation was written on (e.g. "Filter Cutoff").
+  const automationTargets = [
+    ...new Set(
+      events
+        .filter(isAutomationEvent)
+        .map((e) => readMeta(e, "parameter"))
+        .filter((name): name is string => Boolean(name)),
     ),
   ];
 
@@ -72,13 +159,19 @@ export function buildAnalytics(events: RecallTimelineMoment[]): ActivityAnalytic
     (e) => e.type === "transport" && e.metadata?.playing === true,
   ).length;
 
-  const parameterChangeCount = events.filter((e) => e.type === "parameter").length;
+  // Raw parameter tweaks, excluding automation writes (those are creative acts
+  // surfaced separately as automationTargets).
+  const parameterChangeCount = events.filter(
+    (e) => e.type === "parameter" && !isAutomationEvent(e),
+  ).length;
 
   return {
     playbackCount,
     parameterChangeCount,
     devicesAdded,
+    samplesAdded,
     clipsCreated,
+    automationTargets,
     tracksVisited,
   };
 }
@@ -97,6 +190,8 @@ export function deriveTitle(
         return `Arranged ${primaryTrack}`;
       case "mixing":
         return `Mixed ${primaryTrack}`;
+      case "tracking":
+        return `Recorded ${primaryTrack}`;
       default:
         return `Worked on ${primaryTrack}`;
     }
@@ -109,6 +204,8 @@ export function deriveTitle(
       return "Arrangement work";
     case "mixing":
       return "Mix session";
+    case "tracking":
+      return "Recording session";
     default:
       return "Session activity";
   }
@@ -124,6 +221,14 @@ export function deriveKeyActions(
 
   for (const device of analytics.devicesAdded.slice(0, 3)) {
     actions.push(`Added ${device}`);
+  }
+
+  for (const sample of analytics.samplesAdded.slice(0, 2)) {
+    actions.push(`Dropped in ${sample}`);
+  }
+
+  for (const target of analytics.automationTargets.slice(0, 2)) {
+    actions.push(`Automated ${target}`);
   }
 
   for (const clip of analytics.clipsCreated.slice(0, 2)) {
@@ -177,6 +282,18 @@ export function buildSummary(
         ? ` and ${analytics.devicesAdded.length - 3} more`
         : "";
     parts.push(`Added ${listed}${overflow}.`);
+  }
+
+  if (analytics.samplesAdded.length === 1) {
+    parts.push(`Dropped in ${analytics.samplesAdded[0]}.`);
+  } else if (analytics.samplesAdded.length > 1) {
+    parts.push(`Dropped in ${analytics.samplesAdded.length} samples.`);
+  }
+
+  if (analytics.automationTargets.length === 1) {
+    parts.push(`Automated ${analytics.automationTargets[0]}.`);
+  } else if (analytics.automationTargets.length > 1) {
+    parts.push(`Automated ${analytics.automationTargets.length} parameters.`);
   }
 
   if (analytics.clipsCreated.length === 1) {

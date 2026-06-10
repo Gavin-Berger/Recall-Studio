@@ -42,7 +42,7 @@ export function ConnectionPanel({
           <div className="selected-moment">
             <div className="selected-moment__header">
               <span className={`event-glyph event-glyph--${selectedEvent.type}`}>
-                {producerEventIcon(selectedEvent.type)}
+                {producerEventIcon(selectedEvent.type, selectedEvent.rawEventType)}
               </span>
               <div>
                 <p>{selectedEvent.sessionTimecode}</p>

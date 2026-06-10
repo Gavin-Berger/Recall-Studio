@@ -4,6 +4,8 @@ export type ProducerEventCategory =
   | "track"
   | "group"
   | "device"
+  | "sample"
+  | "automation"
   | "parameter"
   | "clip"
   | "scene"
@@ -14,6 +16,16 @@ export type ProducerEventCategory =
   | "project"
   | "session"
   | "unknown";
+
+// Raw event types that deserve their own producer-facing category, distinct from
+// the broader technical type. A dropped sample reads as "Sample", not "Clip"; a
+// written automation reads as "Automation", not "Parameter".
+export const SAMPLE_EVENT_TYPES = new Set(["sample_added", "audio_clip_added"]);
+export const AUTOMATION_EVENT_TYPES = new Set([
+  "automation_created",
+  "automation_edited",
+  "automation_deleted",
+]);
 
 export type ProducerEventPresentation = {
   category: ProducerEventCategory;
@@ -92,9 +104,10 @@ export function isProducerTimelineEvent(event: RecallTimelineMoment): boolean {
 
   // Track lifecycle events are always creative decisions — always show them.
   const TRACK_LIFECYCLE = new Set([
-    "track_created", "track_deleted", "track_name_changed",
+    "track_created", "track_deleted", "track_name_changed", "track_duplicated",
     "track_muted", "track_unmuted", "track_soloed", "track_unsoloed",
-    "track_armed", "track_unarmed",
+    "track_armed", "track_unarmed", "track_frozen", "track_flattened",
+    "return_track_added",
   ]);
   if (rawNav && TRACK_LIFECYCLE.has(rawNav)) {
     return true;
@@ -140,7 +153,7 @@ export function isProducerTimelineEvent(event: RecallTimelineMoment): boolean {
 export function formatProducerMoment(
   event: RecallTimelineMoment,
 ): ProducerEventPresentation {
-  const category = categoryForEvent(event.type);
+  const category = categoryForEvent(event.type, event.rawEventType);
   const categoryLabel = labelForCategory(category);
   const track = event.trackName ?? readString(event.metadata?.track);
   const groupPath = event.groupPath ?? readStringArray(event.metadata?.groupPath);
@@ -178,6 +191,20 @@ export function formatProducerMoment(
       } else if (rawType === "track_name_changed") {
         title = track ? `Renamed to "${track}"` : "Renamed a track";
         detail = track ? `Renamed a track to "${track}".` : "Renamed a track.";
+      } else if (rawType === "track_duplicated") {
+        title = track ? `Duplicated "${track}"` : "Duplicated a track";
+        detail = track ? `Duplicated the track "${track}".` : "Duplicated a track.";
+      } else if (rawType === "return_track_added") {
+        title = track ? `Added return track "${track}"` : "Added a return track";
+        detail = track
+          ? `Added a return track, "${track}", for shared send effects.`
+          : "Added a return track for shared send effects.";
+      } else if (rawType === "track_frozen") {
+        title = `Froze ${named}`;
+        detail = `Froze ${named} to audio (a commit point worth noting).`;
+      } else if (rawType === "track_flattened") {
+        title = `Flattened ${named}`;
+        detail = `Flattened ${named} to a static audio track.`;
       } else if (rawType === "track_muted") {
         title = `Muted ${named}`;
         detail = `Muted ${named}.`;
@@ -208,12 +235,26 @@ export function formatProducerMoment(
       break;
     }
 
-    case "group":
-      title = "Group focus changed";
-      detail = groupText
-        ? `Focused the ${groupText} track group.`
-        : "A track group became part of the session focus.";
+    case "group": {
+      const rawType = event.rawEventType?.toLowerCase();
+      if (rawType === "tracks_grouped") {
+        title = groupText ? `Grouped tracks into ${groupText}` : "Grouped tracks";
+        detail = groupText
+          ? `Grouped tracks into ${groupText}.`
+          : "Grouped several tracks together.";
+      } else if (rawType === "track_ungrouped") {
+        title = groupText ? `Ungrouped ${groupText}` : "Ungrouped a track group";
+        detail = groupText
+          ? `Dissolved the ${groupText} group.`
+          : "Dissolved a track group.";
+      } else {
+        title = "Group focus changed";
+        detail = groupText
+          ? `Focused the ${groupText} track group.`
+          : "A track group became part of the session focus.";
+      }
       break;
+    }
 
     case "device": {
       const rawType = event.rawEventType?.toLowerCase();
@@ -232,6 +273,15 @@ export function formatProducerMoment(
       } else if (rawType === "device_removed") {
         title = device ? `Removed ${device}` : "Removed a device";
         detail = buildChainEdit("Removed", device, where, deviceChain);
+      } else if (rawType === "device_toggled") {
+        title = device ? `Toggled ${device}` : "Toggled a device";
+        detail = `Turned ${device ?? "a device"} on or off${where ? ` on ${where}` : ""}.`;
+      } else if (rawType === "device_preset_changed") {
+        title = device ? `Changed preset on ${device}` : "Changed a device preset";
+        detail = `Loaded a different preset on ${device ?? "a device"}${where ? ` (${where})` : ""}.`;
+      } else if (rawType === "macro_mapped") {
+        title = "Mapped a macro";
+        detail = device ? `Mapped a macro on ${device}.` : "Mapped a macro control.";
       } else {
         title = device ? `Worked on ${device}` : "Worked on a device";
         detail = buildDeviceDetail(device, track, groupText);
@@ -274,6 +324,24 @@ export function formatProducerMoment(
       } else if (rawType === "clip_deleted") {
         title = clip ? `Deleted "${clip}"` : "Deleted a clip";
         detail = `Deleted a clip${where ? ` on ${where}` : ""}.`;
+      } else if (rawType === "clip_renamed") {
+        title = clip ? `Renamed clip to "${clip}"` : "Renamed a clip";
+        detail = `Renamed a clip${where ? ` on ${where}` : ""}.`;
+      } else if (rawType === "clip_duplicated") {
+        title = clip ? `Duplicated "${clip}"` : "Duplicated a clip";
+        detail = `Duplicated a clip${where ? ` on ${where}` : ""}.`;
+      } else if (rawType === "clip_moved") {
+        title = clip ? `Moved "${clip}"` : "Moved a clip";
+        detail = `Moved a clip${where ? ` on ${where}` : ""}.`;
+      } else if (rawType === "warp_mode_changed") {
+        title = "Changed warp mode";
+        detail = `Changed how a clip${where ? ` on ${where}` : ""} warps to the tempo grid.`;
+      } else if (rawType === "clip_recording_started") {
+        title = "Started recording";
+        detail = `Started recording${where ? ` on ${where}` : ""}.`;
+      } else if (rawType === "clip_recording_stopped") {
+        title = "Stopped recording";
+        detail = `Stopped recording${where ? ` on ${where}` : ""}.`;
       } else {
         title = clip ? `Launched "${clip}"` : "Launched a clip";
         detail = buildClipDetail(clip, track, groupText);
@@ -281,10 +349,20 @@ export function formatProducerMoment(
       break;
     }
 
-    case "scene":
-      title = "Launched a scene";
-      detail = "Launched a scene in Session View.";
+    case "scene": {
+      const rawType = event.rawEventType?.toLowerCase();
+      if (rawType === "scene_created") {
+        title = "Created a scene";
+        detail = "Created a new scene in Session View.";
+      } else if (rawType === "scene_renamed") {
+        title = "Renamed a scene";
+        detail = "Renamed a scene in Session View.";
+      } else {
+        title = "Launched a scene";
+        detail = "Launched a scene in Session View.";
+      }
       break;
+    }
 
     case "mixer":
       title = "Mixer changed";
@@ -345,7 +423,21 @@ export function formatProducerMoment(
   };
 }
 
-export function categoryForEvent(type: RecallEventType): ProducerEventCategory {
+// Resolve the producer-facing category. When rawEventType is supplied, samples
+// and automation are split out of the broader "clip"/"parameter" types so the
+// timeline and filter chips speak the producer's language (Samples, Automation).
+export function categoryForEvent(
+  type: RecallEventType,
+  rawEventType?: string,
+): ProducerEventCategory {
+  const raw = rawEventType?.toLowerCase();
+  if (raw && SAMPLE_EVENT_TYPES.has(raw)) {
+    return "sample";
+  }
+  if (raw && AUTOMATION_EVENT_TYPES.has(raw)) {
+    return "automation";
+  }
+
   switch (type) {
     case "file":
       return "project";
@@ -358,14 +450,21 @@ export function categoryForEvent(type: RecallEventType): ProducerEventCategory {
   }
 }
 
-export function producerEventIcon(type: RecallEventType): string {
-  switch (categoryForEvent(type)) {
+export function producerEventIcon(
+  type: RecallEventType,
+  rawEventType?: string,
+): string {
+  switch (categoryForEvent(type, rawEventType)) {
     case "track":
       return "T";
     case "group":
       return "G";
     case "device":
       return "D";
+    case "sample":
+      return "≈";
+    case "automation":
+      return "A";
     case "parameter":
       return "P";
     case "transport":
@@ -426,6 +525,10 @@ export function labelForCategory(category: ProducerEventCategory): string {
       return "Group";
     case "device":
       return "Device";
+    case "sample":
+      return "Sample";
+    case "automation":
+      return "Automation";
     case "parameter":
       return "Parameter";
     case "clip":

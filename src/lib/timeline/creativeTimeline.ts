@@ -2,6 +2,10 @@ import type { RecallTimelineMoment } from "../../types/recall";
 import { isProducerTimelineEvent } from "../../utils/producerEvents";
 import { readMetadataBoolean, readMetadataNumber, readMetadataString } from "../transport/transportState";
 
+// Window within which a device_chain_changed is treated as the redundant echo of
+// a device add/remove on the same track (the bridge emits both at the same tick).
+const DEVICE_CHAIN_DEDUP_MS = 2000;
+
 // Rules for what appears in the creative timeline:
 //
 // NEVER included:
@@ -33,6 +37,10 @@ export function buildCreativeTimeline(
   let previousPlaying: boolean | null = null;
   let previousTempo: number | null = null;
   let previousTrack: string | null = null;
+  // Track the most recent device add/remove so we can drop the chain-change echo
+  // that immediately follows it on the same track.
+  let lastDeviceEditTrack: string | null = null;
+  let lastDeviceEditTime = 0;
 
   for (const event of events) {
     if (event.type === "heartbeat") {
@@ -74,7 +82,31 @@ export function buildCreativeTimeline(
       continue;
     }
 
+    const rawType = event.rawEventType?.toLowerCase();
+    const eventTrack = event.trackName ?? readMetadataString(event, "track") ?? null;
+
+    // Collapse the redundant "Reworked the chain" the bridge emits alongside a
+    // device add/remove. Adding Serum 2 fires BOTH device_added and
+    // device_chain_changed at the same instant — two rows for one action. If a
+    // chain change lands right after an add/remove on the same track, the
+    // add/remove already tells the story, so drop the chain echo. A standalone
+    // chain rework (reordering, or one not tied to a recent add/remove) still
+    // shows because the track/window won't match.
+    if (
+      rawType === "device_chain_changed" &&
+      lastDeviceEditTrack !== null &&
+      eventTrack === lastDeviceEditTrack &&
+      event.timestamp - lastDeviceEditTime <= DEVICE_CHAIN_DEDUP_MS
+    ) {
+      continue;
+    }
+
     output.push(event);
+
+    if (rawType === "device_added" || rawType === "device_removed") {
+      lastDeviceEditTrack = eventTrack;
+      lastDeviceEditTime = event.timestamp;
+    }
 
     const playing = readMetadataBoolean(event, "playing");
     const tempo = readMetadataNumber(event, "bpm");

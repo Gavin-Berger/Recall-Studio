@@ -337,6 +337,20 @@ fn normalize_udp_json(mut value: Value) -> Result<Value, String> {
     Ok(value)
 }
 
+fn log_events(normalized_json: &Value) {
+    let event_type = normalized_json
+        .get("event_type")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    if event_type != "track_created" {
+        return;
+    }
+
+    //if VERBOSE_UDP_LOGGING {
+    println!("XXX:EVENT LOGGED -> {}", normalized_json);
+    //}
+}
+
 fn update_connection_if_heartbeat(normalized_json: &Value, state: &Arc<Mutex<ConnectionState>>) {
     let event_type = normalized_json
         .get("event_type")
@@ -478,7 +492,11 @@ fn run_persistence_worker(
 // Enqueue policy implementing graceful overload. Critical/important events block
 // briefly until the worker makes room (rare; guarantees no creative data loss),
 // while coalescible high-frequency telemetry is dropped when the queue is full.
-fn enqueue_event(sender: &SyncSender<RecallEvent>, event: RecallEvent, metrics: &Arc<BridgeMetrics>) {
+fn enqueue_event(
+    sender: &SyncSender<RecallEvent>,
+    event: RecallEvent,
+    metrics: &Arc<BridgeMetrics>,
+) {
     let priority = classify_priority(&event.event_type);
 
     match sender.try_send(event) {
@@ -577,13 +595,11 @@ pub fn start_udp_listener(
                             continue;
                         }
                     };
-
+                    log_events(&normalized_json);
                     // Heartbeats are health-only: update connection state and
                     // stop here. They are never queued, persisted, or emitted.
                     update_connection_if_heartbeat(&normalized_json, &state);
-                    let is_heartbeat = normalized_json
-                        .get("event_type")
-                        .and_then(Value::as_str)
+                    let is_heartbeat = normalized_json.get("event_type").and_then(Value::as_str)
                         == Some("heartbeat");
                     if is_heartbeat {
                         continue;
@@ -714,7 +730,10 @@ mod tests {
         assert_eq!(obj["track_name"], json!("Vocals"));
         assert_eq!(obj["track_type"], json!("audio"));
         assert_eq!(obj["sample_name"], json!("Deep_House_Vocal_120bpm.wav"));
-        assert_eq!(obj["file_path"], json!("C:/Splice/Deep_House_Vocal_120bpm.wav"));
+        assert_eq!(
+            obj["file_path"],
+            json!("C:/Splice/Deep_House_Vocal_120bpm.wav")
+        );
     }
 
     #[test]

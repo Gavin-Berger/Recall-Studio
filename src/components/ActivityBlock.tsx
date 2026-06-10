@@ -126,7 +126,7 @@ export function ActivityBlockCard({ block, index }: ActivityBlockProps) {
                       className={`event-glyph event-glyph--${event.type} event-glyph--sm`}
                       aria-hidden="true"
                     >
-                      {producerEventIcon(event.type)}
+                      {producerEventIcon(event.type, event.rawEventType)}
                     </span>
                     <span>{event.summary}</span>
                   </li>

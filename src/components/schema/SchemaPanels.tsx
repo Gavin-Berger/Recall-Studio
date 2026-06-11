@@ -49,17 +49,18 @@ export function EntityTree({
 
   return (
     <aside className="schema-pane schema-pane--tree">
+      <span className="schema-pane__kicker">Session map</span>
       <h2 className="schema-pane__title">{schema.name}</h2>
 
-      <div className="schema-tree__overview" aria-label="Project schema summary">
-        <span>{schema.tracks.length} tracks</span>
-        <span>{deviceCount} devices</span>
-        <span>{returnTracks.length} returns</span>
+      <div className="schema-tree__overview" aria-label="Session summary">
+        <span><strong>{schema.tracks.length}</strong><small>tracks</small></span>
+        <span><strong>{deviceCount}</strong><small>devices</small></span>
+        <span><strong>{returnTracks.length}</strong><small>returns</small></span>
       </div>
 
       {!schema.has_snapshot && (
         <p className="schema-empty">
-          No snapshot captured yet. Trigger a deep snapshot in Ableton, then press
+          Nothing captured yet. Run a full scan in Ableton, then press
           Refresh.
         </p>
       )}
@@ -91,7 +92,7 @@ export function EntityTree({
         <TrackNode key={track.id} track={track} selection={selection} onSelect={onSelect} />
       ))}
 
-      <div className="schema-legend" aria-label="Device role legend">
+      <div className="schema-legend" aria-label="Device type legend">
         <span className="schema-badge schema-badge--instrument">Instrument</span>
         <span className="schema-badge schema-badge--midi_effect">MIDI FX</span>
         <span className="schema-badge schema-badge--audio_effect">Audio FX</span>
@@ -196,7 +197,7 @@ function formatTrackMeta(track: TrackObj): string {
 
 function formatDeviceMeta(device: DeviceObj): string {
   const parameterCount = countParams(device.parameters);
-  return `${parameterCount} parameter${parameterCount === 1 ? "" : "s"} · slot ${device.chain_index + 1}`;
+  return `${parameterCount} control${parameterCount === 1 ? "" : "s"} · slot ${device.chain_index + 1}`;
 }
 
 export function SchemaStream({
@@ -210,10 +211,12 @@ export function SchemaStream({
 }) {
   if (stream.length === 0) {
     return (
-      <p className="schema-empty">
-        No matching schema events yet. Try another filter, or capture a deep
-        snapshot and tweak a device in Ableton.
-      </p>
+      <div className="schema-stream-empty">
+        <h3>Waiting for your first move</h3>
+        <p>
+          Capture your Ableton set, tweak a sound, or save a moment to start the timeline.
+        </p>
+      </div>
     );
   }
 
@@ -258,9 +261,9 @@ function ChangeRow({
         <span className="schema-row__time">{formatClock(change.changed_at_ms)}</span>
         <span className="schema-row__body">
           <span className="schema-row__chips">
-            <span className="schema-chip schema-chip--mapped">Mapped schema</span>
-            <span className="schema-chip">Parameter</span>
-            {needsBefore && <span className="schema-chip schema-chip--needs-data">Needs before</span>}
+            <span className="schema-chip schema-chip--mapped">Saved move</span>
+            <span className="schema-chip">Control</span>
+            {needsBefore && <span className="schema-chip schema-chip--needs-data">Before missing</span>}
           </span>
           <span className="schema-row__headline">{formatParameterChange(change)}</span>
           {context && <span className="schema-row__context">{context}</span>}
@@ -288,14 +291,14 @@ function MomentRow({
         <span className="schema-row__time">{formatClock(at)}</span>
         <span className="schema-row__body">
           <span className="schema-row__chips">
-            <span className="schema-chip schema-chip--mapped">Creative memory</span>
+            <span className="schema-chip schema-chip--mapped">Moment</span>
             {moment.targets.length === 0 && (
-              <span className="schema-chip schema-chip--needs-data">Unlinked</span>
+              <span className="schema-chip schema-chip--needs-data">Not linked yet</span>
             )}
           </span>
           <span className="schema-row__headline">{moment.title}</span>
           <span className="schema-row__context">
-            {MOMENT_TYPE_LABEL[moment.type]} · {moment.targets.length} target(s)
+            {MOMENT_TYPE_LABEL[moment.type]} / {moment.targets.length} linked
           </span>
         </span>
         <ConfidenceBadge confidence={moment.confidence} />
@@ -359,14 +362,24 @@ export function DetailPanel({
 }) {
   return (
     <aside className="schema-pane schema-pane--detail">
-      <h2 className="schema-pane__title">Detail</h2>
+      <span className="schema-pane__kicker">What happened</span>
+      <h2 className="schema-pane__title">Details</h2>
       {renderDetail()}
     </aside>
   );
 
   function renderDetail() {
     if (!selection) {
-      return <p className="schema-empty">Select a track, device, change, or moment.</p>;
+      return (
+        <div className="detail-empty">
+          <div className="detail-empty__lens" aria-hidden="true">
+            <span />
+            <span />
+            <span />
+          </div>
+          <p>Pick a track, device, knob move, or saved moment.</p>
+        </div>
+      );
     }
 
     if (selection.kind === "track") {
@@ -404,7 +417,7 @@ export function DetailPanel({
             <Fact term="Role" value={DEVICE_ROLE_LABEL[device.role]} />
             <Fact term="On track" value={track.name ?? "—"} />
             <Fact term="Enabled" value={device.enabled ? "Yes" : "No"} />
-            <Fact term="Parameters" value={String(countParams(device.parameters))} />
+            <Fact term="Controls" value={String(countParams(device.parameters))} />
           </dl>
           {device.parameters.length > 0 && (
             <ParameterList parameters={device.parameters} onSelect={(id) => onSelectParam(id)} />
@@ -428,7 +441,7 @@ export function DetailPanel({
       const { device, parameter } = found;
       return (
         <div className="detail">
-          <DetailHead label="Parameter" title={parameter.name ?? "Parameter"} />
+          <DetailHead label="Control" title={parameter.name ?? "Control"} />
           <dl className="detail__facts">
             <Fact term="On device" value={device.name ?? "—"} />
             <Fact term="Value" value={formatValue(parameter.value)} />
@@ -440,7 +453,7 @@ export function DetailPanel({
             onClick={() =>
               onPin({
                 target: { target_type: "parameter", target_id: parameter.id },
-                summary: `Parameter "${parameter.name ?? ""}"`,
+                summary: `Control "${parameter.name ?? ""}"`,
               })
             }
           />
@@ -454,7 +467,7 @@ export function DetailPanel({
       if (!change) return notFound();
       return (
         <div className="detail">
-          <DetailHead label="Parameter change" title={change.parameter_name ?? "Parameter"} />
+          <DetailHead label="Knob move" title={change.parameter_name ?? "Control"} />
           <dl className="detail__facts">
             <Fact term="Context" value={formatChangeContext(change) || "—"} />
             <Fact term="Before" value={formatValue(change.before_value)} />
@@ -507,7 +520,7 @@ export function DetailPanel({
             ))}
           </div>
         )}
-        <p className="detail__meta">{moment.targets.length} linked target(s)</p>
+        <p className="detail__meta">{moment.targets.length} linked item(s)</p>
         <TargetList targets={moment.targets} schema={schema} changes={changes} onSelect={onSelect} />
         <div className="detail__actions">
           <button type="button" className="schema-btn" onClick={() => onEditMoment(moment)}>
@@ -531,7 +544,7 @@ export function DetailPanel({
   }
 
   function notFound() {
-    return <p className="schema-empty">That item is no longer in the current snapshot.</p>;
+    return <p className="schema-empty">That item is no longer in the current session.</p>;
   }
 }
 
@@ -547,7 +560,7 @@ function ParameterList({
       {parameters.map((parameter) => (
         <li key={parameter.id}>
           <button type="button" className="detail__param" onClick={() => onSelect(parameter.id)}>
-            <span>{parameter.name ?? "Parameter"}</span>
+            <span>{parameter.name ?? "Control"}</span>
             <span className="detail__param-value">{formatValue(parameter.value)}</span>
           </button>
         </li>
@@ -577,7 +590,7 @@ function Fact({ term, value }: { term: string; value: string }) {
 function PinButton({ onClick }: { onClick: () => void }) {
   return (
     <button type="button" className="schema-btn schema-btn--primary detail__pin" onClick={onClick}>
-      + Pin as creative moment
+      Save as moment
     </button>
   );
 }
@@ -597,7 +610,7 @@ function BeforeAfterDetail({ change }: { change: ParameterChange }) {
         <strong>{formatValue(change.after_value)}</strong>
       </div>
       {change.before_value === null && (
-        <p className="detail-diff__note">Before value is not stored yet; this needs snapshot diff support.</p>
+        <p className="detail-diff__note">Recall does not know the earlier value yet. A before/after scan will fill this in.</p>
       )}
     </section>
   );
@@ -615,11 +628,11 @@ function TargetList({
   onSelect: (selection: Selection) => void;
 }) {
   if (targets.length === 0) {
-    return <p className="detail__meta">No schema targets linked yet.</p>;
+    return <p className="detail__meta">Nothing linked yet.</p>;
   }
 
   return (
-    <div className="target-list" aria-label="Linked schema targets">
+    <div className="target-list" aria-label="Linked items">
       {targets.map((target) => {
         const selection = targetToSelection(target);
         return (
@@ -630,7 +643,7 @@ function TargetList({
             disabled={!selection}
             onClick={() => selection && onSelect(selection)}
           >
-            <span>{target.target_type.replace("_", " ")}</span>
+            <span>{formatTargetType(target)}</span>
             <strong>{describeTarget(target, schema, changes)}</strong>
           </button>
         );
@@ -656,7 +669,7 @@ function AutoDocBlock({ text }: { text: string }) {
   return (
     <section className="auto-doc">
       <div className="auto-doc__head">
-        <span>Auto doc format</span>
+        <span>Session note</span>
         <button type="button" className="schema-btn schema-btn--compact" onClick={handleCopy}>
           {copyState === "copied" ? "Copied" : copyState === "failed" ? "Copy failed" : "Copy"}
         </button>
@@ -676,7 +689,7 @@ function buildTrackDoc(track: TrackObj): string {
     "Chain:",
     ...track.devices.map(
       (device) =>
-        `- [${DEVICE_ROLE_LABEL[device.role]}] ${device.name ?? "Device"} (${countParams(device.parameters)} params)`,
+        `- [${DEVICE_ROLE_LABEL[device.role]}] ${device.name ?? "Device"} (${countParams(device.parameters)} controls)`,
     ),
   ].join("\n");
 }
@@ -688,13 +701,13 @@ function buildDeviceDoc(track: TrackObj, device: DeviceObj): string {
     `Track: ${track.name ?? "Untitled track"}`,
     `Enabled: ${device.enabled ? "Yes" : "No"}`,
     `Chain slot: ${device.chain_index + 1}`,
-    `Parameters: ${countParams(device.parameters)}`,
+    `Controls: ${countParams(device.parameters)}`,
   ].join("\n");
 }
 
 function buildParameterDoc(device: DeviceObj, parameter: ParameterObj): string {
   return [
-    `Parameter: ${parameter.name ?? "Parameter"}`,
+    `Control: ${parameter.name ?? "Control"}`,
     `Device: ${device.name ?? "Device"}`,
     `Current value: ${formatValue(parameter.value)}`,
     `Range: ${parameter.min !== null && parameter.max !== null ? `${formatValue(parameter.min)} to ${formatValue(parameter.max)}` : "Unknown"}`,
@@ -704,13 +717,13 @@ function buildParameterDoc(device: DeviceObj, parameter: ParameterObj): string {
 
 function buildChangeDoc(change: ParameterChange): string {
   return [
-    "Parameter Change",
+    "Knob Move",
     `Context: ${formatChangeContext(change) || "Unknown"}`,
-    `Parameter: ${change.parameter_name ?? "Parameter"}`,
+    `Control: ${change.parameter_name ?? "Control"}`,
     `Before: ${formatValue(change.before_value)}`,
     `After: ${formatValue(change.after_value)}`,
     `At: ${formatClock(change.changed_at_ms)}`,
-    `Status: ${change.before_value === null ? "Needs before_value" : "Ready"}`,
+    `Status: ${change.before_value === null ? "Before value missing" : "Ready"}`,
   ].join("\n");
 }
 
@@ -720,15 +733,15 @@ function buildMomentDoc(
   changes: ParameterChange[],
 ): string {
   return [
-    `Creative Moment: ${moment.title}`,
+    `Saved Moment: ${moment.title}`,
     `Type: ${MOMENT_TYPE_LABEL[moment.type]}`,
     `Confidence: ${CONFIDENCE_LABEL[moment.confidence]}`,
     `When: ${formatClock(moment.timeline_start_ms ?? moment.created_at_ms)}`,
     "",
-    "Targets:",
+    "Linked to:",
     ...(moment.targets.length > 0
       ? moment.targets.map((target) => `- ${describeTarget(target, schema, changes)}`)
-      : ["- No linked targets"]),
+      : ["- No linked items"]),
     "",
     `Note: ${moment.note || "No note yet."}`,
     `Tags: ${moment.tags.length > 0 ? moment.tags.map((tag) => `#${tag}`).join(" ") : "None"}`,
@@ -741,6 +754,13 @@ function targetToSelection(target: CreativeMomentTarget): Selection | null {
   if (target.target_type === "parameter") return { kind: "parameter", id: target.target_id };
   if (target.target_type === "parameter_change") return { kind: "change", id: target.target_id };
   return null;
+}
+
+function formatTargetType(target: CreativeMomentTarget): string {
+  if (target.target_type === "parameter") return "control";
+  if (target.target_type === "parameter_change") return "knob move";
+  if (target.target_type === "clip") return "clip";
+  return target.target_type;
 }
 
 function describeTarget(
@@ -760,13 +780,13 @@ function describeTarget(
   if (target.target_type === "parameter") {
     const found = findParameter(schema, target.target_id);
     return found
-      ? `${found.parameter.name ?? "Parameter"} on ${found.device.name ?? "device"}`
-      : "Unknown parameter";
+      ? `${found.parameter.name ?? "Control"} on ${found.device.name ?? "device"}`
+      : "Unknown control";
   }
 
   if (target.target_type === "parameter_change") {
     const change = changes.find((candidate) => candidate.id === target.target_id);
-    return change ? formatParameterChange(change) : "Unknown parameter change";
+    return change ? formatParameterChange(change) : "Unknown knob move";
   }
 
   return "Clip target";

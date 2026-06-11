@@ -10,7 +10,7 @@ mod udp_listener;
 use metrics::{BridgeMetrics, BridgeMetricsSnapshot};
 use protocol::RecallEvent;
 use schema_projection::{CreativeMoment, CreativeMomentTarget, ParameterChange, ProjectSchema};
-use session::{SavedSession, SavedSessionMetadata, SessionState, SessionStatus};
+use session::{SavedProject, SavedSession, SavedSessionMetadata, SessionState, SessionStatus};
 use std::sync::{Arc, Mutex};
 use storage::{initialize_database, SessionCuration, StorageState, StorageStatus};
 use tauri::{Manager, State};
@@ -278,6 +278,171 @@ fn delete_saved_session(
 }
 
 #[tauri::command]
+fn list_projects(
+    state: State<'_, AppState>,
+    include_archived: Option<bool>,
+) -> Result<Vec<SavedProject>, String> {
+    let storage = state.storage.lock().expect("Storage state lock failed");
+    storage.list_projects(include_archived.unwrap_or(false))
+}
+
+#[tauri::command]
+fn create_project(state: State<'_, AppState>, display_name: String) -> Result<String, String> {
+    let storage = state.storage.lock().expect("Storage state lock failed");
+    storage.create_project(&display_name, None, None)
+}
+
+#[tauri::command]
+fn rename_project(
+    state: State<'_, AppState>,
+    project_id: String,
+    display_name: String,
+) -> Result<(), String> {
+    let storage = state.storage.lock().expect("Storage state lock failed");
+    storage.rename_project(&project_id, &display_name)
+}
+
+#[tauri::command]
+fn archive_project(state: State<'_, AppState>, project_id: String) -> Result<(), String> {
+    let storage = state.storage.lock().expect("Storage state lock failed");
+    storage.archive_project(&project_id)
+}
+
+#[tauri::command]
+fn assign_session_to_project(
+    state: State<'_, AppState>,
+    session_id: String,
+    project_id: Option<String>,
+) -> Result<(), String> {
+    let storage = state.storage.lock().expect("Storage state lock failed");
+    storage.assign_session_to_project(&session_id, project_id.as_deref())
+}
+
+#[tauri::command]
+fn rename_capture(
+    state: State<'_, AppState>,
+    session_id: String,
+    capture_name: String,
+) -> Result<(), String> {
+    let storage = state.storage.lock().expect("Storage state lock failed");
+    storage.rename_capture(&session_id, &capture_name)
+}
+
+fn ensure_project_exists(
+    state: &State<'_, AppState>,
+    project_id: Option<&str>,
+) -> Result<(), String> {
+    if let Some(project_id) = project_id {
+        let storage = state.storage.lock().expect("Storage state lock failed");
+        let exists = storage
+            .list_projects(false)?
+            .iter()
+            .any(|project| project.id == project_id);
+        if !exists {
+            return Err(format!("Project not found or archived: {}", project_id));
+        }
+    }
+    Ok(())
+}
+
+/// Stop the current take (if any) and start a fresh one, optionally assigned to a
+/// project. Shared by start_capture_for_project (create path) and new_take_for_project.
+fn create_capture_for_project(
+    state: &State<'_, AppState>,
+    project_id: Option<&str>,
+) -> Result<SessionStatus, String> {
+    let previous_status = {
+        let mut session = state.session.lock().expect("Session state lock failed");
+        session.stop()
+    };
+
+    {
+        let storage = state.storage.lock().expect("Storage state lock failed");
+        if previous_status.session_id.is_some() {
+            storage.save_session_stopped(&previous_status)?;
+        }
+    }
+
+    let status = {
+        let mut session = state.session.lock().expect("Session state lock failed");
+        session.start()
+    };
+
+    {
+        let mut recent_events = state
+            .recent_events
+            .lock()
+            .expect("Recent events lock failed");
+        recent_events.clear();
+    }
+
+    {
+        let storage = state.storage.lock().expect("Storage state lock failed");
+        storage.save_session_started(&status)?;
+        if let (Some(session_id), Some(project_id)) = (status.session_id.as_deref(), project_id) {
+            storage.assign_session_to_project(session_id, Some(project_id))?;
+        }
+    }
+
+    Ok(status)
+}
+
+/// Open a project's recording: if it already has an active take, return that one
+/// (no duplicate); otherwise start a fresh take. This is what the project's main
+/// Record / Open Recording button calls.
+#[tauri::command]
+fn start_capture_for_project(
+    state: State<'_, AppState>,
+    project_id: Option<String>,
+) -> Result<SessionStatus, String> {
+    ensure_project_exists(&state, project_id.as_deref())?;
+
+    // Reuse an existing active take instead of creating another one.
+    {
+        let storage = state.storage.lock().expect("Storage state lock failed");
+        if let Some(active) = storage.active_session_for_project(project_id.as_deref())? {
+            println!(
+                "COMMAND start_capture_for_project -> reused active take {:?} (project {:?})",
+                active.session_id, project_id
+            );
+            return Ok(active);
+        }
+    }
+
+    let status = create_capture_for_project(&state, project_id.as_deref())?;
+    println!(
+        "COMMAND start_capture_for_project -> new take {:?} (project {:?})",
+        status.session_id, project_id
+    );
+    Ok(status)
+}
+
+/// Intentionally start a fresh take, even if the project already has an active one.
+#[tauri::command]
+fn new_take_for_project(
+    state: State<'_, AppState>,
+    project_id: Option<String>,
+) -> Result<SessionStatus, String> {
+    ensure_project_exists(&state, project_id.as_deref())?;
+    let status = create_capture_for_project(&state, project_id.as_deref())?;
+    println!(
+        "COMMAND new_take_for_project -> new take {:?} (project {:?})",
+        status.session_id, project_id
+    );
+    Ok(status)
+}
+
+#[tauri::command]
+fn update_session_project_name(
+    state: State<'_, AppState>,
+    session_id: String,
+    name: String,
+) -> Result<(), String> {
+    let storage = state.storage.lock().expect("Storage state lock failed");
+    storage.update_session_display_name(&session_id, &name)
+}
+
+#[tauri::command]
 fn set_event_curation(
     state: State<'_, AppState>,
     session_id: String,
@@ -474,7 +639,10 @@ pub fn run() {
     let storage_state_for_setup = storage_state.clone();
     let bridge_metrics_for_setup = bridge_metrics.clone();
 
-    println!("Starting Recall Studio backend... (PID {})", std::process::id());
+    println!(
+        "Starting Recall Studio backend... (PID {})",
+        std::process::id()
+    );
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
@@ -557,6 +725,15 @@ pub fn run() {
             load_session_events,
             start_new_session,
             delete_saved_session,
+            list_projects,
+            create_project,
+            rename_project,
+            archive_project,
+            assign_session_to_project,
+            rename_capture,
+            start_capture_for_project,
+            new_take_for_project,
+            update_session_project_name,
             set_event_curation,
             list_session_curation,
             add_session_note,

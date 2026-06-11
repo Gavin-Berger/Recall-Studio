@@ -231,7 +231,8 @@ fn parse_track(track: &Value, is_return: bool) -> ParsedTrack {
         number: track.get("index").and_then(Value::as_i64).unwrap_or(0) + 1,
         track_type,
         color: read_color(track.get("color")),
-        group_ableton_id: read_id(track.get("group_track_id")).or_else(|| read_id(track.get("group_track"))),
+        group_ableton_id: read_id(track.get("group_track_id"))
+            .or_else(|| read_id(track.get("group_track"))),
         devices,
     }
 }
@@ -485,7 +486,10 @@ mod tests {
         let track = &parse_session_tree(&payload)[0];
         assert_eq!(track.track_type, TrackType::Audio);
         assert_eq!(track.number, 3);
-        assert!(track.devices.iter().all(|d| d.role == DeviceRole::AudioEffect));
+        assert!(track
+            .devices
+            .iter()
+            .all(|d| d.role == DeviceRole::AudioEffect));
     }
 
     #[test]

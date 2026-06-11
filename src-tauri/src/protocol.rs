@@ -43,6 +43,12 @@ pub struct RecallEvent {
     pub sample_name: Option<String>,
     #[serde(default)]
     pub file_path: Option<String>,
+    // Live Set identity. project_name is what Ableton calls the set; project_path
+    // lets Recall group different captures of the same .als when Live exposes it.
+    #[serde(default)]
+    pub project_name: Option<String>,
+    #[serde(default)]
+    pub project_path: Option<String>,
     // Ordered, colon-separated device chain for the selected track, e.g.
     // "Serum 2 : Saturator : Vocoder". Read straight from Ableton via the bridge.
     #[serde(default)]

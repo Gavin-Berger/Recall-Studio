@@ -14,6 +14,12 @@ pub struct SessionStatus {
 pub struct SavedSessionMetadata {
     pub id: String,
     pub name: String,
+    pub project_id: Option<String>,
+    pub capture_name: Option<String>,
+    pub capture_status: String,
+    pub project_name: Option<String>,
+    pub project_path: Option<String>,
+    pub display_name: Option<String>,
     pub started_at_ms: u64,
     pub ended_at_ms: Option<u64>,
     pub last_updated_at_ms: u64,
@@ -26,6 +32,12 @@ pub struct SavedSessionMetadata {
 pub struct SavedSession {
     pub id: String,
     pub name: String,
+    pub project_id: Option<String>,
+    pub capture_name: Option<String>,
+    pub capture_status: String,
+    pub project_name: Option<String>,
+    pub project_path: Option<String>,
+    pub display_name: Option<String>,
     pub started_at_ms: u64,
     pub ended_at_ms: Option<u64>,
     pub last_updated_at_ms: u64,
@@ -33,6 +45,21 @@ pub struct SavedSession {
     pub creative_event_count: usize,
     pub heartbeat_count: usize,
     pub events: Vec<SavedSessionEvent>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SavedProject {
+    pub id: String,
+    pub display_name: String,
+    pub ableton_name: Option<String>,
+    pub ableton_path: Option<String>,
+    pub archived_at_ms: Option<u64>,
+    pub created_at_ms: u64,
+    pub updated_at_ms: u64,
+    pub last_updated_at_ms: u64,
+    pub capture_count: usize,
+    pub active_capture_count: usize,
+    pub captures: Vec<SavedSessionMetadata>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

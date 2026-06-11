@@ -277,6 +277,16 @@ fn normalize_udp_json(mut value: Value) -> Result<Value, String> {
         payload_obj,
         &["file_path", "filePath", "path", "sample_path"],
     );
+    let project_name = find_string(
+        object,
+        payload_obj,
+        &["project_name", "projectName", "live_set_name", "set_name"],
+    );
+    let project_path = find_string(
+        object,
+        payload_obj,
+        &["project_path", "projectPath", "live_set_path", "set_path"],
+    );
     let device_chain = find_string(object, payload_obj, &["device_chain", "chain"]);
     let bpm = find_f64(object, payload_obj, &["bpm", "tempo"]);
     let playing = find_bool(object, payload_obj, &["playing", "is_playing"]);
@@ -316,6 +326,14 @@ fn normalize_udp_json(mut value: Value) -> Result<Value, String> {
     match file_path {
         Some(v) => object.insert("file_path".to_string(), Value::String(v)),
         None => object.insert("file_path".to_string(), Value::Null),
+    };
+    match project_name {
+        Some(v) => object.insert("project_name".to_string(), Value::String(v)),
+        None => object.insert("project_name".to_string(), Value::Null),
+    };
+    match project_path {
+        Some(v) => object.insert("project_path".to_string(), Value::String(v)),
+        None => object.insert("project_path".to_string(), Value::Null),
     };
     match device_chain {
         Some(v) => object.insert("device_chain".to_string(), Value::String(v)),
@@ -494,6 +512,21 @@ fn run_persistence_worker(
                         if let Some(id) = rowid {
                             event.id = Some(id);
                             metrics.incr_persisted();
+                        }
+                    }
+
+                    for event in &batch {
+                        if let Some(session_id) = event.session_id.as_deref() {
+                            if event.project_name.is_some() || event.project_path.is_some() {
+                                if let Err(error) = storage_state.remember_ableton_project(
+                                    session_id,
+                                    event.project_name.as_deref(),
+                                    event.project_path.as_deref(),
+                                ) {
+                                    eprintln!("FAILED TO REMEMBER ABLETON PROJECT -> {}", error);
+                                    metrics.set_last_error(error);
+                                }
+                            }
                         }
                     }
                 }

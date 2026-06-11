@@ -20,6 +20,14 @@ export function HomeScreen({
   onOpenSession,
 }: HomeScreenProps) {
   const recentSessions = sessions.slice(0, 7);
+  const savedSessionCount = sessions.length;
+  const openCaptureCount = sessions.filter((session) => session.ended_at_ms === null).length;
+  const totalSavedMoments = sessions.reduce(
+    (total, session) => total + session.creative_event_count,
+    0,
+  );
+  const lastTouchedMs =
+    activeSession?.last_updated_at_ms ?? recentSessions[0]?.last_updated_at_ms ?? null;
 
   return (
     <div className="home-screen">
@@ -28,7 +36,7 @@ export function HomeScreen({
           <RecallMark />
           <div>
             <h1>Recall Studio</h1>
-            <p>Schema timeline for Ableton decisions</p>
+            <p>Remember what worked in Ableton</p>
           </div>
         </div>
 
@@ -47,35 +55,65 @@ export function HomeScreen({
       <div className="home-screen__body">
         <section className="home-project">
           <div className="home-project__copy">
-            <span className="eyebrow">Current milestone</span>
-            <h2>Tracks, devices, parameters, and creative memory in one timeline.</h2>
+            <span className="eyebrow">What Recall does</span>
+            <h2>A friendly timeline of sounds you changed and ideas worth keeping.</h2>
             <p>
-              Recall Studio is being shaped around a normalized Ableton schema:
-              track identity, device roles, parameter changes, return tracks,
-              and producer-authored creative moments.
+              Recall Studio turns your Ableton session into an easy memory map:
+              tracks, devices, knob moves, return tracks, and the moments you
+              want to come back to later.
             </p>
           </div>
-          <div className="home-project__map" aria-label="Recall Studio schema map">
-            <span>Project</span>
-            <strong>Track_obj</strong>
-            <strong>Device_obj</strong>
-            <strong>Parameter_obj</strong>
-            <strong>CreativeMoment_obj</strong>
+          <div className="home-project__map" aria-label="How Recall reads a session">
+            <span>Session</span>
+            <strong>Tracks</strong>
+            <strong>Devices</strong>
+            <strong>Controls</strong>
+            <strong>Moments</strong>
           </div>
         </section>
 
-        <section className="home-milestones" aria-label="Schema timeline focus">
+        <section className="home-milestones" aria-label="Recall Studio focus">
           <div>
-            <span>Frontend focus</span>
-            <strong>Schema timeline only</strong>
+            <span>Session map</span>
+            <strong>Tracks stay organized</strong>
           </div>
           <div>
-            <span>Data focus</span>
-            <strong>Normalized IDs and roles</strong>
+            <span>Timeline</span>
+            <strong>Moves in order</strong>
           </div>
           <div>
-            <span>Memory focus</span>
-            <strong>Before/after decisions</strong>
+            <span>Project library</span>
+            <strong>Versions you can revisit</strong>
+          </div>
+        </section>
+
+        <section className="home-library" aria-label="Project library">
+          <div className="home-library__copy">
+            <span className="eyebrow">Project Library</span>
+            <h2>One place for every song, session, and version.</h2>
+            <p>
+              Today each capture is saved as its own session. Next, these can be
+              grouped by Ableton project so different versions of the same song
+              are easy to compare and reopen.
+            </p>
+          </div>
+          <div className="home-library__stats">
+            <div>
+              <strong>{savedSessionCount}</strong>
+              <span>saved sessions</span>
+            </div>
+            <div>
+              <strong>{openCaptureCount}</strong>
+              <span>open captures</span>
+            </div>
+            <div>
+              <strong>{totalSavedMoments}</strong>
+              <span>saved moments</span>
+            </div>
+            <div>
+              <strong>{lastTouchedMs ? formatSessionDate(lastTouchedMs) : "-"}</strong>
+              <span>last touched</span>
+            </div>
           </div>
         </section>
 
@@ -87,7 +125,7 @@ export function HomeScreen({
               <span className="home-active-session__badge">Active</span>
               <strong>{activeSession.name}</strong>
               <span>{formatSessionDate(activeSession.started_at_ms)}</span>
-              <span>{activeSession.creative_event_count} moments captured</span>
+              <span>{activeSession.creative_event_count} saved moments</span>
             </div>
             <button
               type="button"
@@ -102,7 +140,7 @@ export function HomeScreen({
         {recentSessions.length > 0 ? (
           <section className="home-sessions">
             <h2 className="home-sessions__label">
-              {activeSession ? "Previous Sessions" : "Recent Sessions"}
+              {activeSession ? "Previous Project Versions" : "Recent Project Versions"}
             </h2>
             <div className="home-session-list">
               {recentSessions
@@ -124,7 +162,7 @@ export function HomeScreen({
                         : "In progress"}
                     </span>
                     <span className="home-session-row__count">
-                      {session.creative_event_count} moments
+                      {session.creative_event_count} saved moments
                     </span>
                   </button>
                 ))}

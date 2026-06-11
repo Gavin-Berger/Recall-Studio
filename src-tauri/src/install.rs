@@ -46,11 +46,7 @@ fn user_library_candidates(app: &AppHandle) -> Vec<PathBuf> {
 
     if let Ok(home) = app.path().home_dir() {
         // Windows default.
-        out.push(
-            home.join("Documents")
-                .join("Ableton")
-                .join("User Library"),
-        );
+        out.push(home.join("Documents").join("Ableton").join("User Library"));
         // macOS default.
         out.push(home.join("Music").join("Ableton").join("User Library"));
     }
@@ -150,12 +146,8 @@ pub fn install_bridge(app: AppHandle, target_root: String) -> Result<InstallResu
         install_dir.push(part);
     }
 
-    std::fs::create_dir_all(&install_dir).map_err(|e| {
-        format!(
-            "Could not create install folder {:?}: {e}",
-            install_dir
-        )
-    })?;
+    std::fs::create_dir_all(&install_dir)
+        .map_err(|e| format!("Could not create install folder {:?}: {e}", install_dir))?;
 
     let dest_device = install_dir.join(DEVICE_FILE);
     let dest_script = install_dir.join(BRIDGE_SCRIPT_FILE);

@@ -1,10 +1,9 @@
 import type { ReactNode } from "react";
 import { RecallMark } from "./RecallMark";
 
-// The milestone surfaces: the landing page, the schema-driven timeline, and the
-// producer glossary. Capture/Analytics/Document were retired in favour of the
-// single schema timeline experience.
-export type AppSurface = "home" | "timeline" | "glossary";
+// The milestone surfaces: project management, a recap for the selected capture,
+// the timeline workspace, and the producer reference.
+export type AppSurface = "projects" | "recap" | "timeline" | "glossary";
 
 type NavItem = {
   id: AppSurface;
@@ -13,16 +12,18 @@ type NavItem = {
 };
 
 const NAV_ITEMS: NavItem[] = [
-  { id: "home", label: "Project Schema", hint: "Bridge & sessions" },
-  { id: "timeline", label: "Timeline", hint: "Schema & memory" },
-  { id: "glossary", label: "Reference", hint: "Producer terms" },
+  { id: "projects", label: "Projects", hint: "Songs & versions" },
+  { id: "recap", label: "Recap", hint: "Session summary" },
+  { id: "timeline", label: "Timeline", hint: "Workspace" },
+  { id: "glossary", label: "Reference", hint: "Sound terms" },
 ];
 
 type AppShellProps = {
   surface: AppSurface;
   onChangeSurface: (surface: AppSurface) => void;
   connected: boolean;
-  home: ReactNode;
+  projects: ReactNode;
+  recap: ReactNode;
   timeline: ReactNode;
   glossary: ReactNode;
 };
@@ -31,7 +32,8 @@ export function AppShell({
   surface,
   onChangeSurface,
   connected,
-  home,
+  projects,
+  recap,
   timeline,
   glossary,
 }: AppShellProps) {
@@ -80,8 +82,10 @@ export function AppShell({
         </nav>
 
         <div className="recall-frame__content">
-          {surface === "home" ? (
-            <div className="home-surface">{home}</div>
+          {surface === "projects" ? (
+            <div className="home-surface">{projects}</div>
+          ) : surface === "recap" ? (
+            <div className="home-surface">{recap}</div>
           ) : surface === "glossary" ? (
             <div className="document-surface">{glossary}</div>
           ) : (

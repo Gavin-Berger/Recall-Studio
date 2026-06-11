@@ -65,8 +65,8 @@ export function BridgeSetup({ connection }: BridgeSetupProps) {
     <section className="bridge-setup">
       <header className="bridge-setup__header">
         <div>
-          <span className="eyebrow">Ableton to schema</span>
-          <h2>The Max for Live bridge feeds the normalized timeline.</h2>
+          <span className="eyebrow">Ableton bridge</span>
+          <h2>The Max for Live bridge helps Recall remember your session.</h2>
         </div>
         <div className="bridge-setup__versions">
           {shippedVersion && (
@@ -86,11 +86,11 @@ export function BridgeSetup({ connection }: BridgeSetupProps) {
 
       <div className="bridge-setup__columns">
         <div className="bridge-setup__block">
-          <h3>Pipeline</h3>
+          <h3>How it works</h3>
           <ul className="bridge-setup__list">
-            <li>Ableton sends track, device, and parameter observations.</li>
-            <li>Rust normalizes useful events into the Recall Studio schema.</li>
-            <li>The frontend renders the stored schema as a creative timeline.</li>
+            <li>Ableton sends track, device, and knob-move updates.</li>
+            <li>Recall sorts the useful stuff from the noisy stuff.</li>
+            <li>You get a clean timeline of moves and ideas worth keeping.</li>
           </ul>
         </div>
 
@@ -131,23 +131,23 @@ export function BridgeSetup({ connection }: BridgeSetupProps) {
       </div>
 
       <div className="bridge-setup__notes">
-        <h3>Schema focus</h3>
+        <h3>What to expect</h3>
         <ul className="bridge-setup__list">
           <li>
             <strong>Device roles matter</strong>: instrument, MIDI effect, and
             audio effect are displayed separately in the timeline.
           </li>
           <li>
-            Raw Ableton data is only evidence; the app view is the normalized
-            Recall Studio schema.
+            Ableton sends the messy details; Recall turns them into a clean,
+            readable timeline.
           </li>
           <li>
-            Creative moments sit on top of tracks, devices, parameters, and
+            Saved moments can point back to tracks, devices, controls, and
             before/after changes.
           </li>
           <li>
-            The current milestone is clarity: store the schema and make the
-            timeline easy to read.
+            The current goal is clarity: save the important moves and make them
+            easy to understand later.
           </li>
         </ul>
       </div>

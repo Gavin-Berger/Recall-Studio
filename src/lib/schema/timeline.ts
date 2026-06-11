@@ -76,9 +76,9 @@ export function groupTracksByParent(schema: ProjectSchema): {
   return { groups: [...byGroupId.values()], ungrouped };
 }
 
-/** Render a parameter change as "Name: before → after" (or "Name → after" when the pre-value is unknown). */
+/** Render a control change as "Name: before → after" (or "Name → after" when the pre-value is unknown). */
 export function formatParameterChange(change: ParameterChange): string {
-  const name = change.parameter_name ?? "Parameter";
+  const name = change.parameter_name ?? "Control";
   const after = formatValue(change.after_value);
 
   if (change.before_value === null || change.before_value === undefined) {

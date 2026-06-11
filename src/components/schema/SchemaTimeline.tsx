@@ -14,9 +14,12 @@ import type {
   Confidence,
   CreativeMoment,
   CreativeMomentTarget,
+  DeviceObj,
   ParameterChange,
   ProjectSchema,
+  TrackObj,
 } from "../../types/schema";
+import type { SavedSessionMetadata } from "../../types/recall";
 import { CreateMomentForm } from "./CreateMomentForm";
 import type { MomentFormValues } from "./CreateMomentForm";
 import { DetailPanel, EntityTree, SchemaStream } from "./SchemaPanels";
@@ -25,21 +28,27 @@ import type { Selection } from "./selection";
 
 type LoadStatus = "idle" | "loading" | "ready" | "error";
 
-type StreamFilter = "schema" | "changes" | "moments" | "routing" | "needs_before";
+type WorkspaceMode = "overview" | "tracks" | "devices" | "moves" | "moments";
 
 type FormState =
   | { mode: "create"; target: CreativeMomentTarget | null; summary: string; startMs?: number }
   | { mode: "edit"; moment: CreativeMoment };
 
-const STREAM_FILTERS: Array<{ id: StreamFilter; label: string }> = [
-  { id: "schema", label: "Schema only" },
-  { id: "changes", label: "Parameter changes" },
-  { id: "moments", label: "Creative moments" },
-  { id: "routing", label: "Routing" },
-  { id: "needs_before", label: "Needs before" },
+const WORKSPACE_MODES: Array<{ id: WorkspaceMode; label: string }> = [
+  { id: "overview", label: "Overview" },
+  { id: "tracks", label: "Tracks" },
+  { id: "devices", label: "Devices" },
+  { id: "moves", label: "Moves" },
+  { id: "moments", label: "Moments" },
 ];
 
-export function SchemaTimeline({ sessionId }: { sessionId: string | null }) {
+export function SchemaTimeline({
+  sessionId,
+  session,
+}: {
+  sessionId: string | null;
+  session: SavedSessionMetadata | null;
+}) {
   const [schema, setSchema] = useState<ProjectSchema | null>(null);
   const [changes, setChanges] = useState<ParameterChange[]>([]);
   const [moments, setMoments] = useState<CreativeMoment[]>([]);
@@ -47,7 +56,7 @@ export function SchemaTimeline({ sessionId }: { sessionId: string | null }) {
   const [error, setError] = useState<string | null>(null);
   const [selection, setSelection] = useState<Selection | null>(null);
   const [form, setForm] = useState<FormState | null>(null);
-  const [filter, setFilter] = useState<StreamFilter>("schema");
+  const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>("overview");
 
   const load = useCallback(
     async (rematerialize: boolean) => {
@@ -91,17 +100,8 @@ export function SchemaTimeline({ sessionId }: { sessionId: string | null }) {
   }, [sessionId]);
 
   const stream = useMemo(() => buildSchemaStream(changes, moments), [changes, moments]);
-  const filteredStream = useMemo(
-    () =>
-      stream.filter((item) => {
-        if (filter === "schema") return true;
-        if (filter === "changes") return item.kind === "change";
-        if (filter === "moments") return item.kind === "moment";
-        if (filter === "routing") return item.kind === "moment" && item.moment.type === "routing";
-        return item.kind === "change" && item.change.before_value === null;
-      }),
-    [filter, stream],
-  );
+  const moveStream = useMemo(() => stream.filter((item) => item.kind === "change"), [stream]);
+  const momentStream = useMemo(() => stream.filter((item) => item.kind === "moment"), [stream]);
 
   const schemaStats = useMemo(() => {
     const tracks = schema?.tracks.length ?? 0;
@@ -110,6 +110,16 @@ export function SchemaTimeline({ sessionId }: { sessionId: string | null }) {
     const missingBefore = changes.filter((change) => change.before_value === null).length;
     return { tracks, devices, returns, missingBefore };
   }, [changes, schema]);
+
+  const takeTitle = session?.name ?? schema?.name ?? "Take";
+  const isRecording = session?.ended_at_ms === null;
+  const projectContext = session?.display_name ?? session?.project_name ?? session?.project_path ?? null;
+  const statusText =
+    status === "loading"
+      ? "Loading..."
+      : status === "error"
+        ? "Error"
+        : `${changes.length} changes / ${moments.length} moments`;
 
   function handlePin(request: PinRequest) {
     setForm({ mode: "create", target: request.target, summary: request.summary, startMs: request.startMs });
@@ -186,7 +196,7 @@ export function SchemaTimeline({ sessionId }: { sessionId: string | null }) {
     return (
       <div className="schema-timeline schema-timeline--empty">
         <p className="schema-empty">
-          Open or start a session to see its schema timeline.
+          Open or start a take to see what changed and what worked.
         </p>
       </div>
     );
@@ -196,13 +206,14 @@ export function SchemaTimeline({ sessionId }: { sessionId: string | null }) {
     <div className="schema-timeline">
       <header className="schema-timeline__toolbar">
         <div className="schema-timeline__title">
-          <strong>{schema?.name ?? "Session"}</strong>
-          <span className="schema-timeline__status">
-            {status === "loading"
-              ? "Loading…"
-              : status === "error"
-                ? "Error"
-                : `${changes.length} changes · ${moments.length} moments`}
+          <span className="schema-timeline__eyebrow">
+            {isRecording ? "Recording now" : "Viewing take"}
+          </span>
+          <strong>{takeTitle}</strong>
+          <span className="schema-timeline__status">{statusText}</span>
+          <span className="schema-timeline__context">
+            {projectContext ? `${projectContext} / ` : ""}
+            {session ? formatSessionDate(session.started_at_ms) : sessionId}
           </span>
         </div>
         <div className="schema-timeline__toolbar-actions">
@@ -211,7 +222,7 @@ export function SchemaTimeline({ sessionId }: { sessionId: string | null }) {
             className="schema-btn schema-btn--primary"
             onClick={() => setForm({ mode: "create", target: null, summary: "" })}
           >
-            + Create moment
+            Save moment
           </button>
           <button
             type="button"
@@ -224,24 +235,24 @@ export function SchemaTimeline({ sessionId }: { sessionId: string | null }) {
         </div>
       </header>
 
-      <div className="schema-timeline__control-strip" aria-label="Timeline filters">
+      <div className="schema-timeline__control-strip" aria-label="Captured sections">
         <div className="schema-timeline__filters">
-          {STREAM_FILTERS.map((item) => (
+          {WORKSPACE_MODES.map((item) => (
             <button
               key={item.id}
               type="button"
-              className={`schema-filter ${filter === item.id ? "is-active" : ""}`}
-              onClick={() => setFilter(item.id)}
+              className={`schema-filter ${workspaceMode === item.id ? "is-active" : ""}`}
+              onClick={() => setWorkspaceMode(item.id)}
             >
               {item.label}
             </button>
           ))}
         </div>
         <div className="schema-timeline__summary">
-          <span>{schemaStats.tracks} tracks</span>
-          <span>{schemaStats.devices} devices</span>
-          <span>{schemaStats.returns} returns</span>
-          <span>{schemaStats.missingBefore} need before</span>
+          <span><strong>{schemaStats.tracks}</strong> tracks</span>
+          <span><strong>{schemaStats.devices}</strong> devices</span>
+          <span><strong>{schemaStats.returns}</strong> returns</span>
+          <span><strong>{schemaStats.missingBefore}</strong> need before</span>
         </div>
       </div>
 
@@ -252,14 +263,26 @@ export function SchemaTimeline({ sessionId }: { sessionId: string | null }) {
           <EntityTree schema={schema} selection={selection} onSelect={setSelection} />
         ) : (
           <aside className="schema-pane schema-pane--tree">
+            <span className="schema-pane__kicker">Take map</span>
             <h2 className="schema-pane__title">Project</h2>
-            <p className="schema-empty">{status === "loading" ? "Loading…" : "No schema yet."}</p>
+            <p className="schema-empty">{status === "loading" ? "Loading..." : "Nothing captured yet."}</p>
           </aside>
         )}
 
         <section className="schema-pane schema-pane--stream">
-          <h2 className="schema-pane__title">Timeline</h2>
-          <SchemaStream stream={filteredStream} selection={selection} onSelect={setSelection} />
+          <span className="schema-pane__kicker">{workspaceKicker(workspaceMode)}</span>
+          <h2 className="schema-pane__title">{workspaceTitle(workspaceMode)}</h2>
+          {workspaceMode === "tracks" && schema ? (
+            <CapturedTracks schema={schema} selection={selection} onSelect={setSelection} />
+          ) : workspaceMode === "devices" && schema ? (
+            <CapturedDevices schema={schema} selection={selection} onSelect={setSelection} />
+          ) : workspaceMode === "moves" ? (
+            <SchemaStream stream={moveStream} selection={selection} onSelect={setSelection} />
+          ) : workspaceMode === "moments" ? (
+            <SchemaStream stream={momentStream} selection={selection} onSelect={setSelection} />
+          ) : (
+            <SchemaStream stream={stream} selection={selection} onSelect={setSelection} />
+          )}
         </section>
 
         {schema ? (
@@ -276,7 +299,8 @@ export function SchemaTimeline({ sessionId }: { sessionId: string | null }) {
           />
         ) : (
           <aside className="schema-pane schema-pane--detail">
-            <h2 className="schema-pane__title">Detail</h2>
+            <span className="schema-pane__kicker">What happened</span>
+            <h2 className="schema-pane__title">Details</h2>
           </aside>
         )}
       </div>
@@ -302,4 +326,128 @@ export function SchemaTimeline({ sessionId }: { sessionId: string | null }) {
       )}
     </div>
   );
+}
+
+function workspaceKicker(mode: WorkspaceMode): string {
+  if (mode === "tracks") return "Captured tracks";
+  if (mode === "devices") return "Captured devices";
+  if (mode === "moves") return "Captured moves";
+  if (mode === "moments") return "Saved moments";
+  return "Take timeline";
+}
+
+function workspaceTitle(mode: WorkspaceMode): string {
+  if (mode === "tracks") return "Track view";
+  if (mode === "devices") return "Device view";
+  if (mode === "moves") return "Knob moves";
+  if (mode === "moments") return "Moments";
+  return "What changed";
+}
+
+function CapturedTracks({
+  schema,
+  selection,
+  onSelect,
+}: {
+  schema: ProjectSchema;
+  selection: Selection | null;
+  onSelect: (selection: Selection) => void;
+}) {
+  if (schema.tracks.length === 0) {
+    return (
+      <div className="schema-stream-empty">
+        <h3>No tracks captured yet</h3>
+        <p>Run a scan from Ableton or select tracks while the bridge is connected.</p>
+      </div>
+    );
+  }
+
+  return (
+    <ol className="schema-section-list">
+      {schema.tracks.map((track) => (
+        <li key={track.id} className={selection?.kind === "track" && selection.id === track.id ? "is-selected" : ""}>
+          <button type="button" onClick={() => onSelect({ kind: "track", id: track.id })}>
+            <span className={`schema-badge schema-badge--${track.type}`}>{track.type}</span>
+            <span className="schema-section-list__body">
+              <strong>{track.name ?? "Untitled track"}</strong>
+              <small>{describeTrackCapture(track)}</small>
+            </span>
+          </button>
+        </li>
+      ))}
+    </ol>
+  );
+}
+
+function CapturedDevices({
+  schema,
+  selection,
+  onSelect,
+}: {
+  schema: ProjectSchema;
+  selection: Selection | null;
+  onSelect: (selection: Selection) => void;
+}) {
+  const devices = schema.tracks.flatMap((track) =>
+    track.devices.map((device) => ({ track, device })),
+  );
+
+  if (devices.length === 0) {
+    return (
+      <div className="schema-stream-empty">
+        <h3>No devices captured yet</h3>
+        <p>Select a track or run a deeper scan in Ableton to capture devices.</p>
+      </div>
+    );
+  }
+
+  return (
+    <ol className="schema-section-list">
+      {devices.map(({ track, device }) => (
+        <li key={device.id} className={selection?.kind === "device" && selection.id === device.id ? "is-selected" : ""}>
+          <button type="button" onClick={() => onSelect({ kind: "device", id: device.id })}>
+            <span className={`schema-badge schema-badge--${device.role}`}>{formatDeviceRole(device)}</span>
+            <span className="schema-section-list__body">
+              <strong>{device.name ?? "Device"}</strong>
+              <small>{track.name ?? "Untitled track"} / slot {device.chain_index + 1}</small>
+            </span>
+          </button>
+        </li>
+      ))}
+    </ol>
+  );
+}
+
+function describeTrackCapture(track: TrackObj): string {
+  const instruments = track.devices.filter((device) => device.role === "instrument").length;
+  const midiFx = track.devices.filter((device) => device.role === "midi_effect").length;
+  const audioFx = track.devices.filter((device) => device.role === "audio_effect").length;
+
+  if (track.type === "midi") {
+    return `${instruments} instrument / ${midiFx} MIDI FX / ${audioFx} audio FX`;
+  }
+
+  if (track.type === "return") {
+    return `${audioFx} audio FX / shared return`;
+  }
+
+  if (track.type === "group") {
+    return `${track.devices.length} group device(s)`;
+  }
+
+  return `${audioFx} audio FX`;
+}
+
+function formatDeviceRole(device: DeviceObj): string {
+  if (device.role === "midi_effect") return "MIDI FX";
+  if (device.role === "audio_effect") return "Audio FX";
+  return "Instrument";
+}
+
+function formatSessionDate(ms: number): string {
+  return new Date(ms).toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
 }

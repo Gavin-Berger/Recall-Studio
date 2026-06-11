@@ -43,7 +43,7 @@ outlets = 2;
 var PROTOCOL = "recall.v2";
 var SOURCE = "max_for_live";
 var DEVICE_ID = "recall-m4l-bridge-dev";
-var BRIDGE_VERSION = "0.11.0";
+var BRIDGE_VERSION = "0.12.0";
 
 // Canonical v2 flat fields. emit() lifts any of these from its `fields` arg up
 // to the TOP LEVEL of the packet, because the Rust normalizer reads canonical
@@ -51,6 +51,7 @@ var BRIDGE_VERSION = "0.11.0";
 // else stays in `payload` for debugging only.
 var CANONICAL_FIELDS = [
     "track_name",
+    "track_type",
     "device_name",
     "parameter_name",
     "parameter_value",
@@ -59,6 +60,8 @@ var CANONICAL_FIELDS = [
     "clip_name",
     "sample_name",
     "file_path",
+    "project_name",
+    "project_path",
     "device_chain",
     "bpm",
     "playing"
@@ -67,6 +70,7 @@ var CANONICAL_FIELDS = [
 var sequence = 0;
 var bridgeRunning = false;
 var deviceLoadedSent = false;
+var lastProjectContextFingerprint = null;
 
 // Capture toggles. Flip these at runtime by sending the matching message into
 // the js object (e.g. a [safe_mode] message box) so the crash can be isolated
@@ -220,6 +224,7 @@ function start_bridge() {
         status: "running"
     });
 
+    send_project_context_if_changed(true);
     heartbeat();
 
     heartbeatTask.cancel();
@@ -332,10 +337,16 @@ function bang() {
 }
 
 function heartbeat() {
+    var projectContext = collect_project_context();
     emit("heartbeat", "Heartbeat Received", "Heartbeat received from the Max for Live bridge.", {
         status: "alive",
         bridge_running: bridgeRunning,
-        bridge_version: BRIDGE_VERSION
+        bridge_version: BRIDGE_VERSION,
+        project_name: projectContext.project_name,
+        project_path: projectContext.project_path
+    }, {
+        project_name: projectContext.project_name,
+        project_path: projectContext.project_path
     });
 }
 
@@ -344,8 +355,55 @@ function heartbeat_tick() {
         return;
     }
 
+    send_project_context_if_changed(false);
     heartbeat();
     heartbeatTask.schedule(HEARTBEAT_INTERVAL_MS);
+}
+
+function collect_project_context() {
+    var liveSet = safe_path("live_set");
+
+    if (!liveSet) {
+        return {
+            available: false,
+            project_name: null,
+            project_path: null
+        };
+    }
+
+    var rawName = value_to_string(get_prop(liveSet, "name", null));
+    var rawPath = value_to_string(get_prop(liveSet, "file_path", null));
+    var nameFromPath = project_name_from_path(rawPath);
+    var projectName = rawName || nameFromPath;
+
+    return {
+        available: true,
+        project_name: projectName,
+        project_path: rawPath
+    };
+}
+
+function send_project_context_if_changed(force) {
+    var context = collect_project_context();
+    var nextFingerprint = fingerprint({
+        project_name: context.project_name,
+        project_path: context.project_path
+    });
+
+    if (!force && nextFingerprint === lastProjectContextFingerprint) {
+        return;
+    }
+
+    lastProjectContextFingerprint = nextFingerprint;
+
+    if (!context.project_name && !context.project_path) {
+        return;
+    }
+
+    emit("project_context", "Project Name Captured", "Ableton project name captured.", context, {
+        project_name: context.project_name,
+        project_path: context.project_path
+    });
 }
 
 function transport_tick() {
@@ -693,6 +751,21 @@ function device_role(device) {
     return "audio_effect";
 }
 
+// Classify a track for the app: group (foldable container), midi (accepts MIDI),
+// else audio. Return tracks live in a separate Live collection and are typed by the
+// app, so they never reach this helper.
+function track_type(track) {
+    if (value_to_bool(get_prop(track, "is_foldable", 0))) {
+        return "group";
+    }
+
+    if (value_to_bool(get_prop(track, "has_midi_input", 0))) {
+        return "midi";
+    }
+
+    return "audio";
+}
+
 function value_to_bool(value) {
     return Number(value) === 1 || value === true || value === "1";
 }
@@ -859,8 +932,8 @@ function detect_track_changes(currentTracks) {
         if (!lastTrackCacheById.hasOwnProperty(newId)) {
             var added = currentById[newId];
             emit("track_created", "Track Created", "A new track was created in Ableton.",
-                { track_name: added.name, track_index: added.index },
-                { track_name: added.name });
+                { track_name: added.name, track_index: added.index, track_type: added.track_type },
+                { track_name: added.name, track_type: added.track_type });
         }
     }
 
@@ -885,8 +958,8 @@ function detect_track_changes(currentTracks) {
         if (cur.name !== prev.name) {
             emit("track_name_changed", "Track Renamed",
                 "Track renamed from \"" + prev.name + "\" to \"" + cur.name + "\".",
-                { track_name: cur.name, previous_name: prev.name },
-                { track_name: cur.name });
+                { track_name: cur.name, previous_name: prev.name, track_type: cur.track_type },
+                { track_name: cur.name, track_type: cur.track_type });
         }
 
         if (cur.muted !== prev.muted) {
@@ -1019,7 +1092,8 @@ function collect_track_states(limit) {
             muted: value_to_bool(get_prop(track, "mute", 0)),
             solo: value_to_bool(get_prop(track, "solo", 0)),
             can_be_armed: canBeArmed,
-            arm: canBeArmed ? value_to_bool(get_prop(track, "arm", 0)) : false
+            arm: canBeArmed ? value_to_bool(get_prop(track, "arm", 0)) : false,
+            track_type: track_type(track)
         });
     }
 
@@ -1190,6 +1264,7 @@ function collect_track_focus_snapshot(trackIndex) {
         arm: canBeArmed ? value_to_bool(get_prop(track, "arm", 0)) : false,
         is_foldable: isFoldable,
         fold_state: isFoldable ? get_prop(track, "fold_state", null) : null,
+        has_midi_input: value_to_bool(get_prop(track, "has_midi_input", 0)),
         device_count: deviceCount,
         clip_slot_count: clipSlotCount,
         device_chain: build_device_chain(devices),
@@ -1671,6 +1746,16 @@ function basename(path) {
     var last = parts[parts.length - 1];
 
     return last && last.length > 0 ? last : null;
+}
+
+function project_name_from_path(path) {
+    var file = basename(path);
+
+    if (!file) {
+        return null;
+    }
+
+    return String(file).replace(/\.als$/i, "");
 }
 
 // ------------------------------------------------------------

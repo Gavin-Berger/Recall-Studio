@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import "./App.css";
 
@@ -6,21 +6,26 @@ import { AppShell } from "./components/AppShell";
 import type { AppSurface } from "./components/AppShell";
 import { ProductionCheatSheet } from "./components/ProductionCheatSheet";
 import { SchemaTimeline } from "./components/schema/SchemaTimeline";
-import { HomeScreen } from "./features/home/HomeScreen";
-import type { ConnectionStatus, SavedSessionMetadata } from "./types/recall";
+import { ProjectManagerScreen } from "./features/projects/ProjectManagerScreen";
+import { SessionRecapScreen } from "./features/projects/SessionRecapScreen";
+import type { ConnectionStatus, SavedProject, SavedSessionMetadata, SessionStatus } from "./types/recall";
 
 const BACKEND_CONNECTION_COMMAND = "get_connection_status";
 const BACKEND_LIST_SESSIONS_COMMAND = "list_saved_sessions";
-const BACKEND_START_NEW_SESSION_COMMAND = "start_new_session";
+const BACKEND_LIST_PROJECTS_COMMAND = "list_projects";
+const BACKEND_CREATE_PROJECT_COMMAND = "create_project";
+const BACKEND_RENAME_PROJECT_COMMAND = "rename_project";
+const BACKEND_ARCHIVE_PROJECT_COMMAND = "archive_project";
+const BACKEND_ASSIGN_SESSION_TO_PROJECT_COMMAND = "assign_session_to_project";
+const BACKEND_RENAME_CAPTURE_COMMAND = "rename_capture";
+const BACKEND_DELETE_CAPTURE_COMMAND = "delete_saved_session";
+const BACKEND_START_CAPTURE_FOR_PROJECT_COMMAND = "start_capture_for_project";
+const BACKEND_NEW_TAKE_FOR_PROJECT_COMMAND = "new_take_for_project";
 
 const POLL_INTERVAL_MS = 1000;
 
-// The milestone app is intentionally lean: a landing page, the schema-driven
-// timeline (which fetches its own normalized data per session), and the glossary.
-// The raw live-event stream and its derived/curated views were retired in favour
-// of the persisted schema projection the timeline renders.
 function App() {
-  const [surface, setSurface] = useState<AppSurface>("home");
+  const [surface, setSurface] = useState<AppSurface>("projects");
   const [connection, setConnection] = useState<ConnectionStatus>({
     connected: false,
     last_heartbeat_ms: null,
@@ -28,15 +33,45 @@ function App() {
     bridge_version: null,
   });
   const [savedSessions, setSavedSessions] = useState<SavedSessionMetadata[]>([]);
-  // The session the timeline is viewing. Null falls back to the active session.
-  const [timelineSessionId, setTimelineSessionId] = useState<string | null>(null);
+  const [savedProjects, setSavedProjects] = useState<SavedProject[]>([]);
+  const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
 
   const activeSession = useMemo(
     () => savedSessions.find((session) => session.ended_at_ms === null) ?? null,
     [savedSessions],
   );
 
-  const effectiveSessionId = timelineSessionId ?? activeSession?.id ?? null;
+  const effectiveSessionId = selectedSessionId ?? activeSession?.id ?? savedSessions[0]?.id ?? null;
+  const currentSession = useMemo(
+    () => savedSessions.find((session) => session.id === effectiveSessionId) ?? null,
+    [effectiveSessionId, savedSessions],
+  );
+  const unassignedSessions = useMemo(
+    () => savedSessions.filter((session) => !session.project_id),
+    [savedSessions],
+  );
+
+  const reloadProjects = useCallback(async () => {
+    const projects = await invoke<SavedProject[]>(BACKEND_LIST_PROJECTS_COMMAND, {
+      includeArchived: false,
+    });
+    setSavedProjects(projects);
+    return projects;
+  }, []);
+
+  const reloadLibrary = useCallback(async () => {
+    const [sessions, projects] = await Promise.all([
+      invoke<SavedSessionMetadata[]>(BACKEND_LIST_SESSIONS_COMMAND),
+      invoke<SavedProject[]>(BACKEND_LIST_PROJECTS_COMMAND, {
+        includeArchived: false,
+      }),
+    ]);
+
+    setSavedSessions(sessions);
+    setSavedProjects(projects);
+
+    return { sessions, projects };
+  }, []);
 
   useEffect(() => {
     let mounted = true;
@@ -67,12 +102,13 @@ function App() {
 
     async function refreshSavedSessions() {
       try {
-        const sessions = await invoke<SavedSessionMetadata[]>(
-          BACKEND_LIST_SESSIONS_COMMAND,
-        );
-        if (mounted) setSavedSessions(sessions);
+        const { sessions, projects } = await reloadLibrary();
+        if (mounted) {
+          setSavedSessions(sessions);
+          setSavedProjects(projects);
+        }
       } catch (error) {
-        console.error("Failed to list saved sessions:", error);
+        console.error("Failed to refresh projects and captures:", error);
       }
     }
 
@@ -83,31 +119,83 @@ function App() {
       mounted = false;
       window.clearInterval(interval);
     };
-  }, []);
+  }, [reloadLibrary]);
 
-  function handleOpenSession(sessionId: string) {
-    setTimelineSessionId(sessionId);
+  function handleOpenTimeline(sessionId?: string) {
+    setSelectedSessionId(sessionId ?? effectiveSessionId);
     setSurface("timeline");
   }
 
-  function handleOpenTimeline() {
-    setTimelineSessionId(activeSession?.id ?? null);
-    setSurface("timeline");
+  function handleOpenRecap(sessionId?: string) {
+    setSelectedSessionId(sessionId ?? effectiveSessionId);
+    setSurface("recap");
   }
 
-  async function handleStartNewSession() {
+  async function handleStartCapture(projectId?: string | null) {
     try {
-      await invoke(BACKEND_START_NEW_SESSION_COMMAND);
-      const sessions = await invoke<SavedSessionMetadata[]>(
-        BACKEND_LIST_SESSIONS_COMMAND,
-      );
-      setSavedSessions(sessions);
-      const nextActive =
-        sessions.find((session) => session.ended_at_ms === null) ?? null;
-      setTimelineSessionId(nextActive?.id ?? null);
+      const status = await invoke<SessionStatus>(BACKEND_START_CAPTURE_FOR_PROJECT_COMMAND, {
+        projectId: projectId ?? null,
+      });
+      await reloadLibrary();
+      setSelectedSessionId(status.session_id);
       setSurface("timeline");
     } catch (error) {
-      console.error("Failed to start a new session:", error);
+      console.error("Failed to start capture:", error);
+      throw error;
+    }
+  }
+
+  // Intentionally start a fresh take, even when the project already has one going.
+  async function handleNewTake(projectId?: string | null) {
+    try {
+      const status = await invoke<SessionStatus>(BACKEND_NEW_TAKE_FOR_PROJECT_COMMAND, {
+        projectId: projectId ?? null,
+      });
+      await reloadLibrary();
+      setSelectedSessionId(status.session_id);
+      setSurface("timeline");
+    } catch (error) {
+      console.error("Failed to start a new take:", error);
+      throw error;
+    }
+  }
+
+  async function handleCreateProject(displayName: string) {
+    await invoke(BACKEND_CREATE_PROJECT_COMMAND, { displayName });
+    await reloadProjects();
+  }
+
+  async function handleRenameProject(projectId: string, displayName: string) {
+    await invoke(BACKEND_RENAME_PROJECT_COMMAND, { projectId, displayName });
+    await reloadProjects();
+  }
+
+  async function handleArchiveProject(projectId: string) {
+    await invoke(BACKEND_ARCHIVE_PROJECT_COMMAND, { projectId });
+    const { sessions, projects } = await reloadLibrary();
+    setSavedSessions(sessions);
+    setSavedProjects(projects);
+  }
+
+  async function handleRenameCapture(sessionId: string, captureName: string) {
+    await invoke(BACKEND_RENAME_CAPTURE_COMMAND, { sessionId, captureName });
+    await reloadLibrary();
+  }
+
+  async function handleMoveCapture(sessionId: string, projectId: string | null) {
+    await invoke(BACKEND_ASSIGN_SESSION_TO_PROJECT_COMMAND, {
+      sessionId,
+      projectId,
+    });
+    await reloadLibrary();
+  }
+
+  async function handleDeleteCapture(sessionId: string) {
+    await invoke(BACKEND_DELETE_CAPTURE_COMMAND, { sessionId });
+    const { sessions } = await reloadLibrary();
+    const stillSelected = sessions.some((session) => session.id === selectedSessionId);
+    if (!stillSelected) {
+      setSelectedSessionId(sessions.find((session) => session.ended_at_ms === null)?.id ?? sessions[0]?.id ?? null);
     }
   }
 
@@ -116,17 +204,34 @@ function App() {
       surface={surface}
       onChangeSurface={setSurface}
       connected={connection.connected}
-      home={
-        <HomeScreen
+      projects={
+        <ProjectManagerScreen
           connection={connection}
-          sessions={savedSessions}
+          projects={savedProjects}
+          unassignedSessions={unassignedSessions}
           activeSession={activeSession}
-          onStartNewSession={handleStartNewSession}
+          selectedSessionId={effectiveSessionId}
+          onCreateProject={handleCreateProject}
+          onStartCapture={handleStartCapture}
+          onNewTake={handleNewTake}
           onOpenTimeline={handleOpenTimeline}
-          onOpenSession={handleOpenSession}
+          onOpenRecap={handleOpenRecap}
+          onRenameProject={handleRenameProject}
+          onArchiveProject={handleArchiveProject}
+          onRenameCapture={handleRenameCapture}
+          onMoveCapture={handleMoveCapture}
+          onDeleteCapture={handleDeleteCapture}
         />
       }
-      timeline={<SchemaTimeline sessionId={effectiveSessionId} />}
+      recap={
+        <SessionRecapScreen
+          sessionId={effectiveSessionId}
+          sessions={savedSessions}
+          onOpenTimeline={handleOpenTimeline}
+          onOpenProjects={() => setSurface("projects")}
+        />
+      }
+      timeline={<SchemaTimeline sessionId={effectiveSessionId} session={currentSession} />}
       glossary={<ProductionCheatSheet />}
     />
   );

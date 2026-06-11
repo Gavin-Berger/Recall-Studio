@@ -4,7 +4,9 @@ use crate::schema_projection::{
     DeviceObj, DeviceRole, ParameterChange, ParameterObj, ParsedParam, ParsedTrack, ProjectSchema,
     TrackObj, TrackType,
 };
-use crate::session::{SavedSession, SavedSessionEvent, SavedSessionMetadata, SessionStatus};
+use crate::session::{
+    SavedProject, SavedSession, SavedSessionEvent, SavedSessionMetadata, SessionStatus,
+};
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde::Serialize;
 use serde_json::Value;
@@ -54,6 +56,26 @@ fn now_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .expect("System time error")
         .as_millis() as u64
+}
+
+fn clean_optional(value: Option<&str>) -> Option<&str> {
+    value.map(str::trim).filter(|value| !value.is_empty())
+}
+
+fn project_name_from_path(path: &str) -> Option<String> {
+    Path::new(path)
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn fallback_project_display_name(project_name: Option<&str>, project_path: Option<&str>) -> String {
+    clean_optional(project_name)
+        .map(str::to_string)
+        .or_else(|| clean_optional(project_path).and_then(project_name_from_path))
+        .unwrap_or_else(|| "Untitled Ableton Set".to_string())
 }
 
 impl StorageState {
@@ -146,6 +168,15 @@ impl StorageState {
                 "
                 SELECT
                     sessions.id,
+                    sessions.project_id,
+                    sessions.capture_name,
+                    COALESCE(
+                        sessions.capture_status,
+                        CASE WHEN sessions.ended_at_ms IS NULL THEN 'active' ELSE 'complete' END
+                    ) AS capture_status,
+                    COALESCE(sessions.project_name, projects.ableton_name) AS project_name,
+                    COALESCE(sessions.project_path, projects.ableton_path) AS project_path,
+                    sessions.display_name,
                     sessions.started_at_ms,
                     sessions.ended_at_ms,
                     COALESCE(MAX(events.created_at_ms), sessions.created_at_ms) AS last_updated_at_ms,
@@ -154,7 +185,11 @@ impl StorageState {
                     SUM(CASE WHEN events.id IS NOT NULL AND events.event_type = 'heartbeat' THEN 1 ELSE 0 END) AS heartbeat_count
                 FROM sessions
                 LEFT JOIN events ON events.session_id = sessions.id
-                GROUP BY sessions.id, sessions.started_at_ms, sessions.ended_at_ms, sessions.created_at_ms
+                LEFT JOIN projects ON projects.id = sessions.project_id
+                GROUP BY sessions.id, sessions.project_id, sessions.capture_name, sessions.capture_status,
+                         sessions.project_name, sessions.project_path, projects.ableton_name, projects.ableton_path,
+                         sessions.display_name,
+                         sessions.started_at_ms, sessions.ended_at_ms, sessions.created_at_ms
                 ORDER BY last_updated_at_ms DESC
                 ",
             )
@@ -163,15 +198,32 @@ impl StorageState {
         let rows = statement
             .query_map([], |row| {
                 let id: String = row.get(0)?;
-                let started_at_ms = row.get::<_, i64>(1)? as u64;
-                let ended_at_ms = row.get::<_, Option<i64>>(2)?.map(|value| value as u64);
-                let last_updated_at_ms = row.get::<_, i64>(3)? as u64;
-                let event_count = row.get::<_, i64>(4)? as usize;
-                let creative_event_count = row.get::<_, Option<i64>>(5)?.unwrap_or(0) as usize;
-                let heartbeat_count = row.get::<_, Option<i64>>(6)?.unwrap_or(0) as usize;
+                let project_id = row.get::<_, Option<String>>(1)?;
+                let capture_name = row.get::<_, Option<String>>(2)?;
+                let capture_status = row.get::<_, String>(3)?;
+                let project_name = row.get::<_, Option<String>>(4)?;
+                let project_path = row.get::<_, Option<String>>(5)?;
+                let display_name = row.get::<_, Option<String>>(6)?;
+                let started_at_ms = row.get::<_, i64>(7)? as u64;
+                let ended_at_ms = row.get::<_, Option<i64>>(8)?.map(|value| value as u64);
+                let last_updated_at_ms = row.get::<_, i64>(9)? as u64;
+                let event_count = row.get::<_, i64>(10)? as usize;
+                let creative_event_count = row.get::<_, Option<i64>>(11)?.unwrap_or(0) as usize;
+                let heartbeat_count = row.get::<_, Option<i64>>(12)?.unwrap_or(0) as usize;
+                let name = capture_name
+                    .as_deref()
+                    .filter(|name| !name.trim().is_empty())
+                    .map(str::to_string)
+                    .unwrap_or_else(|| session_name(&id, started_at_ms));
 
                 Ok(SavedSessionMetadata {
-                    name: session_name(&id, started_at_ms),
+                    name,
+                    project_id,
+                    capture_name,
+                    capture_status,
+                    project_name,
+                    project_path,
+                    display_name,
                     id,
                     started_at_ms,
                     ended_at_ms,
@@ -277,7 +329,8 @@ impl StorageState {
                         .or_else(|| read_payload_string(pj, &["parameter", "parameter_name"])),
                     parameter_value: parameter_value
                         .or_else(|| read_payload_f64(pj, &["parameter_value", "value"])),
-                    clip_name: clip_name.or_else(|| read_payload_string(pj, &["clip_name", "clip"])),
+                    clip_name: clip_name
+                        .or_else(|| read_payload_string(pj, &["clip_name", "clip"])),
                     sample_name: sample_name
                         .or_else(|| read_payload_string(pj, &["sample_name", "sample"])),
                     file_path: file_path
@@ -300,6 +353,12 @@ impl StorageState {
         Ok(SavedSession {
             id: metadata.id,
             name: metadata.name,
+            project_id: metadata.project_id,
+            capture_name: metadata.capture_name,
+            capture_status: metadata.capture_status,
+            project_name: metadata.project_name,
+            project_path: metadata.project_path,
+            display_name: metadata.display_name,
             started_at_ms: metadata.started_at_ms,
             ended_at_ms: metadata.ended_at_ms,
             last_updated_at_ms: metadata.last_updated_at_ms,
@@ -316,26 +375,43 @@ impl StorageState {
             .transaction()
             .map_err(|error| format!("Failed to start session delete transaction: {}", error))?;
 
-        transaction
-            .execute(
-                "DELETE FROM events WHERE session_id = ?1",
-                params![session_id],
-            )
-            .map_err(|error| format!("Failed to delete session events: {}", error))?;
-
-        transaction
-            .execute(
+        let dependent_deletes = [
+            (
+                "moment targets",
+                "
+                DELETE FROM creative_moment_targets
+                WHERE moment_id IN (
+                    SELECT id FROM creative_moments WHERE session_id = ?1
+                )
+                ",
+            ),
+            (
+                "creative moments",
+                "DELETE FROM creative_moments WHERE session_id = ?1",
+            ),
+            (
+                "parameter changes",
+                "DELETE FROM parameter_changes WHERE session_id = ?1",
+            ),
+            ("parameters", "DELETE FROM parameters WHERE session_id = ?1"),
+            ("devices", "DELETE FROM devices WHERE session_id = ?1"),
+            ("tracks", "DELETE FROM tracks WHERE session_id = ?1"),
+            ("events", "DELETE FROM events WHERE session_id = ?1"),
+            (
+                "event curation",
                 "DELETE FROM event_curation WHERE session_id = ?1",
-                params![session_id],
-            )
-            .map_err(|error| format!("Failed to delete session curation: {}", error))?;
-
-        transaction
-            .execute(
+            ),
+            (
+                "session notes",
                 "DELETE FROM session_notes WHERE session_id = ?1",
-                params![session_id],
-            )
-            .map_err(|error| format!("Failed to delete session notes: {}", error))?;
+            ),
+        ];
+
+        for (label, sql) in dependent_deletes {
+            transaction
+                .execute(sql, params![session_id])
+                .map_err(|error| format!("Failed to delete session {label}: {error}"))?;
+        }
 
         let deleted_sessions = transaction
             .execute("DELETE FROM sessions WHERE id = ?1", params![session_id])
@@ -368,11 +444,12 @@ impl StorageState {
                 "
                 INSERT OR IGNORE INTO sessions (
                     id,
+                    capture_status,
                     started_at_ms,
                     ended_at_ms,
                     created_at_ms
                 )
-                VALUES (?1, ?2, NULL, ?3)
+                VALUES (?1, 'active', ?2, NULL, ?3)
                 ",
                 params![session_id, started_at_ms as i64, now_ms() as i64],
             )
@@ -396,12 +473,469 @@ impl StorageState {
             .execute(
                 "
                 UPDATE sessions
-                SET ended_at_ms = ?1
+                SET ended_at_ms = ?1,
+                    capture_status = 'complete'
                 WHERE id = ?2
                 ",
                 params![ended_at_ms as i64, session_id],
             )
             .map_err(|error| format!("Failed to save session stop: {}", error))?;
+
+        Ok(())
+    }
+
+    pub fn list_projects(&self, include_archived: bool) -> Result<Vec<SavedProject>, String> {
+        let captures = self.list_saved_sessions()?;
+        let mut captures_by_project: HashMap<String, Vec<SavedSessionMetadata>> = HashMap::new();
+        for capture in captures {
+            if let Some(project_id) = capture.project_id.clone() {
+                captures_by_project
+                    .entry(project_id)
+                    .or_default()
+                    .push(capture);
+            }
+        }
+
+        let connection = self.open_connection()?;
+        let mut statement = connection
+            .prepare(
+                "
+                SELECT id, display_name, ableton_name, ableton_path, archived_at_ms,
+                       created_at_ms, updated_at_ms
+                FROM projects
+                WHERE (?1 = 1 OR archived_at_ms IS NULL)
+                ORDER BY updated_at_ms DESC, created_at_ms DESC
+                ",
+            )
+            .map_err(|error| format!("Failed to prepare projects query: {}", error))?;
+
+        let rows = statement
+            .query_map(params![include_archived as i64], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, Option<i64>>(4)?.map(|value| value as u64),
+                    row.get::<_, i64>(5)? as u64,
+                    row.get::<_, i64>(6)? as u64,
+                ))
+            })
+            .map_err(|error| format!("Failed to read projects: {}", error))?;
+
+        let mut projects = Vec::new();
+        for row in rows {
+            let (
+                id,
+                display_name,
+                ableton_name,
+                ableton_path,
+                archived_at_ms,
+                created_at_ms,
+                updated_at_ms,
+            ) = row.map_err(|error| format!("Failed to collect project row: {}", error))?;
+
+            let mut project_captures = captures_by_project.remove(&id).unwrap_or_default();
+            project_captures.sort_by(|a, b| b.started_at_ms.cmp(&a.started_at_ms));
+
+            let capture_count = project_captures.len();
+            let active_capture_count = project_captures
+                .iter()
+                .filter(|capture| capture.ended_at_ms.is_none())
+                .count();
+            let last_updated_at_ms = project_captures
+                .iter()
+                .map(|capture| capture.last_updated_at_ms)
+                .max()
+                .unwrap_or(updated_at_ms);
+
+            projects.push(SavedProject {
+                id,
+                display_name,
+                ableton_name,
+                ableton_path,
+                archived_at_ms,
+                created_at_ms,
+                updated_at_ms,
+                last_updated_at_ms,
+                capture_count,
+                active_capture_count,
+                captures: project_captures,
+            });
+        }
+
+        projects.sort_by(|a, b| b.last_updated_at_ms.cmp(&a.last_updated_at_ms));
+        Ok(projects)
+    }
+
+    pub fn active_session_for_project(
+        &self,
+        project_id: Option<&str>,
+    ) -> Result<Option<SessionStatus>, String> {
+        let connection = self.open_connection()?;
+
+        // The IS NULL branch carries no bind parameter, so each branch passes its
+        // own params; the SQL string must be passed to query_row (was missing).
+        let row_to_status = |row: &rusqlite::Row<'_>| {
+            Ok(SessionStatus {
+                active: true,
+                session_id: Some(row.get::<_, String>(0)?),
+                started_at_ms: Some(row.get::<_, i64>(1)? as u64),
+                ended_at_ms: None,
+            })
+        };
+
+        let result = match project_id {
+            Some(project_id) => connection.query_row(
+                "
+                SELECT id, started_at_ms
+                FROM sessions
+                WHERE project_id = ?1 AND ended_at_ms IS NULL
+                ORDER BY started_at_ms DESC
+                LIMIT 1
+                ",
+                params![project_id],
+                row_to_status,
+            ),
+            None => connection.query_row(
+                "
+                SELECT id, started_at_ms
+                FROM sessions
+                WHERE project_id IS NULL AND ended_at_ms IS NULL
+                ORDER BY started_at_ms DESC
+                LIMIT 1
+                ",
+                [],
+                row_to_status,
+            ),
+        };
+
+        result
+            .optional()
+            .map_err(|error| format!("Failed to find active take: {}", error))
+    }
+
+    pub fn create_project(
+        &self,
+        display_name: &str,
+        ableton_name: Option<&str>,
+        ableton_path: Option<&str>,
+    ) -> Result<String, String> {
+        let clean_display_name = display_name.trim();
+        if clean_display_name.is_empty() {
+            return Err("Project name cannot be empty.".to_string());
+        }
+
+        let project_id = format!("project-{}", now_ms());
+        let now = now_ms() as i64;
+        let connection = self.open_connection()?;
+
+        connection
+            .execute(
+                "
+                INSERT INTO projects (
+                    id, display_name, ableton_name, ableton_path,
+                    archived_at_ms, created_at_ms, updated_at_ms
+                )
+                VALUES (?1, ?2, ?3, ?4, NULL, ?5, ?6)
+                ",
+                params![
+                    project_id,
+                    clean_display_name,
+                    clean_optional(ableton_name),
+                    clean_optional(ableton_path),
+                    now,
+                    now,
+                ],
+            )
+            .map_err(|error| format!("Failed to create project: {}", error))?;
+
+        Ok(project_id)
+    }
+
+    pub fn rename_project(&self, project_id: &str, display_name: &str) -> Result<(), String> {
+        let clean_display_name = display_name.trim();
+        if clean_display_name.is_empty() {
+            return Err("Project name cannot be empty.".to_string());
+        }
+
+        let connection = self.open_connection()?;
+        let updated = connection
+            .execute(
+                "
+                UPDATE projects
+                SET display_name = ?1, updated_at_ms = ?2
+                WHERE id = ?3
+                ",
+                params![clean_display_name, now_ms() as i64, project_id],
+            )
+            .map_err(|error| format!("Failed to rename project: {}", error))?;
+
+        if updated == 0 {
+            return Err(format!("Project not found: {}", project_id));
+        }
+
+        Ok(())
+    }
+
+    pub fn archive_project(&self, project_id: &str) -> Result<(), String> {
+        let connection = self.open_connection()?;
+        let active_captures = connection
+            .query_row(
+                "
+                SELECT COUNT(*)
+                FROM sessions
+                WHERE project_id = ?1 AND ended_at_ms IS NULL
+                ",
+                params![project_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(|error| format!("Failed to check active captures: {}", error))?;
+
+        if active_captures > 0 {
+            return Err("Stop the active capture before archiving this project.".to_string());
+        }
+
+        let now = now_ms() as i64;
+        let updated = connection
+            .execute(
+                "
+                UPDATE projects
+                SET archived_at_ms = ?1, updated_at_ms = ?2
+                WHERE id = ?3
+                ",
+                params![now, now, project_id],
+            )
+            .map_err(|error| format!("Failed to archive project: {}", error))?;
+
+        if updated == 0 {
+            return Err(format!("Project not found: {}", project_id));
+        }
+
+        Ok(())
+    }
+
+    pub fn assign_session_to_project(
+        &self,
+        session_id: &str,
+        project_id: Option<&str>,
+    ) -> Result<(), String> {
+        let connection = self.open_connection()?;
+        if let Some(project_id) = project_id {
+            let exists = connection
+                .query_row(
+                    "SELECT COUNT(*) FROM projects WHERE id = ?1 AND archived_at_ms IS NULL",
+                    params![project_id],
+                    |row| row.get::<_, i64>(0),
+                )
+                .map_err(|error| format!("Failed to check project: {}", error))?;
+            if exists == 0 {
+                return Err(format!("Project not found or archived: {}", project_id));
+            }
+        }
+
+        let updated = connection
+            .execute(
+                "
+                UPDATE sessions
+                SET project_id = ?1
+                WHERE id = ?2
+                ",
+                params![project_id, session_id],
+            )
+            .map_err(|error| format!("Failed to move capture: {}", error))?;
+
+        if updated == 0 {
+            return Err(format!("Saved session not found: {}", session_id));
+        }
+
+        Ok(())
+    }
+
+    pub fn rename_capture(&self, session_id: &str, capture_name: &str) -> Result<(), String> {
+        let clean_capture_name = capture_name.trim();
+        if clean_capture_name.is_empty() {
+            return Err("Capture name cannot be empty.".to_string());
+        }
+
+        let connection = self.open_connection()?;
+        let updated = connection
+            .execute(
+                "
+                UPDATE sessions
+                SET capture_name = ?1
+                WHERE id = ?2
+                ",
+                params![clean_capture_name, session_id],
+            )
+            .map_err(|error| format!("Failed to rename capture: {}", error))?;
+
+        if updated == 0 {
+            return Err(format!("Saved session not found: {}", session_id));
+        }
+
+        Ok(())
+    }
+
+    pub fn update_session_display_name(&self, session_id: &str, name: &str) -> Result<(), String> {
+        let trimmed = name.trim();
+        if trimmed.is_empty() {
+            return Err("Project name cannot be empty.".to_string());
+        }
+
+        let connection = self.open_connection()?;
+        let updated = connection
+            .execute(
+                "
+                UPDATE sessions
+                SET display_name = ?1
+                WHERE id = ?2
+                ",
+                params![trimmed, session_id],
+            )
+            .map_err(|error| format!("Failed to update project name: {}", error))?;
+
+        if updated == 0 {
+            return Err(format!("Saved session not found: {}", session_id));
+        }
+
+        Ok(())
+    }
+
+    pub fn remember_ableton_project(
+        &self,
+        session_id: &str,
+        project_name: Option<&str>,
+        project_path: Option<&str>,
+    ) -> Result<(), String> {
+        let clean_name = clean_optional(project_name);
+        let clean_path = clean_optional(project_path);
+
+        if clean_name.is_none() && clean_path.is_none() {
+            return Ok(());
+        }
+
+        let connection = self.open_connection()?;
+        let current_project_id = connection
+            .query_row(
+                "SELECT project_id FROM sessions WHERE id = ?1",
+                params![session_id],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .optional()
+            .map_err(|error| format!("Failed to read session project: {}", error))?
+            .flatten();
+
+        connection
+            .execute(
+                "
+                UPDATE sessions
+                SET
+                    project_name = COALESCE(?1, project_name),
+                    project_path = COALESCE(?2, project_path)
+                WHERE id = ?3
+                ",
+                params![clean_name, clean_path, session_id],
+            )
+            .map_err(|error| format!("Failed to remember Ableton project: {}", error))?;
+
+        if let Some(project_id) = current_project_id {
+            connection
+                .execute(
+                    "
+                    UPDATE projects
+                    SET
+                        ableton_name = COALESCE(ableton_name, ?1),
+                        ableton_path = COALESCE(ableton_path, ?2),
+                        updated_at_ms = ?3
+                    WHERE id = ?4
+                    ",
+                    params![clean_name, clean_path, now_ms() as i64, project_id],
+                )
+                .map_err(|error| format!("Failed to update project source: {}", error))?;
+
+            return Ok(());
+        }
+
+        let matched_project_id = if let Some(path) = clean_path {
+            connection
+                .query_row(
+                    "
+                    SELECT id FROM projects
+                    WHERE ableton_path = ?1 AND archived_at_ms IS NULL
+                    ORDER BY updated_at_ms DESC
+                    LIMIT 1
+                    ",
+                    params![path],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()
+                .map_err(|error| format!("Failed to match project path: {}", error))?
+        } else {
+            None
+        };
+
+        let matched_project_id = if matched_project_id.is_some() {
+            matched_project_id
+        } else if let Some(name) = clean_name {
+            connection
+                .query_row(
+                    "
+                    SELECT id FROM projects
+                    WHERE archived_at_ms IS NULL
+                      AND (ableton_name = ?1 OR display_name = ?1)
+                    ORDER BY updated_at_ms DESC
+                    LIMIT 1
+                    ",
+                    params![name],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()
+                .map_err(|error| format!("Failed to match project name: {}", error))?
+        } else {
+            None
+        };
+
+        let project_id = if let Some(project_id) = matched_project_id {
+            connection
+                .execute(
+                    "
+                    UPDATE projects
+                    SET
+                        ableton_name = COALESCE(ableton_name, ?1),
+                        ableton_path = COALESCE(ableton_path, ?2),
+                        updated_at_ms = ?3
+                    WHERE id = ?4
+                    ",
+                    params![clean_name, clean_path, now_ms() as i64, project_id],
+                )
+                .map_err(|error| format!("Failed to refresh matched project: {}", error))?;
+            project_id
+        } else {
+            let project_id = format!("project-{}", now_ms());
+            let now = now_ms() as i64;
+            let display_name = fallback_project_display_name(clean_name, clean_path);
+            connection
+                .execute(
+                    "
+                    INSERT INTO projects (
+                        id, display_name, ableton_name, ableton_path,
+                        archived_at_ms, created_at_ms, updated_at_ms
+                    )
+                    VALUES (?1, ?2, ?3, ?4, NULL, ?5, ?6)
+                    ",
+                    params![project_id, display_name, clean_name, clean_path, now, now],
+                )
+                .map_err(|error| format!("Failed to create detected project: {}", error))?;
+            project_id
+        };
+
+        connection
+            .execute(
+                "UPDATE sessions SET project_id = ?1 WHERE id = ?2 AND project_id IS NULL",
+                params![project_id, session_id],
+            )
+            .map_err(|error| format!("Failed to attach capture to project: {}", error))?;
 
         Ok(())
     }
@@ -661,10 +1195,7 @@ impl StorageState {
         let connection = self.open_connection()?;
 
         connection
-            .execute(
-                "DELETE FROM session_notes WHERE id = ?1",
-                params![note_id],
-            )
+            .execute("DELETE FROM session_notes WHERE id = ?1", params![note_id])
             .map_err(|error| format!("Failed to delete session note: {}", error))?;
 
         Ok(())
@@ -679,8 +1210,14 @@ impl StorageState {
     pub fn materialize_session_schema(&self, session_id: &str) -> Result<(), String> {
         let mut connection = self.open_connection()?;
 
-        // Read source data before opening the write transaction.
-        let tree = latest_session_tree(&connection, session_id)?;
+        // Read source data before opening the write transaction. Prefer a deep
+        // snapshot (richest: devices + parameters); when none has been captured yet,
+        // fall back to the incremental event stream so the tracks and devices the
+        // bridge already reported show up without waiting for a full scan.
+        let mut tree = latest_session_tree(&connection, session_id)?;
+        if tree.is_empty() {
+            tree = build_tree_from_events(&connection, session_id)?;
+        }
         let change_events = collect_change_events(&connection, session_id)?;
 
         let transaction = connection
@@ -710,7 +1247,7 @@ impl StorageState {
 
             transaction
                 .execute(
-                    "INSERT INTO tracks
+                    "INSERT OR IGNORE INTO tracks
                      (id, session_id, ableton_id, name, number, type, color, group_id, chain_index)
                      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, ?8)",
                     params![
@@ -751,7 +1288,7 @@ impl StorageState {
 
                 transaction
                     .execute(
-                        "INSERT INTO devices
+                        "INSERT OR IGNORE INTO devices
                          (id, session_id, track_id, ableton_id, name, role, vendor,
                           plugin_format, preset_name, chain_index, enabled)
                          VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, NULL, NULL, ?7, ?8)",
@@ -815,11 +1352,15 @@ impl StorageState {
                       before_value, after_value, unit, reason, changed_at_ms, source_event_id)
                      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
                 )
-                .map_err(|error| format!("Failed to prepare parameter_changes insert: {}", error))?;
+                .map_err(|error| {
+                    format!("Failed to prepare parameter_changes insert: {}", error)
+                })?;
 
             for change in &changes {
-                let source_event_id: Option<i64> =
-                    change.id.strip_prefix("pc::").and_then(|id| id.parse().ok());
+                let source_event_id: Option<i64> = change
+                    .id
+                    .strip_prefix("pc::")
+                    .and_then(|id| id.parse().ok());
 
                 statement
                     .execute(params![
@@ -1246,7 +1787,7 @@ fn insert_parameter(
 ) -> Result<(), String> {
     transaction
         .execute(
-            "INSERT INTO parameters
+            "INSERT OR IGNORE INTO parameters
              (id, session_id, device_id, parent_parameter_id, name, value, unit, min, max,
               normalized_value, chain_index)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, ?7, ?8, ?9, ?10)",
@@ -1291,7 +1832,10 @@ fn write_moment_targets(
 
 /// The most recent snapshot for a session, preferring a deep capture (tracks with
 /// devices) over a shallow one. Returns an empty tree if none exists.
-fn latest_session_tree(connection: &Connection, session_id: &str) -> Result<Vec<ParsedTrack>, String> {
+fn latest_session_tree(
+    connection: &Connection,
+    session_id: &str,
+) -> Result<Vec<ParsedTrack>, String> {
     let mut statement = connection
         .prepare(
             "SELECT payload FROM events
@@ -1325,6 +1869,190 @@ fn latest_session_tree(connection: &Connection, session_id: &str) -> Result<Vec<
     }
 
     Ok(fallback.unwrap_or_default())
+}
+
+/// Build a track/device tree from the incremental event stream, for when no deep
+/// snapshot exists yet. Uses the latest `selected_track_focus_snapshot` per track
+/// (rich: devices with roles + clips) and adds stubs for tracks that were created
+/// but never selected. Reuses `parse_session_tree` for typing/role derivation.
+fn build_tree_from_events(
+    connection: &Connection,
+    session_id: &str,
+) -> Result<Vec<ParsedTrack>, String> {
+    let mut statement = connection
+        .prepare(
+            "SELECT payload FROM events
+             WHERE session_id = ?1
+               AND event_type IN ('selected_track_focus_snapshot', 'selected_track_snapshot')
+               AND payload IS NOT NULL
+             ORDER BY timestamp_ms ASC, id ASC",
+        )
+        .map_err(|error| format!("Failed to prepare focus query: {}", error))?;
+
+    let payloads = statement
+        .query_map(params![session_id], |row| row.get::<_, String>(0))
+        .map_err(|error| format!("Failed to read focus snapshots: {}", error))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("Failed to collect focus snapshots: {}", error))?;
+
+    // Key by the track's Live id so a RENAME (same id, new name) collapses to one
+    // entry — keying by name would keep both names under the same id and then
+    // collide on the tracks.id primary key. A second pass keeps only the latest id
+    // holding each name, so delete/recreate and stale tracks don't show as dupes.
+    let mut order: Vec<String> = Vec::new();
+    let mut by_id: HashMap<String, Value> = HashMap::new();
+    let mut latest_id_for_name: HashMap<String, String> = HashMap::new();
+
+    for payload in payloads {
+        let Ok(track) = serde_json::from_str::<Value>(&payload) else {
+            continue;
+        };
+        if track.get("available").and_then(Value::as_bool) == Some(false) {
+            continue;
+        }
+        let id_key = track
+            .get("id")
+            .filter(|value| !value.is_null())
+            .map(|value| value.to_string())
+            .or_else(|| {
+                track
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .map(|name| name.to_string())
+            });
+        let Some(id_key) = id_key.filter(|value| !value.is_empty()) else {
+            continue;
+        };
+        if !by_id.contains_key(&id_key) {
+            order.push(id_key.clone());
+        }
+        by_id.insert(id_key.clone(), enrich_focus_track(&track));
+        if let Some(name) = track
+            .get("name")
+            .and_then(Value::as_str)
+            .filter(|n| !n.is_empty())
+        {
+            latest_id_for_name.insert(name.to_string(), id_key);
+        }
+    }
+
+    let mut tracks: Vec<Value> = Vec::new();
+    let mut seen_names: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for id_key in &order {
+        let track = &by_id[id_key];
+        if let Some(name) = track
+            .get("name")
+            .and_then(Value::as_str)
+            .filter(|n| !n.is_empty())
+        {
+            // Skip this id if a more recently seen id now owns the same name.
+            if latest_id_for_name.get(name).map(String::as_str) != Some(id_key.as_str()) {
+                continue;
+            }
+            seen_names.insert(name.to_string());
+        }
+        tracks.push(track.clone());
+    }
+
+    // Tracks created but never selected won't have a focus snapshot — add stubs so
+    // the track still appears, typed from the track_created event's track_type
+    // (bridge >= 0.12.0; older events default to audio).
+    let deleted = event_track_names(connection, session_id, "track_deleted")?;
+    let mut created_statement = connection
+        .prepare(
+            "SELECT track_name, track_type FROM events
+             WHERE session_id = ?1 AND event_type = 'track_created' AND track_name IS NOT NULL
+             ORDER BY timestamp_ms ASC, id ASC",
+        )
+        .map_err(|error| format!("Failed to prepare created-track query: {}", error))?;
+    let created = created_statement
+        .query_map(params![session_id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+        })
+        .map_err(|error| format!("Failed to read created tracks: {}", error))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("Failed to collect created tracks: {}", error))?;
+
+    let mut stubbed: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for (name, track_type) in created {
+        if deleted.contains(&name) || seen_names.contains(&name) || !stubbed.insert(name.clone()) {
+            continue;
+        }
+        let mut stub = serde_json::json!({ "name": name, "devices": [] });
+        match track_type.as_deref() {
+            Some("midi") => stub["has_midi_input"] = Value::Bool(true),
+            Some("group") => stub["is_foldable"] = Value::Bool(true),
+            _ => {}
+        }
+        tracks.push(stub);
+    }
+
+    Ok(parse_session_tree(&serde_json::json!({ "tracks": tracks })))
+}
+
+/// Inject `has_midi_input` when a focus-snapshot track carries an instrument or a
+/// MIDI clip, so `parse_session_tree` types it as MIDI (focus snapshots don't
+/// include the raw flag the deep snapshot does).
+fn enrich_focus_track(track: &Value) -> Value {
+    let has_instrument = track
+        .get("devices")
+        .and_then(Value::as_array)
+        .map(|devices| {
+            devices
+                .iter()
+                .any(|device| device.get("role").and_then(Value::as_str) == Some("instrument"))
+        })
+        .unwrap_or(false);
+
+    let has_midi_clip = track
+        .get("clips")
+        .and_then(Value::as_array)
+        .map(|clips| {
+            clips
+                .iter()
+                .any(|clip| json_truthy(clip.get("is_midi_clip")))
+        })
+        .unwrap_or(false);
+
+    let mut enriched = track.clone();
+    if (has_instrument || has_midi_clip) && enriched.get("has_midi_input").is_none() {
+        if let Value::Object(map) = &mut enriched {
+            map.insert("has_midi_input".to_string(), Value::Bool(true));
+        }
+    }
+    enriched
+}
+
+fn json_truthy(value: Option<&Value>) -> bool {
+    match value {
+        Some(Value::Bool(flag)) => *flag,
+        Some(Value::Number(number)) => number.as_i64() == Some(1),
+        _ => false,
+    }
+}
+
+/// Distinct, non-empty `track_name` values for a given event type in a session.
+fn event_track_names(
+    connection: &Connection,
+    session_id: &str,
+    event_type: &str,
+) -> Result<std::collections::HashSet<String>, String> {
+    let mut statement = connection
+        .prepare(
+            "SELECT DISTINCT track_name FROM events
+             WHERE session_id = ?1 AND event_type = ?2 AND track_name IS NOT NULL",
+        )
+        .map_err(|error| format!("Failed to prepare track-name query: {}", error))?;
+
+    let names = statement
+        .query_map(params![session_id, event_type], |row| {
+            row.get::<_, String>(0)
+        })
+        .map_err(|error| format!("Failed to read track names: {}", error))?
+        .collect::<Result<std::collections::HashSet<_>, _>>()
+        .map_err(|error| format!("Failed to collect track names: {}", error))?;
+
+    Ok(names)
 }
 
 fn collect_change_events(
@@ -1403,7 +2131,10 @@ fn load_parameters_by_device(
 
     let mut by_device: HashMap<String, Vec<ParamRow>> = HashMap::new();
     for row in rows {
-        by_device.entry(row.device_id.clone()).or_default().push(row);
+        by_device
+            .entry(row.device_id.clone())
+            .or_default()
+            .push(row);
     }
 
     let mut result = HashMap::new();
@@ -1487,11 +2218,37 @@ pub fn initialize_database(db_path: &Path) -> rusqlite::Result<()> {
         PRAGMA journal_mode = WAL;
         PRAGMA synchronous = NORMAL;
 
+        CREATE TABLE IF NOT EXISTS projects (
+            id TEXT PRIMARY KEY,
+            display_name TEXT NOT NULL,
+            ableton_name TEXT,
+            ableton_path TEXT,
+            archived_at_ms INTEGER,
+            created_at_ms INTEGER NOT NULL,
+            updated_at_ms INTEGER NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_projects_archived
+        ON projects(archived_at_ms);
+
+        CREATE INDEX IF NOT EXISTS idx_projects_ableton_path
+        ON projects(ableton_path);
+
+        CREATE INDEX IF NOT EXISTS idx_projects_ableton_name
+        ON projects(ableton_name);
+
         CREATE TABLE IF NOT EXISTS sessions (
             id TEXT PRIMARY KEY,
+            project_id TEXT,
+            capture_name TEXT,
+            capture_status TEXT,
+            project_name TEXT,
+            project_path TEXT,
+            display_name TEXT,
             started_at_ms INTEGER NOT NULL,
             ended_at_ms INTEGER,
-            created_at_ms INTEGER NOT NULL
+            created_at_ms INTEGER NOT NULL,
+            FOREIGN KEY(project_id) REFERENCES projects(id)
         );
 
         CREATE TABLE IF NOT EXISTS events (
@@ -1658,8 +2415,178 @@ pub fn initialize_database(db_path: &Path) -> rusqlite::Result<()> {
         ",
     )?;
 
-    // Bring older databases up to the current `events` schema.
+    // Bring older databases up to the current schema.
+    migrate_session_columns(&connection)?;
+    connection.execute_batch(
+        "
+        CREATE INDEX IF NOT EXISTS idx_sessions_project
+        ON sessions(project_id);
+        ",
+    )?;
     migrate_event_columns(&connection)?;
+    backfill_projects(&connection)?;
+
+    Ok(())
+}
+
+fn migrate_session_columns(connection: &Connection) -> rusqlite::Result<()> {
+    let existing: std::collections::HashSet<String> = {
+        let mut statement = connection.prepare("PRAGMA table_info(sessions)")?;
+        let names = statement.query_map([], |row| row.get::<_, String>(1))?;
+        names.collect::<rusqlite::Result<_>>()?
+    };
+
+    const COLUMNS: &[(&str, &str)] = &[
+        ("project_id", "TEXT"),
+        ("capture_name", "TEXT"),
+        ("capture_status", "TEXT"),
+        ("project_name", "TEXT"),
+        ("project_path", "TEXT"),
+        ("display_name", "TEXT"),
+    ];
+
+    for (name, sql_type) in COLUMNS {
+        if !existing.contains(*name) {
+            connection.execute_batch(&format!(
+                "ALTER TABLE sessions ADD COLUMN {name} {sql_type};"
+            ))?;
+        }
+    }
+
+    Ok(())
+}
+
+fn backfill_projects(connection: &Connection) -> rusqlite::Result<()> {
+    let sessions = {
+        let mut statement = connection.prepare(
+            "
+            SELECT id, project_name, project_path, display_name, started_at_ms, created_at_ms
+            FROM sessions
+            WHERE project_id IS NULL
+              AND (
+                (project_name IS NOT NULL AND TRIM(project_name) != '')
+                OR (project_path IS NOT NULL AND TRIM(project_path) != '')
+                OR (display_name IS NOT NULL AND TRIM(display_name) != '')
+              )
+            ORDER BY started_at_ms ASC
+            ",
+        )?;
+
+        let rows = statement.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, Option<String>>(3)?,
+                row.get::<_, i64>(4)?,
+                row.get::<_, i64>(5)?,
+            ))
+        })?;
+
+        rows.collect::<rusqlite::Result<Vec<_>>>()?
+    };
+
+    for (session_id, project_name, project_path, display_name, started_at_ms, created_at_ms) in
+        sessions
+    {
+        let clean_project_name = clean_optional(project_name.as_deref());
+        let clean_project_path = clean_optional(project_path.as_deref());
+        let clean_display_name = clean_optional(display_name.as_deref());
+
+        let matched_by_path = if let Some(path) = clean_project_path {
+            connection
+                .query_row(
+                    "
+                    SELECT id FROM projects
+                    WHERE ableton_path = ?1 AND archived_at_ms IS NULL
+                    ORDER BY updated_at_ms DESC
+                    LIMIT 1
+                    ",
+                    params![path],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?
+        } else {
+            None
+        };
+
+        let match_name = clean_project_name.or(clean_display_name);
+        let matched_project_id = if matched_by_path.is_some() {
+            matched_by_path
+        } else if let Some(name) = match_name {
+            connection
+                .query_row(
+                    "
+                    SELECT id FROM projects
+                    WHERE archived_at_ms IS NULL
+                      AND (ableton_name = ?1 OR display_name = ?1)
+                    ORDER BY updated_at_ms DESC
+                    LIMIT 1
+                    ",
+                    params![name],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?
+        } else {
+            None
+        };
+
+        let project_id = if let Some(project_id) = matched_project_id {
+            connection.execute(
+                "
+                UPDATE projects
+                SET
+                    ableton_name = COALESCE(ableton_name, ?1),
+                    ableton_path = COALESCE(ableton_path, ?2),
+                    updated_at_ms = MAX(updated_at_ms, ?3)
+                WHERE id = ?4
+                ",
+                params![
+                    clean_project_name,
+                    clean_project_path,
+                    created_at_ms,
+                    project_id
+                ],
+            )?;
+            project_id
+        } else {
+            let project_id = format!("project-{}-{}", started_at_ms, session_id);
+            let display = clean_display_name
+                .or(clean_project_name)
+                .map(str::to_string)
+                .or_else(|| clean_project_path.and_then(project_name_from_path))
+                .unwrap_or_else(|| "Untitled Ableton Set".to_string());
+            let created = if created_at_ms > 0 {
+                created_at_ms
+            } else {
+                now_ms() as i64
+            };
+
+            connection.execute(
+                "
+                INSERT OR IGNORE INTO projects (
+                    id, display_name, ableton_name, ableton_path,
+                    archived_at_ms, created_at_ms, updated_at_ms
+                )
+                VALUES (?1, ?2, ?3, ?4, NULL, ?5, ?6)
+                ",
+                params![
+                    project_id,
+                    display,
+                    clean_project_name,
+                    clean_project_path,
+                    created,
+                    created,
+                ],
+            )?;
+            project_id
+        };
+
+        connection.execute(
+            "UPDATE sessions SET project_id = ?1 WHERE id = ?2 AND project_id IS NULL",
+            params![project_id, session_id],
+        )?;
+    }
 
     Ok(())
 }
@@ -1697,7 +2624,8 @@ fn migrate_event_columns(connection: &Connection) -> rusqlite::Result<()> {
 
     for (name, sql_type) in COLUMNS {
         if !existing.contains(*name) {
-            connection.execute_batch(&format!("ALTER TABLE events ADD COLUMN {name} {sql_type};"))?;
+            connection
+                .execute_batch(&format!("ALTER TABLE events ADD COLUMN {name} {sql_type};"))?;
         }
     }
 
@@ -1760,6 +2688,8 @@ mod tests {
             clip_name: None,
             sample_name: None,
             file_path: None,
+            project_name: None,
+            project_path: None,
             device_chain: None,
             bpm: None,
             playing: None,
@@ -1793,11 +2723,187 @@ mod tests {
         // Every field came back from its first-class column, not payload digging.
         assert_eq!(event.track.as_deref(), Some("Vocals"));
         assert_eq!(event.track_type.as_deref(), Some("audio"));
-        assert_eq!(event.sample_name.as_deref(), Some("Deep_House_Vocal_120bpm.wav"));
-        assert_eq!(event.file_path.as_deref(), Some("C:/Splice/Deep_House_Vocal_120bpm.wav"));
+        assert_eq!(
+            event.sample_name.as_deref(),
+            Some("Deep_House_Vocal_120bpm.wav")
+        );
+        assert_eq!(
+            event.file_path.as_deref(),
+            Some("C:/Splice/Deep_House_Vocal_120bpm.wav")
+        );
         assert_eq!(event.device_chain.as_deref(), Some("Serum 2 : Saturator"));
         assert_eq!(event.bpm, Some(124.0));
         assert_eq!(event.playing, Some(true));
+
+        cleanup(&path);
+    }
+
+    #[test]
+    fn ableton_project_creates_project_without_renaming_capture() {
+        let (storage, path) = temp_storage();
+        let session = storage.resume_or_create_active_session().unwrap();
+        let session_id = session.session_id.clone().unwrap();
+
+        storage
+            .remember_ableton_project(
+                &session_id,
+                Some("Drum practice_128"),
+                Some("C:/Ableton/Drum practice_128.als"),
+            )
+            .unwrap();
+
+        let detected = storage
+            .list_saved_sessions()
+            .unwrap()
+            .into_iter()
+            .find(|session| session.id == session_id)
+            .unwrap();
+        assert!(detected.name.starts_with("Session "));
+        assert!(detected.project_id.is_some());
+        assert_eq!(detected.project_name.as_deref(), Some("Drum practice_128"));
+        assert_eq!(
+            detected.project_path.as_deref(),
+            Some("C:/Ableton/Drum practice_128.als")
+        );
+
+        let projects = storage.list_projects(false).unwrap();
+        assert_eq!(projects.len(), 1);
+        assert_eq!(projects[0].display_name, "Drum practice_128");
+        assert_eq!(
+            projects[0].ableton_name.as_deref(),
+            Some("Drum practice_128")
+        );
+        assert_eq!(projects[0].captures.len(), 1);
+        assert_eq!(projects[0].captures[0].id, session_id);
+
+        storage
+            .rename_capture(&session_id, "Verse sound check")
+            .unwrap();
+
+        let renamed = storage
+            .list_saved_sessions()
+            .unwrap()
+            .into_iter()
+            .find(|session| session.id == session_id)
+            .unwrap();
+        assert_eq!(renamed.name, "Verse sound check");
+        assert_eq!(renamed.capture_name.as_deref(), Some("Verse sound check"));
+
+        storage
+            .rename_project(
+                detected.project_id.as_deref().unwrap(),
+                "Drum Practice - Verse Ideas",
+            )
+            .unwrap();
+        let renamed_project = storage.list_projects(false).unwrap().remove(0);
+        assert_eq!(renamed_project.display_name, "Drum Practice - Verse Ideas");
+
+        cleanup(&path);
+    }
+
+    #[test]
+    fn delete_session_removes_timeline_schema_rows_first() {
+        let (storage, path) = temp_storage();
+        let session = storage.resume_or_create_active_session().unwrap();
+        let session_id = session.session_id.clone().unwrap();
+
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute_batch("PRAGMA foreign_keys = ON;")
+            .unwrap();
+        connection
+            .execute(
+                "
+                INSERT INTO tracks (
+                    id, session_id, ableton_id, name, number, type, color, group_id, chain_index
+                )
+                VALUES ('track-1', ?1, 'ableton-track-1', 'Bass', 1, 'midi', NULL, NULL, 0)
+                ",
+                params![session_id],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "
+                INSERT INTO devices (
+                    id, session_id, track_id, ableton_id, name, role, vendor,
+                    plugin_format, preset_name, chain_index, enabled
+                )
+                VALUES ('device-1', ?1, 'track-1', 'ableton-device-1', 'Serum', 'instrument',
+                        NULL, 'vst3', NULL, 0, 1)
+                ",
+                params![session_id],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "
+                INSERT INTO parameters (
+                    id, session_id, device_id, parent_parameter_id, name, value, unit,
+                    min, max, normalized_value, chain_index
+                )
+                VALUES ('parameter-1', ?1, 'device-1', NULL, 'Cutoff', 0.5, NULL,
+                        0.0, 1.0, 0.5, 0)
+                ",
+                params![session_id],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "
+                INSERT INTO parameter_changes (
+                    id, session_id, parameter_id, track_name, device_name, parameter_name,
+                    before_value, after_value, unit, reason, changed_at_ms, source_event_id
+                )
+                VALUES ('change-1', ?1, 'parameter-1', 'Bass', 'Serum', 'Cutoff',
+                        0.2, 0.5, NULL, NULL, 1234, NULL)
+                ",
+                params![session_id],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "
+                INSERT INTO creative_moments (
+                    id, session_id, title, type, timeline_start_ms, timeline_end_ms,
+                    note, tags, confidence, created_at_ms, updated_at_ms
+                )
+                VALUES ('moment-1', ?1, 'Nice bass', 'sound_design', NULL, NULL,
+                        NULL, '[]', 'rough', 1234, 1234)
+                ",
+                params![session_id],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "
+                INSERT INTO creative_moment_targets (moment_id, target_type, target_id)
+                VALUES ('moment-1', 'parameter', 'parameter-1')
+                ",
+                [],
+            )
+            .unwrap();
+        drop(connection);
+
+        storage.delete_session(&session_id).unwrap();
+
+        let connection = Connection::open(&path).unwrap();
+        for table in [
+            "sessions",
+            "tracks",
+            "devices",
+            "parameters",
+            "parameter_changes",
+            "creative_moments",
+            "creative_moment_targets",
+        ] {
+            let count: i64 = connection
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                    row.get(0)
+                })
+                .unwrap();
+            assert_eq!(count, 0, "{table} rows should be deleted");
+        }
 
         cleanup(&path);
     }
@@ -1880,14 +2986,102 @@ mod tests {
                 .unwrap()
         };
 
-        for expected in ["track_name", "track_type", "device_chain", "sample_name", "file_path", "bpm", "playing"] {
-            assert!(columns.contains(expected), "migration missing column: {expected}");
+        for expected in [
+            "track_name",
+            "track_type",
+            "device_chain",
+            "sample_name",
+            "file_path",
+            "bpm",
+            "playing",
+        ] {
+            assert!(
+                columns.contains(expected),
+                "migration missing column: {expected}"
+            );
         }
 
         // Running it again must be a harmless no-op (idempotent).
         migrate_event_columns(&connection).unwrap();
 
         drop(connection);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn migration_backfills_projects_from_legacy_session_names() {
+        let name = format!(
+            "recall-test-project-migrate-{}-{}.sqlite",
+            std::process::id(),
+            COUNTER.fetch_add(1, Ordering::Relaxed)
+        );
+        let path = std::env::temp_dir().join(name);
+        let _ = std::fs::remove_file(&path);
+
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute_batch(
+                "
+                CREATE TABLE sessions (
+                    id TEXT PRIMARY KEY,
+                    project_name TEXT,
+                    project_path TEXT,
+                    display_name TEXT,
+                    started_at_ms INTEGER NOT NULL,
+                    ended_at_ms INTEGER,
+                    created_at_ms INTEGER NOT NULL
+                );
+
+                CREATE TABLE events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT,
+                    protocol TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    event_type TEXT NOT NULL,
+                    timestamp_ms INTEGER NOT NULL,
+                    title TEXT NOT NULL,
+                    description TEXT NOT NULL,
+                    payload TEXT,
+                    created_at_ms INTEGER NOT NULL
+                );
+
+                INSERT INTO sessions (
+                    id, project_name, project_path, display_name,
+                    started_at_ms, ended_at_ms, created_at_ms
+                )
+                VALUES (
+                    'session-1000', 'Ableton Detected Name',
+                    'C:/Ableton/Song Version.als', 'Producer Rename',
+                    1000, 2000, 1000
+                );
+                ",
+            )
+            .unwrap();
+        drop(connection);
+
+        initialize_database(&path).unwrap();
+
+        let mut storage = StorageState::new();
+        storage.configure(path.clone());
+        let projects = storage.list_projects(false).unwrap();
+
+        assert_eq!(projects.len(), 1);
+        assert_eq!(projects[0].display_name, "Producer Rename");
+        assert_eq!(
+            projects[0].ableton_name.as_deref(),
+            Some("Ableton Detected Name")
+        );
+        assert_eq!(
+            projects[0].ableton_path.as_deref(),
+            Some("C:/Ableton/Song Version.als")
+        );
+        assert_eq!(projects[0].captures.len(), 1);
+        assert_eq!(projects[0].captures[0].id, "session-1000");
+        assert_eq!(
+            projects[0].captures[0].project_id.as_deref(),
+            Some(projects[0].id.as_str())
+        );
+
         cleanup(&path);
     }
 
@@ -1978,7 +3172,10 @@ mod tests {
         assert_eq!(changes.len(), 2);
         assert_eq!(changes[0].before_value, None);
         assert_eq!(changes[0].after_value, Some(0.2));
-        assert!(changes[0].parameter_id.is_some(), "change links to tree param");
+        assert!(
+            changes[0].parameter_id.is_some(),
+            "change links to tree param"
+        );
         assert_eq!(changes[1].before_value, Some(0.2));
         assert_eq!(changes[1].after_value, Some(0.5));
 
@@ -2028,6 +3225,117 @@ mod tests {
         assert_eq!(moments[0].confidence, "keeper");
         assert_eq!(moments[0].tags, vec!["bass".to_string()]);
         assert_eq!(moments[0].targets.len(), 1);
+
+        cleanup(&path);
+    }
+
+    #[test]
+    fn materialize_falls_back_to_event_stream_without_snapshot() {
+        let (storage, path) = temp_storage();
+        let session_id = storage
+            .resume_or_create_active_session()
+            .unwrap()
+            .session_id
+            .unwrap();
+
+        // A focus snapshot for a MIDI track (instrument present) — and NO deep snapshot.
+        let mut focus = event(&session_id, "selected_track_focus_snapshot");
+        focus.payload = Some(
+            serde_json::json!({
+                "available": true, "id": 5, "index": 0, "name": "Bass 1",
+                "devices": [
+                    { "id": 50, "name": "Synth", "role": "instrument", "is_active": true },
+                    { "id": 51, "name": "Sat", "role": "audio_effect", "is_active": true }
+                ],
+                "clips": []
+            })
+            .to_string(),
+        );
+
+        // A track created but never selected — should still appear as a stub, typed
+        // from the event's track_type (bridge >= 0.12.0).
+        let mut created = event(&session_id, "track_created");
+        created.track_name = Some("Drums".into());
+        created.track_type = Some("midi".into());
+
+        storage.save_events_batch(&[focus, created]).unwrap();
+        storage.materialize_session_schema(&session_id).unwrap();
+
+        let schema = storage.get_project_schema(&session_id).unwrap();
+        let names: Vec<String> = schema
+            .tracks
+            .iter()
+            .filter_map(|t| t.name.clone())
+            .collect();
+        assert!(names.contains(&"Bass 1".to_string()), "focus track present");
+        assert!(
+            names.contains(&"Drums".to_string()),
+            "created-only track present"
+        );
+
+        let drums = schema
+            .tracks
+            .iter()
+            .find(|t| t.name.as_deref() == Some("Drums"))
+            .unwrap();
+        assert_eq!(
+            drums.track_type,
+            TrackType::Midi,
+            "stub typed from event track_type"
+        );
+
+        let bass = schema
+            .tracks
+            .iter()
+            .find(|t| t.name.as_deref() == Some("Bass 1"))
+            .unwrap();
+        assert_eq!(bass.track_type, TrackType::Midi);
+        assert_eq!(bass.devices.len(), 2);
+        assert_eq!(bass.devices[0].role, DeviceRole::Instrument);
+
+        cleanup(&path);
+    }
+
+    #[test]
+    fn event_tree_collapses_renamed_track_without_id_collision() {
+        let (storage, path) = temp_storage();
+        let session_id = storage
+            .resume_or_create_active_session()
+            .unwrap()
+            .session_id
+            .unwrap();
+
+        // The same Live track (id 7) selected twice, renamed "MIDI" -> "Bass". Both
+        // focus snapshots share an id, which previously collided on tracks.id.
+        let mut first = event(&session_id, "selected_track_focus_snapshot");
+        first.timestamp_ms = 1_000;
+        first.payload = Some(
+            serde_json::json!({ "available": true, "id": 7, "index": 0, "name": "MIDI", "devices": [], "clips": [] })
+                .to_string(),
+        );
+        let mut second = event(&session_id, "selected_track_focus_snapshot");
+        second.timestamp_ms = 2_000;
+        second.payload = Some(
+            serde_json::json!({ "available": true, "id": 7, "index": 0, "name": "Bass", "devices": [], "clips": [] })
+                .to_string(),
+        );
+
+        storage.save_events_batch(&[first, second]).unwrap();
+        // Must not error with a UNIQUE constraint failure.
+        storage.materialize_session_schema(&session_id).unwrap();
+
+        let schema = storage.get_project_schema(&session_id).unwrap();
+        let matching: Vec<&str> = schema
+            .tracks
+            .iter()
+            .filter_map(|t| t.name.as_deref())
+            .filter(|n| *n == "MIDI" || *n == "Bass")
+            .collect();
+        assert_eq!(
+            matching,
+            vec!["Bass"],
+            "renamed track collapses to its latest name"
+        );
 
         cleanup(&path);
     }

@@ -8,16 +8,36 @@ reviewable timeline. Version control for music production, not just the final `.
 
 ## The idea
 
-A session becomes a browsable schema:
-
-```
-Project → Track (midi · audio · return · group)
-        → Device (instrument · midi FX · audio FX)
-        → Parameter
-```
-
-You pin **creative moments** (confidence: rough → working → keeper → final) onto the
+A session becomes a browsable schema — `Project → Track → Device → Parameter` — and you
+pin **creative moments** (confidence: rough → working → keeper → final) onto its
 timeline. The raw event log is the source of truth; the schema is rebuilt from it.
+
+## What it looks like
+
+The project, captured as a tree:
+
+```
+Group: Bass
+└─ Track 19 · Bass 1              [MIDI]
+   ├─ Serum         [Instrument]    Waveform: Sine · Cutoff: 22%
+   ├─ Saturator     [Audio FX]      Drive: 24% · Dry/Wet: 40%
+   └─ Pro-L 2       [Audio FX]      Modern limiting
+```
+
+The timeline — factual parameter changes interleaved with moments you pin:
+
+```
+00:04:12   Cutoff   18% → 22%         Serum · Bass 1
+00:05:01   ★ Found the bass tone      keeper
+00:07:33   Drive    0% → 24%          Saturator · Bass 1
+```
+
+## Tech stack
+
+- **Desktop:** Tauri v2 · React · TypeScript
+- **Backend:** Rust · SQLite (rusqlite) · UDP on `127.0.0.1:9000`
+- **Ableton:** Max for Live (Node for Max) · Recall Protocol v2 (JSON over UDP)
+- **Tooling:** Node · Cargo · Vitest
 
 ## Run
 

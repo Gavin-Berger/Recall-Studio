@@ -13,9 +13,9 @@ type NavItem = {
 };
 
 const NAV_ITEMS: NavItem[] = [
-  { id: "home", label: "Current Session", hint: "Live overview" },
-  { id: "timeline", label: "Timeline", hint: "Schema & moments" },
-  { id: "glossary", label: "Cheat Sheet", hint: "Producer glossary" },
+  { id: "home", label: "Project Schema", hint: "Bridge & sessions" },
+  { id: "timeline", label: "Timeline", hint: "Schema & memory" },
+  { id: "glossary", label: "Reference", hint: "Producer terms" },
 ];
 
 type AppShellProps = {

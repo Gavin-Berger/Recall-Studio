@@ -1,3 +1,4 @@
+import { useState } from "react";
 import {
   CONFIDENCE_LABEL,
   CONFIDENCE_ORDER,
@@ -42,10 +43,19 @@ export function EntityTree({
   onSelect: (selection: Selection) => void;
 }) {
   const { groups, ungrouped } = groupTracksByParent(schema);
+  const looseTracks = ungrouped.filter((track) => track.type !== "return");
+  const returnTracks = ungrouped.filter((track) => track.type === "return");
+  const deviceCount = schema.tracks.reduce((total, track) => total + track.devices.length, 0);
 
   return (
     <aside className="schema-pane schema-pane--tree">
       <h2 className="schema-pane__title">{schema.name}</h2>
+
+      <div className="schema-tree__overview" aria-label="Project schema summary">
+        <span>{schema.tracks.length} tracks</span>
+        <span>{deviceCount} devices</span>
+        <span>{returnTracks.length} returns</span>
+      </div>
 
       {!schema.has_snapshot && (
         <p className="schema-empty">
@@ -54,6 +64,7 @@ export function EntityTree({
         </p>
       )}
 
+      {groups.length > 0 && <p className="schema-tree__section-title">Groups</p>}
       {groups.map((group) => (
         <div key={group.group.id} className="schema-tree__group">
           <TrackNode track={group.group} selection={selection} onSelect={onSelect} />
@@ -70,9 +81,21 @@ export function EntityTree({
         </div>
       ))}
 
-      {ungrouped.map((track) => (
+      {looseTracks.length > 0 && <p className="schema-tree__section-title">Tracks</p>}
+      {looseTracks.map((track) => (
         <TrackNode key={track.id} track={track} selection={selection} onSelect={onSelect} />
       ))}
+
+      {returnTracks.length > 0 && <p className="schema-tree__section-title">Returns</p>}
+      {returnTracks.map((track) => (
+        <TrackNode key={track.id} track={track} selection={selection} onSelect={onSelect} />
+      ))}
+
+      <div className="schema-legend" aria-label="Device role legend">
+        <span className="schema-badge schema-badge--instrument">Instrument</span>
+        <span className="schema-badge schema-badge--midi_effect">MIDI FX</span>
+        <span className="schema-badge schema-badge--audio_effect">Audio FX</span>
+      </div>
     </aside>
   );
 }
@@ -98,7 +121,10 @@ function TrackNode({
         <span className={`schema-badge schema-badge--${track.type}`}>
           {TRACK_TYPE_LABEL[track.type]}
         </span>
-        <span className="schema-node__name">{track.name ?? "Untitled track"}</span>
+        <span className="schema-node__content">
+          <span className="schema-node__name">{track.name ?? "Untitled track"}</span>
+          <span className="schema-node__meta">{formatTrackMeta(track)}</span>
+        </span>
       </button>
 
       {track.type !== "group" && track.devices.length > 0 && (
@@ -139,12 +165,39 @@ function DeviceNode({
       <span className={`schema-badge schema-badge--${device.role}`}>
         {DEVICE_ROLE_LABEL[device.role]}
       </span>
-      <span className="schema-node__name">{device.name ?? "Device"}</span>
+      <span className="schema-node__content">
+        <span className="schema-node__name">{device.name ?? "Device"}</span>
+        <span className="schema-node__meta">{formatDeviceMeta(device)}</span>
+      </span>
     </button>
   );
 }
 
 // ── Center pane: chronological change + moment stream ────────────────────────
+
+function formatTrackMeta(track: TrackObj): string {
+  if (track.type === "midi") {
+    const hasInstrument = track.devices.some((device) => device.role === "instrument");
+    const midiFx = track.devices.filter((device) => device.role === "midi_effect").length;
+    const audioFx = track.devices.filter((device) => device.role === "audio_effect").length;
+    return `${hasInstrument ? "1 instrument" : "no instrument"} · ${midiFx} MIDI FX · ${audioFx} audio FX`;
+  }
+
+  if (track.type === "return") {
+    return `${track.devices.length} audio FX · shared return`;
+  }
+
+  if (track.type === "group") {
+    return `${track.devices.length} group device(s)`;
+  }
+
+  return `${track.devices.length} audio FX`;
+}
+
+function formatDeviceMeta(device: DeviceObj): string {
+  const parameterCount = countParams(device.parameters);
+  return `${parameterCount} parameter${parameterCount === 1 ? "" : "s"} · slot ${device.chain_index + 1}`;
+}
 
 export function SchemaStream({
   stream,
@@ -158,8 +211,8 @@ export function SchemaStream({
   if (stream.length === 0) {
     return (
       <p className="schema-empty">
-        No parameter changes or creative moments yet. As you tweak devices in
-        Ableton, changes appear here — pin the ones that matter as creative moments.
+        No matching schema events yet. Try another filter, or capture a deep
+        snapshot and tweak a device in Ableton.
       </p>
     );
   }
@@ -197,15 +250,22 @@ function ChangeRow({
   onSelect: () => void;
 }) {
   const context = formatChangeContext(change);
+  const needsBefore = change.before_value === null;
 
   return (
     <li className={`schema-row schema-row--change ${selected ? "is-selected" : ""}`}>
       <button type="button" className="schema-row__button" onClick={onSelect}>
         <span className="schema-row__time">{formatClock(change.changed_at_ms)}</span>
         <span className="schema-row__body">
+          <span className="schema-row__chips">
+            <span className="schema-chip schema-chip--mapped">Mapped schema</span>
+            <span className="schema-chip">Parameter</span>
+            {needsBefore && <span className="schema-chip schema-chip--needs-data">Needs before</span>}
+          </span>
           <span className="schema-row__headline">{formatParameterChange(change)}</span>
           {context && <span className="schema-row__context">{context}</span>}
         </span>
+        <BeforeAfterMini beforeValue={change.before_value} afterValue={change.after_value} />
       </button>
     </li>
   );
@@ -227,14 +287,42 @@ function MomentRow({
       <button type="button" className="schema-row__button" onClick={onSelect}>
         <span className="schema-row__time">{formatClock(at)}</span>
         <span className="schema-row__body">
-          <span className="schema-row__headline">★ {moment.title}</span>
+          <span className="schema-row__chips">
+            <span className="schema-chip schema-chip--mapped">Creative memory</span>
+            {moment.targets.length === 0 && (
+              <span className="schema-chip schema-chip--needs-data">Unlinked</span>
+            )}
+          </span>
+          <span className="schema-row__headline">{moment.title}</span>
           <span className="schema-row__context">
-            {MOMENT_TYPE_LABEL[moment.type]}
+            {MOMENT_TYPE_LABEL[moment.type]} · {moment.targets.length} target(s)
           </span>
         </span>
         <ConfidenceBadge confidence={moment.confidence} />
       </button>
     </li>
+  );
+}
+
+function BeforeAfterMini({
+  beforeValue,
+  afterValue,
+}: {
+  beforeValue: number | null;
+  afterValue: number | null;
+}) {
+  return (
+    <span className="schema-diff" aria-label="Before and after value">
+      <span className="schema-diff__value">
+        <small>Before</small>
+        <strong>{formatValue(beforeValue)}</strong>
+      </span>
+      <span className="schema-diff__arrow">-&gt;</span>
+      <span className="schema-diff__value">
+        <small>After</small>
+        <strong>{formatValue(afterValue)}</strong>
+      </span>
+    </span>
   );
 }
 
@@ -253,6 +341,7 @@ export function DetailPanel({
   changes,
   moments,
   selection,
+  onSelect,
   onPin,
   onEditMoment,
   onChangeConfidence,
@@ -262,6 +351,7 @@ export function DetailPanel({
   changes: ParameterChange[];
   moments: CreativeMoment[];
   selection: Selection | null;
+  onSelect: (selection: Selection) => void;
   onPin: (request: PinRequest) => void;
   onEditMoment: (moment: CreativeMoment) => void;
   onChangeConfidence: (moment: CreativeMoment, confidence: Confidence) => void;
@@ -298,6 +388,7 @@ export function DetailPanel({
               })
             }
           />
+          <AutoDocBlock text={buildTrackDoc(track)} />
         </div>
       );
     }
@@ -326,6 +417,7 @@ export function DetailPanel({
               })
             }
           />
+          <AutoDocBlock text={buildDeviceDoc(track, device)} />
         </div>
       );
     }
@@ -352,6 +444,7 @@ export function DetailPanel({
               })
             }
           />
+          <AutoDocBlock text={buildParameterDoc(device, parameter)} />
         </div>
       );
     }
@@ -368,6 +461,7 @@ export function DetailPanel({
             <Fact term="After" value={formatValue(change.after_value)} />
             <Fact term="At" value={formatClock(change.changed_at_ms)} />
           </dl>
+          <BeforeAfterDetail change={change} />
           <PinButton
             onClick={() =>
               onPin({
@@ -377,6 +471,7 @@ export function DetailPanel({
               })
             }
           />
+          <AutoDocBlock text={buildChangeDoc(change)} />
         </div>
       );
     }
@@ -413,6 +508,7 @@ export function DetailPanel({
           </div>
         )}
         <p className="detail__meta">{moment.targets.length} linked target(s)</p>
+        <TargetList targets={moment.targets} schema={schema} changes={changes} onSelect={onSelect} />
         <div className="detail__actions">
           <button type="button" className="schema-btn" onClick={() => onEditMoment(moment)}>
             Edit
@@ -425,13 +521,13 @@ export function DetailPanel({
             Delete
           </button>
         </div>
+        <AutoDocBlock text={buildMomentDoc(moment, schema, changes)} />
       </div>
     );
   }
 
-  function onSelectParam(_id: string) {
-    // Parameter selection from the detail list is a no-op hook for now; the value
-    // is already shown inline. Kept so the list rows are clickable-ready.
+  function onSelectParam(id: string) {
+    onSelect({ kind: "parameter", id });
   }
 
   function notFound() {
@@ -487,6 +583,194 @@ function PinButton({ onClick }: { onClick: () => void }) {
 }
 
 // ── lookups ──────────────────────────────────────────────────────────────────
+
+function BeforeAfterDetail({ change }: { change: ParameterChange }) {
+  return (
+    <section className="detail-diff" aria-label="Before and after value">
+      <div className="detail-diff__cell">
+        <span>Before</span>
+        <strong>{formatValue(change.before_value)}</strong>
+      </div>
+      <div className="detail-diff__arrow">-&gt;</div>
+      <div className="detail-diff__cell">
+        <span>After</span>
+        <strong>{formatValue(change.after_value)}</strong>
+      </div>
+      {change.before_value === null && (
+        <p className="detail-diff__note">Before value is not stored yet; this needs snapshot diff support.</p>
+      )}
+    </section>
+  );
+}
+
+function TargetList({
+  targets,
+  schema,
+  changes,
+  onSelect,
+}: {
+  targets: CreativeMomentTarget[];
+  schema: ProjectSchema;
+  changes: ParameterChange[];
+  onSelect: (selection: Selection) => void;
+}) {
+  if (targets.length === 0) {
+    return <p className="detail__meta">No schema targets linked yet.</p>;
+  }
+
+  return (
+    <div className="target-list" aria-label="Linked schema targets">
+      {targets.map((target) => {
+        const selection = targetToSelection(target);
+        return (
+          <button
+            key={`${target.target_type}:${target.target_id}`}
+            type="button"
+            className="target-pill"
+            disabled={!selection}
+            onClick={() => selection && onSelect(selection)}
+          >
+            <span>{target.target_type.replace("_", " ")}</span>
+            <strong>{describeTarget(target, schema, changes)}</strong>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function AutoDocBlock({ text }: { text: string }) {
+  const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
+
+  async function handleCopy() {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopyState("copied");
+      window.setTimeout(() => setCopyState("idle"), 1400);
+    } catch {
+      setCopyState("failed");
+      window.setTimeout(() => setCopyState("idle"), 1800);
+    }
+  }
+
+  return (
+    <section className="auto-doc">
+      <div className="auto-doc__head">
+        <span>Auto doc format</span>
+        <button type="button" className="schema-btn schema-btn--compact" onClick={handleCopy}>
+          {copyState === "copied" ? "Copied" : copyState === "failed" ? "Copy failed" : "Copy"}
+        </button>
+      </div>
+      <pre>{text}</pre>
+    </section>
+  );
+}
+
+function buildTrackDoc(track: TrackObj): string {
+  return [
+    `Track: ${track.name ?? "Untitled track"}`,
+    `Type: ${TRACK_TYPE_LABEL[track.type]}`,
+    `Number: ${track.number}`,
+    `Devices: ${track.devices.length}`,
+    "",
+    "Chain:",
+    ...track.devices.map(
+      (device) =>
+        `- [${DEVICE_ROLE_LABEL[device.role]}] ${device.name ?? "Device"} (${countParams(device.parameters)} params)`,
+    ),
+  ].join("\n");
+}
+
+function buildDeviceDoc(track: TrackObj, device: DeviceObj): string {
+  return [
+    `Device: ${device.name ?? "Device"}`,
+    `Role: ${DEVICE_ROLE_LABEL[device.role]}`,
+    `Track: ${track.name ?? "Untitled track"}`,
+    `Enabled: ${device.enabled ? "Yes" : "No"}`,
+    `Chain slot: ${device.chain_index + 1}`,
+    `Parameters: ${countParams(device.parameters)}`,
+  ].join("\n");
+}
+
+function buildParameterDoc(device: DeviceObj, parameter: ParameterObj): string {
+  return [
+    `Parameter: ${parameter.name ?? "Parameter"}`,
+    `Device: ${device.name ?? "Device"}`,
+    `Current value: ${formatValue(parameter.value)}`,
+    `Range: ${parameter.min !== null && parameter.max !== null ? `${formatValue(parameter.min)} to ${formatValue(parameter.max)}` : "Unknown"}`,
+    `Nested children: ${parameter.children.length}`,
+  ].join("\n");
+}
+
+function buildChangeDoc(change: ParameterChange): string {
+  return [
+    "Parameter Change",
+    `Context: ${formatChangeContext(change) || "Unknown"}`,
+    `Parameter: ${change.parameter_name ?? "Parameter"}`,
+    `Before: ${formatValue(change.before_value)}`,
+    `After: ${formatValue(change.after_value)}`,
+    `At: ${formatClock(change.changed_at_ms)}`,
+    `Status: ${change.before_value === null ? "Needs before_value" : "Ready"}`,
+  ].join("\n");
+}
+
+function buildMomentDoc(
+  moment: CreativeMoment,
+  schema: ProjectSchema,
+  changes: ParameterChange[],
+): string {
+  return [
+    `Creative Moment: ${moment.title}`,
+    `Type: ${MOMENT_TYPE_LABEL[moment.type]}`,
+    `Confidence: ${CONFIDENCE_LABEL[moment.confidence]}`,
+    `When: ${formatClock(moment.timeline_start_ms ?? moment.created_at_ms)}`,
+    "",
+    "Targets:",
+    ...(moment.targets.length > 0
+      ? moment.targets.map((target) => `- ${describeTarget(target, schema, changes)}`)
+      : ["- No linked targets"]),
+    "",
+    `Note: ${moment.note || "No note yet."}`,
+    `Tags: ${moment.tags.length > 0 ? moment.tags.map((tag) => `#${tag}`).join(" ") : "None"}`,
+  ].join("\n");
+}
+
+function targetToSelection(target: CreativeMomentTarget): Selection | null {
+  if (target.target_type === "track") return { kind: "track", id: target.target_id };
+  if (target.target_type === "device") return { kind: "device", id: target.target_id };
+  if (target.target_type === "parameter") return { kind: "parameter", id: target.target_id };
+  if (target.target_type === "parameter_change") return { kind: "change", id: target.target_id };
+  return null;
+}
+
+function describeTarget(
+  target: CreativeMomentTarget,
+  schema: ProjectSchema,
+  changes: ParameterChange[],
+): string {
+  if (target.target_type === "track") {
+    return findTrack(schema, target.target_id)?.name ?? "Unknown track";
+  }
+
+  if (target.target_type === "device") {
+    const found = findDevice(schema, target.target_id);
+    return found ? `${found.device.name ?? "Device"} on ${found.track.name ?? "track"}` : "Unknown device";
+  }
+
+  if (target.target_type === "parameter") {
+    const found = findParameter(schema, target.target_id);
+    return found
+      ? `${found.parameter.name ?? "Parameter"} on ${found.device.name ?? "device"}`
+      : "Unknown parameter";
+  }
+
+  if (target.target_type === "parameter_change") {
+    const change = changes.find((candidate) => candidate.id === target.target_id);
+    return change ? formatParameterChange(change) : "Unknown parameter change";
+  }
+
+  return "Clip target";
+}
 
 function findTrack(schema: ProjectSchema, id: string): TrackObj | null {
   return schema.tracks.find((track) => track.id === id) ?? null;

@@ -28,7 +28,7 @@ export function HomeScreen({
           <RecallMark />
           <div>
             <h1>Recall Studio</h1>
-            <p>Session memory for Ableton Live</p>
+            <p>Schema timeline for Ableton decisions</p>
           </div>
         </div>
 
@@ -45,6 +45,40 @@ export function HomeScreen({
       </header>
 
       <div className="home-screen__body">
+        <section className="home-project">
+          <div className="home-project__copy">
+            <span className="eyebrow">Current milestone</span>
+            <h2>Tracks, devices, parameters, and creative memory in one timeline.</h2>
+            <p>
+              Recall Studio is being shaped around a normalized Ableton schema:
+              track identity, device roles, parameter changes, return tracks,
+              and producer-authored creative moments.
+            </p>
+          </div>
+          <div className="home-project__map" aria-label="Recall Studio schema map">
+            <span>Project</span>
+            <strong>Track_obj</strong>
+            <strong>Device_obj</strong>
+            <strong>Parameter_obj</strong>
+            <strong>CreativeMoment_obj</strong>
+          </div>
+        </section>
+
+        <section className="home-milestones" aria-label="Schema timeline focus">
+          <div>
+            <span>Frontend focus</span>
+            <strong>Schema timeline only</strong>
+          </div>
+          <div>
+            <span>Data focus</span>
+            <strong>Normalized IDs and roles</strong>
+          </div>
+          <div>
+            <span>Memory focus</span>
+            <strong>Before/after decisions</strong>
+          </div>
+        </section>
+
         <BridgeSetup connection={connection} />
 
         {activeSession && (

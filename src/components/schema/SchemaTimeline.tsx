@@ -25,9 +25,19 @@ import type { Selection } from "./selection";
 
 type LoadStatus = "idle" | "loading" | "ready" | "error";
 
+type StreamFilter = "schema" | "changes" | "moments" | "routing" | "needs_before";
+
 type FormState =
   | { mode: "create"; target: CreativeMomentTarget | null; summary: string; startMs?: number }
   | { mode: "edit"; moment: CreativeMoment };
+
+const STREAM_FILTERS: Array<{ id: StreamFilter; label: string }> = [
+  { id: "schema", label: "Schema only" },
+  { id: "changes", label: "Parameter changes" },
+  { id: "moments", label: "Creative moments" },
+  { id: "routing", label: "Routing" },
+  { id: "needs_before", label: "Needs before" },
+];
 
 export function SchemaTimeline({ sessionId }: { sessionId: string | null }) {
   const [schema, setSchema] = useState<ProjectSchema | null>(null);
@@ -37,6 +47,7 @@ export function SchemaTimeline({ sessionId }: { sessionId: string | null }) {
   const [error, setError] = useState<string | null>(null);
   const [selection, setSelection] = useState<Selection | null>(null);
   const [form, setForm] = useState<FormState | null>(null);
+  const [filter, setFilter] = useState<StreamFilter>("schema");
 
   const load = useCallback(
     async (rematerialize: boolean) => {
@@ -80,6 +91,25 @@ export function SchemaTimeline({ sessionId }: { sessionId: string | null }) {
   }, [sessionId]);
 
   const stream = useMemo(() => buildSchemaStream(changes, moments), [changes, moments]);
+  const filteredStream = useMemo(
+    () =>
+      stream.filter((item) => {
+        if (filter === "schema") return true;
+        if (filter === "changes") return item.kind === "change";
+        if (filter === "moments") return item.kind === "moment";
+        if (filter === "routing") return item.kind === "moment" && item.moment.type === "routing";
+        return item.kind === "change" && item.change.before_value === null;
+      }),
+    [filter, stream],
+  );
+
+  const schemaStats = useMemo(() => {
+    const tracks = schema?.tracks.length ?? 0;
+    const devices = schema?.tracks.reduce((total, track) => total + track.devices.length, 0) ?? 0;
+    const returns = schema?.tracks.filter((track) => track.type === "return").length ?? 0;
+    const missingBefore = changes.filter((change) => change.before_value === null).length;
+    return { tracks, devices, returns, missingBefore };
+  }, [changes, schema]);
 
   function handlePin(request: PinRequest) {
     setForm({ mode: "create", target: request.target, summary: request.summary, startMs: request.startMs });
@@ -194,6 +224,27 @@ export function SchemaTimeline({ sessionId }: { sessionId: string | null }) {
         </div>
       </header>
 
+      <div className="schema-timeline__control-strip" aria-label="Timeline filters">
+        <div className="schema-timeline__filters">
+          {STREAM_FILTERS.map((item) => (
+            <button
+              key={item.id}
+              type="button"
+              className={`schema-filter ${filter === item.id ? "is-active" : ""}`}
+              onClick={() => setFilter(item.id)}
+            >
+              {item.label}
+            </button>
+          ))}
+        </div>
+        <div className="schema-timeline__summary">
+          <span>{schemaStats.tracks} tracks</span>
+          <span>{schemaStats.devices} devices</span>
+          <span>{schemaStats.returns} returns</span>
+          <span>{schemaStats.missingBefore} need before</span>
+        </div>
+      </div>
+
       {error && <div className="schema-timeline__error">{error}</div>}
 
       <div className="schema-timeline__panes">
@@ -208,7 +259,7 @@ export function SchemaTimeline({ sessionId }: { sessionId: string | null }) {
 
         <section className="schema-pane schema-pane--stream">
           <h2 className="schema-pane__title">Timeline</h2>
-          <SchemaStream stream={stream} selection={selection} onSelect={setSelection} />
+          <SchemaStream stream={filteredStream} selection={selection} onSelect={setSelection} />
         </section>
 
         {schema ? (
@@ -217,6 +268,7 @@ export function SchemaTimeline({ sessionId }: { sessionId: string | null }) {
             changes={changes}
             moments={moments}
             selection={selection}
+            onSelect={setSelection}
             onPin={handlePin}
             onEditMoment={(moment) => setForm({ mode: "edit", moment })}
             onChangeConfidence={handleChangeConfidence}

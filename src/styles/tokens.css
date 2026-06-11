@@ -1,28 +1,28 @@
 :root {
-  --ink: #0b0b0a;
-  --ink-2: #11100e;
-  --paper: #f0e8d9;
-  --paper-strong: #fff9ec;
-  --muted: #9d9487;
-  --faint: #665f55;
-  --panel: #171511;
-  --panel-2: #1e1b16;
-  --panel-3: #26221b;
-  --line: #343029;
-  --line-soft: #29251f;
+  --ink: #0b0e18;
+  --ink-2: #10131f;
+  --paper: #d8dcef;
+  --paper-strong: #f4f6ff;
+  --muted: #8b90a3;
+  --faint: #636a82;
+  --panel: #14161f;
+  --panel-2: #191c27;
+  --panel-3: #202432;
+  --line: #2a3041;
+  --line-soft: #222838;
 
-  --oxide: #c56f4d;
-  --sage: #7f927e;
-  --brass: #c7a968;
-  --smoke: #8d918b;
-  --danger: #b45c50;
+  --oxide: #9c88ff;
+  --sage: #5ab4a0;
+  --brass: #6382ff;
+  --smoke: #8b90a3;
+  --danger: #dc5a6a;
 
-  --track: #c7a968;
-  --device: #c56f4d;
-  --parameter: #d0bc79;
-  --clip: #9f9271;
-  --transport: #8d918b;
-  --session: #a56856;
+  --track: #6382ff;
+  --device: #9c88ff;
+  --parameter: #5ab4a0;
+  --clip: #aaccf0;
+  --transport: #f0cfa0;
+  --session: #ffd98a;
 
   --radius: 10px;
   --radius-sm: 6px;
@@ -44,7 +44,7 @@ body {
   margin: 0;
   color: var(--paper);
   background:
-    linear-gradient(180deg, #0b0b0a 0%, #11100e 48%, #090908 100%),
+    linear-gradient(180deg, #0b0e18 0%, #10131f 48%, #080b13 100%),
     var(--ink);
 }
 

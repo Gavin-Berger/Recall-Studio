@@ -65,8 +65,8 @@ export function BridgeSetup({ connection }: BridgeSetupProps) {
     <section className="bridge-setup">
       <header className="bridge-setup__header">
         <div>
-          <span className="eyebrow">Ableton Bridge</span>
-          <h2>The Max for Live device that feeds Recall Studio</h2>
+          <span className="eyebrow">Ableton to schema</span>
+          <h2>The Max for Live bridge feeds the normalized timeline.</h2>
         </div>
         <div className="bridge-setup__versions">
           {shippedVersion && (
@@ -86,19 +86,19 @@ export function BridgeSetup({ connection }: BridgeSetupProps) {
 
       <div className="bridge-setup__columns">
         <div className="bridge-setup__block">
-          <h3>What it needs</h3>
+          <h3>Pipeline</h3>
           <ul className="bridge-setup__list">
-            <li>Ableton Live with Max for Live (Suite, or Live + Max add-on).</li>
-            <li>This Recall Studio app running — it listens on localhost:9000.</li>
-            <li>The device added to a track, then "start bridge" clicked.</li>
+            <li>Ableton sends track, device, and parameter observations.</li>
+            <li>Rust normalizes useful events into the Recall Studio schema.</li>
+            <li>The frontend renders the stored schema as a creative timeline.</li>
           </ul>
         </div>
 
         <div className="bridge-setup__block">
           <h3>Install</h3>
           <p className="bridge-setup__hint">
-            Drops the device into your Ableton User Library. Path auto-detected —
-            edit it if your Library lives elsewhere.
+            Drops the bridge device into your Ableton User Library. Path
+            auto-detected; edit it if your Library lives elsewhere.
           </p>
           <label className="bridge-setup__field">
             <span>Ableton User Library</span>
@@ -131,23 +131,23 @@ export function BridgeSetup({ connection }: BridgeSetupProps) {
       </div>
 
       <div className="bridge-setup__notes">
-        <h3>Good to know</h3>
+        <h3>Schema focus</h3>
         <ul className="bridge-setup__list">
           <li>
-            <strong>Today it's a MIDI Effect</strong> — Live only allows it on
-            MIDI tracks. A master-chain Audio Effect version is coming.
+            <strong>Device roles matter</strong>: instrument, MIDI effect, and
+            audio effect are displayed separately in the timeline.
           </li>
           <li>
-            It reads Live via the Max LiveAPI and never touches your audio — no
-            coloration, no signal processing.
+            Raw Ableton data is only evidence; the app view is the normalized
+            Recall Studio schema.
           </li>
           <li>
-            Raw telemetry is always preserved; your notes and edits are a layer
-            on top, never overwriting the capture.
+            Creative moments sit on top of tracks, devices, parameters, and
+            before/after changes.
           </li>
           <li>
-            After adding the device, click <strong>start bridge</strong> inside
-            it to begin streaming.
+            The current milestone is clarity: store the schema and make the
+            timeline easy to read.
           </li>
         </ul>
       </div>

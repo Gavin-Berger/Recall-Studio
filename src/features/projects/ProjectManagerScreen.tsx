@@ -9,6 +9,7 @@ type ProjectManagerScreenProps = {
   unassignedSessions: SavedSessionMetadata[];
   activeSession: SavedSessionMetadata | null;
   selectedSessionId: string | null;
+  loading?: boolean;
   onCreateProject: (displayName: string) => Promise<void>;
   onStartCapture: (projectId?: string | null) => Promise<void>;
   onNewTake: (projectId?: string | null) => Promise<void>;
@@ -27,6 +28,7 @@ export function ProjectManagerScreen({
   unassignedSessions,
   activeSession,
   selectedSessionId,
+  loading = false,
   onCreateProject,
   onStartCapture,
   onNewTake,
@@ -41,6 +43,7 @@ export function ProjectManagerScreen({
   const [newProjectName, setNewProjectName] = useState("");
   const [busyLabel, setBusyLabel] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const isBusy = busyLabel !== null || loading;
 
   const allCaptures = useMemo(
     () => projects.flatMap((project) => project.captures).concat(unassignedSessions),
@@ -66,11 +69,11 @@ export function ProjectManagerScreen({
     event.preventDefault();
     const name = newProjectName.trim();
     if (!name) {
-      setError("Name the project first.");
+      setError("Give this project a name first.");
       return;
     }
 
-    void runAction("Creating project...", async () => {
+    void runAction("Adding project...", async () => {
       await onCreateProject(name);
       setNewProjectName("");
     });
@@ -84,7 +87,7 @@ export function ProjectManagerScreen({
           <div>
             <span className="eyebrow">Project Desk</span>
             <h1>Recall Studio</h1>
-            <p>Open a recording, revisit a take, or tidy up your song versions.</p>
+            <p>Pick a song, open a take, and keep the moves you want to remember.</p>
           </div>
         </div>
 
@@ -122,31 +125,31 @@ export function ProjectManagerScreen({
       <section className="project-manager__quickstart" aria-label="Create or start">
         <form className="project-create" onSubmit={handleCreateProject}>
           <label>
-            <span>New project</span>
+            <span>Song or version name</span>
             <input
               value={newProjectName}
               onChange={(event) => setNewProjectName(event.target.value)}
               placeholder="Song, remix, experiment, or version"
             />
           </label>
-          <button type="submit" className="home-action home-action--primary" disabled={busyLabel !== null}>
-            Create Project
+          <button type="submit" className="home-action home-action--primary" disabled={isBusy}>
+            Add Project
           </button>
         </form>
 
         <button
           type="button"
           className="home-action"
-          disabled={busyLabel !== null}
-          onClick={() => void runAction("Starting take...", () => onStartCapture(null))}
+          disabled={isBusy}
+          onClick={() => void runAction("Starting quick take...", () => onStartCapture(null))}
         >
-          New Unassigned Take
+          Quick Take
         </button>
       </section>
 
-      {(busyLabel || error) && (
+      {(loading || busyLabel || error) && (
         <div className={`project-manager__notice ${error ? "project-manager__notice--error" : ""}`}>
-          {error ?? busyLabel}
+          {error ?? busyLabel ?? "Opening your project desk..."}
         </div>
       )}
 
@@ -154,12 +157,14 @@ export function ProjectManagerScreen({
         <section className="project-manager__projects" aria-label="Projects">
           <div className="project-manager__section-head">
             <div>
-              <span className="eyebrow">Saved Projects</span>
+              <span className="eyebrow">Project Library</span>
               <h2>Choose a song or version.</h2>
             </div>
           </div>
 
-          {projects.length > 0 ? (
+          {loading ? (
+            <ProjectLoadingRows />
+          ) : projects.length > 0 ? (
             <div className="project-list">
               {projects.map((project) => (
                 <ProjectCard
@@ -168,7 +173,7 @@ export function ProjectManagerScreen({
                   projects={projects}
                   activeSessionId={activeSession?.id ?? null}
                   selectedSessionId={selectedSessionId}
-                  busy={busyLabel !== null}
+                  busy={isBusy}
                   onStartCapture={onStartCapture}
                   onNewTake={onNewTake}
                   onOpenTimeline={onOpenTimeline}
@@ -185,16 +190,16 @@ export function ProjectManagerScreen({
           ) : (
             <div className="project-manager__empty">
               <strong>No projects yet.</strong>
-              <p>Create one above, or start an unassigned take while you explore.</p>
+              <p>Add a project name, or start a quick take while you explore.</p>
             </div>
           )}
 
-          {unassignedSessions.length > 0 && (
+          {!loading && unassignedSessions.length > 0 && (
             <section className="project-manager__unassigned" aria-label="Unassigned takes">
               <div className="project-manager__section-head">
                 <div>
-                  <span className="eyebrow">Unassigned Takes</span>
-                  <h2>Takes waiting for a home.</h2>
+                  <span className="eyebrow">Loose Takes</span>
+                  <h2>Takes waiting for a project.</h2>
                 </div>
               </div>
               <div className="project-card__sessions">
@@ -205,7 +210,7 @@ export function ProjectManagerScreen({
                     projects={projects}
                     activeSessionId={activeSession?.id ?? null}
                     selectedSessionId={selectedSessionId}
-                    busy={busyLabel !== null}
+                    busy={isBusy}
                     onOpenTimeline={onOpenTimeline}
                     onOpenRecap={onOpenRecap}
                     onRenameCapture={onRenameCapture}
@@ -223,6 +228,20 @@ export function ProjectManagerScreen({
           <BridgeSetup connection={connection} />
         </aside>
       </div>
+    </div>
+  );
+}
+
+function ProjectLoadingRows() {
+  return (
+    <div className="project-list project-list--loading" aria-label="Loading projects">
+      {[0, 1, 2].map((item) => (
+        <div key={item} className="project-card project-card--loading">
+          <span />
+          <span />
+          <span />
+        </div>
+      ))}
     </div>
   );
 }
@@ -316,7 +335,7 @@ function ProjectCard({
                 disabled={busy}
                 onClick={() => onOpenTimeline(activeCapture!.id)}
               >
-                Open Recording
+                Open Live Take
               </button>
               <button
                 type="button"
@@ -324,7 +343,7 @@ function ProjectCard({
                 disabled={busy}
                 onClick={() => void runAction("Starting new take...", () => onNewTake(project.id))}
               >
-                New Take
+                Start Another Take
               </button>
             </>
           ) : (
@@ -332,9 +351,9 @@ function ProjectCard({
               type="button"
               className="home-action home-action--primary"
               disabled={busy}
-              onClick={() => void runAction("Recording...", () => onStartCapture(project.id))}
+              onClick={() => void runAction("Starting capture...", () => onStartCapture(project.id))}
             >
-              Record
+              Start Capture
             </button>
           )}
           <button type="button" className="home-action" disabled={busy} onClick={handleArchive}>
@@ -359,7 +378,7 @@ function ProjectCard({
           </span>
         ) : (
           <span className="project-card__source-empty">
-            Open this set in Ableton to link it automatically
+            Open this song in Ableton and Recall will connect it
           </span>
         )}
       </div>
@@ -383,7 +402,7 @@ function ProjectCard({
             />
           ))
         ) : (
-          <p className="project-card__empty">No takes yet.</p>
+          <p className="project-card__empty">No takes recorded yet.</p>
         )}
       </div>
     </article>
@@ -436,7 +455,7 @@ function CaptureRow({
   }
 
   function handleDelete() {
-    const confirmed = window.confirm(`Delete this take ("${session.name}") and its timeline? This cannot be undone.`);
+    const confirmed = window.confirm(`Delete this take ("${session.name}")? This removes its saved timeline and cannot be undone.`);
     if (!confirmed) return;
     void runAction("Deleting take...", () => onDeleteCapture(session.id));
   }
@@ -458,7 +477,7 @@ function CaptureRow({
           aria-label="Take name"
         />
         <span>
-          {formatSessionDate(session.started_at_ms)} / {formatDuration(session)} / {session.event_count} events
+          {formatSessionDate(session.started_at_ms)} / {formatDuration(session)} / {session.event_count} moves
         </span>
       </label>
 

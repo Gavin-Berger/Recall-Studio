@@ -66,7 +66,7 @@ export function BridgeSetup({ connection }: BridgeSetupProps) {
       <header className="bridge-setup__header">
         <div>
           <span className="eyebrow">Ableton bridge</span>
-          <h2>The Max for Live bridge helps Recall remember your session.</h2>
+          <h2>The Max for Live bridge keeps Recall in sync with Ableton.</h2>
         </div>
         <div className="bridge-setup__versions">
           {shippedVersion && (
@@ -88,17 +88,17 @@ export function BridgeSetup({ connection }: BridgeSetupProps) {
         <div className="bridge-setup__block">
           <h3>How it works</h3>
           <ul className="bridge-setup__list">
-            <li>Ableton sends track, device, and knob-move updates.</li>
-            <li>Recall sorts the useful stuff from the noisy stuff.</li>
-            <li>You get a clean timeline of moves and ideas worth keeping.</li>
+            <li>Ableton shares tracks, devices, and knob moves as you work.</li>
+            <li>Recall keeps the useful moves and filters out the noise.</li>
+            <li>You get a readable timeline of sounds, routing, and ideas.</li>
           </ul>
         </div>
 
         <div className="bridge-setup__block">
           <h3>Install</h3>
           <p className="bridge-setup__hint">
-            Drops the bridge device into your Ableton User Library. Path
-            auto-detected; edit it if your Library lives elsewhere.
+            Installs the bridge device into your Ableton User Library. Change
+            the path if you keep your Library somewhere else.
           </p>
           <label className="bridge-setup__field">
             <span>Ableton User Library</span>
@@ -106,7 +106,7 @@ export function BridgeSetup({ connection }: BridgeSetupProps) {
               type="text"
               value={path}
               onChange={(e) => setPath(e.target.value)}
-              placeholder={detected ? "Path to your User Library" : "Detecting…"}
+              placeholder={detected ? "Path to your User Library" : "Detecting..."}
               spellCheck={false}
             />
           </label>
@@ -116,7 +116,7 @@ export function BridgeSetup({ connection }: BridgeSetupProps) {
             onClick={handleInstall}
             disabled={installing || !path.trim()}
           >
-            {installing ? "Installing…" : "Install Bridge to Ableton"}
+            {installing ? "Installing..." : "Install Bridge"}
           </button>
 
           {result && (
@@ -134,20 +134,20 @@ export function BridgeSetup({ connection }: BridgeSetupProps) {
         <h3>What to expect</h3>
         <ul className="bridge-setup__list">
           <li>
-            <strong>Device roles matter</strong>: instrument, MIDI effect, and
-            audio effect are displayed separately in the timeline.
+            <strong>Tracks stay organized</strong>: instruments, MIDI tools,
+            and audio effects keep their own lanes in the timeline.
           </li>
           <li>
-            Ableton sends the messy details; Recall turns them into a clean,
-            readable timeline.
+            Recall turns the busy Ableton details into a timeline you can read
+            after the session.
           </li>
           <li>
-            Saved moments can point back to tracks, devices, controls, and
-            before/after changes.
+            Saved moments can point back to the track, device, control, and
+            before/after move.
           </li>
           <li>
-            The current goal is clarity: save the important moves and make them
-            easy to understand later.
+            The goal is simple: keep the important decisions easy to find when
+            you come back.
           </li>
         </ul>
       </div>

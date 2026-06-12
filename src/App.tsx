@@ -8,6 +8,7 @@ import { ProductionCheatSheet } from "./components/ProductionCheatSheet";
 import { SchemaTimeline } from "./components/schema/SchemaTimeline";
 import { ProjectManagerScreen } from "./features/projects/ProjectManagerScreen";
 import { SessionRecapScreen } from "./features/projects/SessionRecapScreen";
+import { StartupScreen } from "./features/startup/StartupScreen";
 import type { ConnectionStatus, SavedProject, SavedSessionMetadata, SessionStatus } from "./types/recall";
 
 const BACKEND_CONNECTION_COMMAND = "get_connection_status";
@@ -23,6 +24,23 @@ const BACKEND_START_CAPTURE_FOR_PROJECT_COMMAND = "start_capture_for_project";
 const BACKEND_NEW_TAKE_FOR_PROJECT_COMMAND = "new_take_for_project";
 
 const POLL_INTERVAL_MS = 1000;
+const PRODUCER_NAME_STORAGE_KEY = "recall-studio.producer-name";
+
+function loadProducerName(): string {
+  try {
+    return window.localStorage.getItem(PRODUCER_NAME_STORAGE_KEY) ?? "";
+  } catch {
+    return "";
+  }
+}
+
+function storeProducerName(name: string) {
+  try {
+    window.localStorage.setItem(PRODUCER_NAME_STORAGE_KEY, name);
+  } catch {
+    // Local storage can be unavailable in a few embedded/browser contexts.
+  }
+}
 
 function App() {
   const [surface, setSurface] = useState<AppSurface>("projects");
@@ -35,6 +53,9 @@ function App() {
   const [savedSessions, setSavedSessions] = useState<SavedSessionMetadata[]>([]);
   const [savedProjects, setSavedProjects] = useState<SavedProject[]>([]);
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
+  const [libraryReady, setLibraryReady] = useState(false);
+  const [enteredStudio, setEnteredStudio] = useState(false);
+  const [producerName, setProducerName] = useState(loadProducerName);
 
   const activeSession = useMemo(
     () => savedSessions.find((session) => session.ended_at_ms === null) ?? null,
@@ -48,6 +69,10 @@ function App() {
   );
   const unassignedSessions = useMemo(
     () => savedSessions.filter((session) => !session.project_id),
+    [savedSessions],
+  );
+  const totalMoments = useMemo(
+    () => savedSessions.reduce((total, session) => total + session.creative_event_count, 0),
     [savedSessions],
   );
 
@@ -69,6 +94,7 @@ function App() {
 
     setSavedSessions(sessions);
     setSavedProjects(projects);
+    setLibraryReady(true);
 
     return { sessions, projects };
   }, []);
@@ -109,6 +135,7 @@ function App() {
         }
       } catch (error) {
         console.error("Failed to refresh projects and captures:", error);
+        if (mounted) setLibraryReady(true);
       }
     }
 
@@ -199,6 +226,28 @@ function App() {
     }
   }
 
+  function handleProducerNameChange(name: string) {
+    setProducerName(name);
+    storeProducerName(name);
+  }
+
+  if (!enteredStudio) {
+    return (
+      <StartupScreen
+        producerName={producerName}
+        connected={connection.connected}
+        loading={!libraryReady}
+        projectCount={savedProjects.length}
+        takeCount={savedSessions.length}
+        momentCount={totalMoments}
+        recordingCount={activeSession ? 1 : 0}
+        activeAbletonName={activeSession?.project_name ?? null}
+        onProducerNameChange={handleProducerNameChange}
+        onEnter={() => setEnteredStudio(true)}
+      />
+    );
+  }
+
   return (
     <AppShell
       surface={surface}
@@ -211,6 +260,7 @@ function App() {
           unassignedSessions={unassignedSessions}
           activeSession={activeSession}
           selectedSessionId={effectiveSessionId}
+          loading={!libraryReady}
           onCreateProject={handleCreateProject}
           onStartCapture={handleStartCapture}
           onNewTake={handleNewTake}

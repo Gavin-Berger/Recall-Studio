@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { open } from "@tauri-apps/plugin-dialog";
 import "./App.css";
 
 import { AppShell } from "./components/AppShell";
@@ -192,6 +193,21 @@ function App() {
     await reloadProjects();
   }
 
+  async function handleConnectFolder(projectId?: string | null): Promise<number> {
+    const selected = await open({
+      directory: true,
+      multiple: false,
+      title: "Choose an Ableton project folder — or the folder that holds all of them",
+    });
+    if (typeof selected !== "string") return 0;
+    const count = await invoke<number>("connect_project_folder", {
+      path: selected,
+      projectId: projectId ?? null,
+    });
+    await reloadProjects();
+    return count;
+  }
+
   async function handleRenameProject(projectId: string, displayName: string) {
     await invoke(BACKEND_RENAME_PROJECT_COMMAND, { projectId, displayName });
     await reloadProjects();
@@ -262,6 +278,7 @@ function App() {
           selectedSessionId={effectiveSessionId}
           loading={!libraryReady}
           onCreateProject={handleCreateProject}
+          onConnectFolder={handleConnectFolder}
           onStartCapture={handleStartCapture}
           onNewTake={handleNewTake}
           onOpenTimeline={handleOpenTimeline}

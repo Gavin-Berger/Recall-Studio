@@ -308,6 +308,100 @@ fn archive_project(state: State<'_, AppState>, project_id: String) -> Result<(),
     storage.archive_project(&project_id)
 }
 
+/// Derive a project display name from a chosen folder or .als path.
+/// "Beautiful creation fminor Project" -> "Beautiful creation fminor"; "song.als" -> "song".
+fn display_name_from_path(path: &str) -> String {
+    let raw = std::path::Path::new(path)
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("")
+        .trim();
+    let name = raw.strip_suffix(" Project").unwrap_or(raw).trim();
+    if name.is_empty() {
+        "Connected Project".to_string()
+    } else {
+        name.to_string()
+    }
+}
+
+fn folder_contains_als(dir: &std::path::Path) -> bool {
+    std::fs::read_dir(dir)
+        .map(|entries| {
+            entries.flatten().any(|entry| {
+                entry
+                    .path()
+                    .extension()
+                    .and_then(|ext| ext.to_str())
+                    .map(|ext| ext.eq_ignore_ascii_case("als"))
+                    .unwrap_or(false)
+            })
+        })
+        .unwrap_or(false)
+}
+
+/// Discover Ableton projects to import. If the chosen folder is itself a project
+/// (holds a `.als`), that's the single result; otherwise each immediate subfolder
+/// holding a `.als` becomes a project. Returns (display name, folder path).
+fn discover_ableton_projects(root: &str) -> Result<Vec<(String, String)>, String> {
+    let root_path = std::path::Path::new(root);
+    if !root_path.is_dir() {
+        return Err("That path is not a folder.".to_string());
+    }
+
+    // Prefer immediate subfolders that are Ableton projects — the common case is a
+    // parent folder that holds many "<Song> Project" folders.
+    let mut found = Vec::new();
+    let entries =
+        std::fs::read_dir(root_path).map_err(|error| format!("Failed to read folder: {}", error))?;
+    for entry in entries {
+        let entry = entry.map_err(|error| format!("Failed to read folder entry: {}", error))?;
+        let path = entry.path();
+        if path.is_dir() && folder_contains_als(&path) {
+            let path_str = path.to_string_lossy().to_string();
+            let name = display_name_from_path(&path_str);
+            found.push((name, path_str));
+        }
+    }
+
+    // Only if no child projects were found, treat the chosen folder itself as one
+    // (the user picked a single "<Song> Project" folder directly).
+    if found.is_empty() && folder_contains_als(root_path) {
+        found.push((display_name_from_path(root), root.to_string()));
+    }
+
+    found.sort_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()));
+    Ok(found)
+}
+
+/// Connect existing Ableton work. With `project_id`, links one project to the
+/// chosen folder. Without it, scans the folder and imports every Ableton project
+/// inside it (skipping ones already in the library); returns how many were added.
+#[tauri::command]
+fn connect_project_folder(
+    state: State<'_, AppState>,
+    path: String,
+    project_id: Option<String>,
+) -> Result<usize, String> {
+    let clean_path = path.trim();
+    if clean_path.is_empty() {
+        return Err("No folder selected.".to_string());
+    }
+
+    if let Some(id) = project_id {
+        let name = display_name_from_path(clean_path);
+        let storage = state.storage.lock().expect("Storage state lock failed");
+        storage.set_project_source(&id, &name, clean_path)?;
+        return Ok(1);
+    }
+
+    let discovered = discover_ableton_projects(clean_path)?;
+    if discovered.is_empty() {
+        return Err("No Ableton projects (.als) found in that folder.".to_string());
+    }
+    let storage = state.storage.lock().expect("Storage state lock failed");
+    storage.import_projects(&discovered)
+}
+
 #[tauri::command]
 fn assign_session_to_project(
     state: State<'_, AppState>,
@@ -646,6 +740,7 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .setup(move |app| {
             let app_data_dir = app
                 .path()
@@ -727,6 +822,7 @@ pub fn run() {
             delete_saved_session,
             list_projects,
             create_project,
+            connect_project_folder,
             rename_project,
             archive_project,
             assign_session_to_project,

@@ -71,6 +71,38 @@ fn project_name_from_path(path: &str) -> Option<String> {
         .map(str::to_string)
 }
 
+/// Reduce an Ableton path to a comparable project-folder key. A live capture
+/// reports the `.als` file path, while a manually connected project may store the
+/// containing folder. Both collapse to the same folder so they match regardless
+/// of which form was recorded. Case- and separator-insensitive.
+fn project_folder_key(path: &str) -> Option<String> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let candidate = Path::new(trimmed);
+    let folder = if candidate
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(|ext| ext.eq_ignore_ascii_case("als"))
+        .unwrap_or(false)
+    {
+        candidate.parent().unwrap_or(candidate)
+    } else {
+        candidate
+    };
+    let key = folder
+        .to_string_lossy()
+        .replace('\\', "/")
+        .trim_end_matches('/')
+        .to_lowercase();
+    if key.is_empty() {
+        None
+    } else {
+        Some(key)
+    }
+}
+
 fn fallback_project_display_name(project_name: Option<&str>, project_path: Option<&str>) -> String {
     clean_optional(project_name)
         .map(str::to_string)
@@ -653,6 +685,93 @@ impl StorageState {
         Ok(project_id)
     }
 
+    pub fn set_project_source(
+        &self,
+        project_id: &str,
+        ableton_name: &str,
+        ableton_path: &str,
+    ) -> Result<(), String> {
+        let connection = self.open_connection()?;
+        let updated = connection
+            .execute(
+                "
+                UPDATE projects
+                SET ableton_name = ?1, ableton_path = ?2, updated_at_ms = ?3
+                WHERE id = ?4
+                ",
+                params![
+                    clean_optional(Some(ableton_name)),
+                    clean_optional(Some(ableton_path)),
+                    now_ms() as i64,
+                    project_id,
+                ],
+            )
+            .map_err(|error| format!("Failed to set project source: {}", error))?;
+
+        if updated == 0 {
+            return Err(format!("Project not found: {}", project_id));
+        }
+
+        Ok(())
+    }
+
+    /// Insert a project for each discovered Ableton folder that isn't already in
+    /// the library (matched by project folder). Returns how many were added.
+    pub fn import_projects(&self, discovered: &[(String, String)]) -> Result<usize, String> {
+        let connection = self.open_connection()?;
+
+        let mut existing_keys: Vec<String> = Vec::new();
+        {
+            let mut statement = connection
+                .prepare(
+                    "SELECT ableton_path FROM projects
+                     WHERE ableton_path IS NOT NULL AND archived_at_ms IS NULL",
+                )
+                .map_err(|error| format!("Failed to query existing projects: {}", error))?;
+            let rows = statement
+                .query_map([], |row| row.get::<_, Option<String>>(0))
+                .map_err(|error| format!("Failed to read existing projects: {}", error))?;
+            for row in rows {
+                if let Some(path) =
+                    row.map_err(|error| format!("Failed to read project path: {}", error))?
+                {
+                    if let Some(key) = project_folder_key(&path) {
+                        existing_keys.push(key);
+                    }
+                }
+            }
+        }
+
+        let now = now_ms() as i64;
+        let mut imported = 0usize;
+        for (name, folder) in discovered {
+            let key = match project_folder_key(folder) {
+                Some(key) => key,
+                None => continue,
+            };
+            if existing_keys.iter().any(|existing| existing == &key) {
+                continue;
+            }
+            let project_id = format!("project-{}-{}", now_ms(), imported);
+            connection
+                .execute(
+                    "
+                    INSERT INTO projects (
+                        id, display_name, ableton_name, ableton_path,
+                        archived_at_ms, created_at_ms, updated_at_ms
+                    )
+                    VALUES (?1, ?2, ?3, ?4, NULL, ?5, ?6)
+                    ",
+                    params![project_id, name.trim(), name.trim(), folder, now, now],
+                )
+                .map_err(|error| format!("Failed to import project: {}", error))?;
+            existing_keys.push(key);
+            imported += 1;
+        }
+
+        Ok(imported)
+    }
+
     pub fn rename_project(&self, project_id: &str, display_name: &str) -> Result<(), String> {
         let clean_display_name = display_name.trim();
         if clean_display_name.is_empty() {
@@ -857,20 +976,39 @@ impl StorageState {
             return Ok(());
         }
 
-        let matched_project_id = if let Some(path) = clean_path {
-            connection
-                .query_row(
+        // Match the capture's set to a connected project by project folder, so a
+        // folder linked manually still catches the live `.als` that lives inside it.
+        let matched_project_id = if let Some(target) = clean_path.and_then(project_folder_key) {
+            let mut statement = connection
+                .prepare(
                     "
-                    SELECT id FROM projects
-                    WHERE ableton_path = ?1 AND archived_at_ms IS NULL
+                    SELECT id, ableton_path FROM projects
+                    WHERE ableton_path IS NOT NULL AND archived_at_ms IS NULL
                     ORDER BY updated_at_ms DESC
-                    LIMIT 1
                     ",
-                    params![path],
-                    |row| row.get::<_, String>(0),
                 )
-                .optional()
-                .map_err(|error| format!("Failed to match project path: {}", error))?
+                .map_err(|error| format!("Failed to query projects: {}", error))?;
+            let rows = statement
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+                })
+                .map_err(|error| format!("Failed to read projects: {}", error))?;
+
+            let mut found = None;
+            for row in rows {
+                let (id, ableton_path) =
+                    row.map_err(|error| format!("Failed to read project row: {}", error))?;
+                if ableton_path
+                    .as_deref()
+                    .and_then(project_folder_key)
+                    .map(|folder| folder == target)
+                    .unwrap_or(false)
+                {
+                    found = Some(id);
+                    break;
+                }
+            }
+            found
         } else {
             None
         };

@@ -8,7 +8,7 @@
 // ParameterChange). No plugin names are baked in anywhere — devices are
 // differentiated only by `role`.
 
-export type TrackType = "midi" | "audio" | "return" | "group";
+export type TrackType = "midi" | "audio" | "return" | "group" | "master";
 
 export type DeviceRole = "instrument" | "midi_effect" | "audio_effect";
 
@@ -114,6 +114,7 @@ export const TRACK_TYPE_LABEL: Record<TrackType, string> = {
   audio: "Audio",
   return: "Return",
   group: "Group",
+  master: "Main",
 };
 
 export const DEVICE_ROLE_LABEL: Record<DeviceRole, string> = {

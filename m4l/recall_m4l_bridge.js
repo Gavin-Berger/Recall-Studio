@@ -43,7 +43,7 @@ outlets = 2;
 var PROTOCOL = "recall.v2";
 var SOURCE = "max_for_live";
 var DEVICE_ID = "recall-m4l-bridge-dev";
-var BRIDGE_VERSION = "0.12.0";
+var BRIDGE_VERSION = "0.14.0";
 
 // Canonical v2 flat fields. emit() lifts any of these from its `fields` arg up
 // to the TOP LEVEL of the packet, because the Rust normalizer reads canonical
@@ -156,6 +156,12 @@ var INITIAL_CONTEXT_DELAY_MS = 800;
 // thread) breathe between each heavy traversal.
 var INITIAL_STAGGER_MS = 600;
 
+// One-shot whole-set baseline. The first time the bridge meets a set (or you
+// open a different one), snapshot everything already in it once, so a project
+// built before Recall existed gets captured instead of only its future changes.
+// Deferred off the message thread like the other heavy scans.
+var BASELINE_SNAPSHOT_DELAY_MS = 1500;
+
 var heartbeatTask = new Task(heartbeat_tick, this);
 var transportTask = new Task(transport_tick, this);
 var focusTask = new Task(focus_tick, this);
@@ -164,11 +170,16 @@ var liveSetTask = new Task(live_set_tick, this);
 var initialContextTask = new Task(initial_context_tick, this);
 var initialFocusTask = new Task(initial_focus_tick, this);
 var initialLiveSetTask = new Task(initial_live_set_tick, this);
+var baselineTask = new Task(baseline_tick, this);
 
 // Fingerprint cache.
 var lastTransportSummaryFingerprint = "";
 var lastLiveSetFingerprint = "";
 var lastSelectedTrackFocusFingerprint = "";
+
+// Which set fingerprint we've already baselined this session, so opening a set
+// captures its existing contents exactly once (not on every heartbeat).
+var lastBaselinedFingerprint = null;
 
 var lastPlayingState = null;
 var lastTempo = null;
@@ -304,6 +315,20 @@ function initial_live_set_tick() {
     }
 }
 
+// Fire one whole-set snapshot off the scheduler thread (never inline on the
+// message that triggered it), isolated so a heavy traversal can't take Max
+// down. Shared by the automatic first-meet baseline and the manual recapture.
+function baseline_tick() {
+    if (!bridgeRunning) {
+        return;
+    }
+    try {
+        send_live_set_snapshot_if_changed();
+    } catch (error) {
+        debug("baseline snapshot failed: " + error);
+    }
+}
+
 function stop() {
     stop_bridge();
 }
@@ -404,6 +429,16 @@ function send_project_context_if_changed(force) {
         project_name: context.project_name,
         project_path: context.project_path
     });
+
+    // First time we've seen this set (or you switched to a different one):
+    // baseline the whole set once so pre-existing tracks and devices get
+    // captured, not just future changes. Deferred + staggered so the heavy
+    // traversal never blocks Max's message thread.
+    if (nextFingerprint !== lastBaselinedFingerprint) {
+        lastBaselinedFingerprint = nextFingerprint;
+        baselineTask.cancel();
+        baselineTask.schedule(BASELINE_SNAPSHOT_DELAY_MS);
+    }
 }
 
 function transport_tick() {
@@ -567,6 +602,20 @@ function collect_bus_devices_snapshot(trackPath) {
         devices: devices,
         clips: []
     };
+}
+
+// Collect an array of bus tracks (the returns) by base path — each a device
+// snapshot — so the whole-set baseline includes return FX, not just regular
+// tracks.
+function collect_bus_track_array(basePath, count) {
+    var out = [];
+    for (var i = 0; i < count; i++) {
+        var bus = collect_bus_devices_snapshot(basePath + " " + i);
+        if (bus && bus.id) {
+            out.push(bus);
+        }
+    }
+    return out;
 }
 
 // Diff the master track and every return track for device/chain changes. They
@@ -1015,7 +1064,13 @@ function collect_live_set_snapshot() {
         scene_count: sceneCount,
         selected_track_id: get_selected_track_id(),
         selected_track_name: get_selected_track_name(),
-        tracks: collect_track_summaries(Math.min(trackCount, MAX_TRACK_SUMMARIES)),
+        // No track cap on the whole-set baseline: capture EVERY track in the
+        // set, so opening a large existing project imports all of it.
+        tracks: collect_track_summaries(trackCount),
+        // Buses live outside `live_set tracks`. Include them so the baseline
+        // also captures return FX and the Main/Master mastering chain.
+        return_tracks: collect_bus_track_array("live_set return_tracks", returnTrackCount),
+        master_track: collect_bus_devices_snapshot("live_set master_track"),
         scenes: collect_scene_summaries(Math.min(sceneCount, MAX_SCENE_SUMMARIES))
     };
 }
@@ -2039,6 +2094,16 @@ function capture_focus(value) {
 function capture_live_set(value) {
     captureLiveSet = Number(value) === 1;
     debug("capture_live_set = " + captureLiveSet);
+}
+
+// Manual "recapture full set": force a fresh whole-set baseline now, ignoring
+// the change-guards, so a [recapture_set] message (e.g. a button on the device)
+// re-imports everything currently in the set.
+function recapture_set() {
+    lastLiveSetFingerprint = "";
+    lastBaselinedFingerprint = null;
+    baselineTask.cancel();
+    baselineTask.schedule(200);
 }
 
 function capture_structure(value) {

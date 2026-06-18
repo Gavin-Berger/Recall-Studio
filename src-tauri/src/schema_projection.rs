@@ -22,6 +22,7 @@ pub enum TrackType {
     Audio,
     Return,
     Group,
+    Master,
 }
 
 impl TrackType {
@@ -31,6 +32,7 @@ impl TrackType {
             TrackType::Audio => "audio",
             TrackType::Return => "return",
             TrackType::Group => "group",
+            TrackType::Master => "master",
         }
     }
 
@@ -39,6 +41,7 @@ impl TrackType {
             "midi" => TrackType::Midi,
             "return" => TrackType::Return,
             "group" => TrackType::Group,
+            "master" => TrackType::Master,
             _ => TrackType::Audio,
         }
     }
@@ -210,6 +213,20 @@ pub fn parse_session_tree(payload: &Value) -> Vec<ParsedTrack> {
     if let Some(array) = payload.get("return_tracks").and_then(Value::as_array) {
         for track in array {
             tracks.push(parse_track(track, true));
+        }
+    }
+
+    // The Main/Master bus lives outside both collections. Parse it like a track
+    // but force the Master type (and a "Main" fallback name) so its mastering
+    // chain shows up as its own lane.
+    if let Some(master) = payload.get("master_track") {
+        if master.is_object() && master.get("id").is_some() {
+            let mut parsed = parse_track(master, false);
+            parsed.track_type = TrackType::Master;
+            if parsed.name.is_none() {
+                parsed.name = Some("Main".to_string());
+            }
+            tracks.push(parsed);
         }
     }
 

@@ -55,6 +55,14 @@ backend without Ableton: `node send-heartbeat.cjs`.
 normalized schema + creative moments.
 **Next:** routing & clip capture, `.als` file watching, AI session summaries.
 
+## Docs
+
+- [`docs/recall-schema-map.md`](docs/recall-schema-map.md) — the data-division plan: every entity
+  and event, and how mature each one is (`live` / `defined` / `proposed`)
+- [`docs/recall-protocol-v2.md`](docs/recall-protocol-v2.md) — the bridge ↔ app wire contract
+- [`docs/ableton-bridge-architecture.md`](docs/ableton-bridge-architecture.md) — how Ableton state
+  reaches the app (poll → diff → UDP → Rust → SQLite)
+
 ## License
 
 MIT

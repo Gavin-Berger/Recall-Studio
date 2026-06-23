@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, type KeyboardEvent } from "react";
 import { listen } from "@tauri-apps/api/event";
 import "./SchemaTimeline.css";
 import {
@@ -64,6 +64,15 @@ type Activity = {
   starred?: boolean;
 };
 
+// A run of consecutive same-parameter moves collapsed into one story row.
+// `lead` is the newest move (its after-value is the net result); `items` holds
+// every move in the run, newest-first, for the expanded view.
+type ActivityGroup = {
+  key: string;
+  lead: Activity;
+  items: Activity[];
+};
+
 export function SchemaTimeline({
   sessionId,
   session,
@@ -79,6 +88,8 @@ export function SchemaTimeline({
   const [selectedTrackId, setSelectedTrackId] = useState<string | null>(null);
   const [noteDraft, setNoteDraft] = useState("");
   const [noteStar, setNoteStar] = useState(false);
+  // Group ids the user expanded to see each move inside a collapsed run.
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
 
   const load = useCallback(
     async (rematerialize: boolean, quiet = false) => {
@@ -163,13 +174,34 @@ export function SchemaTimeline({
   );
 
   const bounds = useMemo(() => {
-    const start = session?.started_at_ms ?? (changes[0]?.changed_at_ms ?? Date.now());
     const recording = session?.ended_at_ms === null;
-    let end = session?.ended_at_ms ?? Date.now();
-    for (const change of changes) end = Math.max(end, change.changed_at_ms);
-    if (end <= start) end = start + 60_000;
-    return { start, end, span: end - start, recording };
-  }, [session, changes]);
+    const sessionStart = session?.started_at_ms ?? (changes[0]?.changed_at_ms ?? Date.now());
+
+    // Fit the axis to where work actually happened. A session left recording for
+    // hours otherwise crushes every move into a sliver at the far left; we drop
+    // that leading/trailing dead air by bounding to the first and last activity.
+    const stamps: number[] = [];
+    for (const change of changes) stamps.push(change.changed_at_ms);
+    for (const moment of moments) stamps.push(moment.timeline_start_ms ?? moment.created_at_ms);
+
+    let start: number;
+    let end: number;
+    if (stamps.length > 0) {
+      start = Math.min(...stamps);
+      end = Math.max(...stamps);
+    } else {
+      start = sessionStart;
+      end = session?.ended_at_ms ?? Date.now();
+    }
+
+    // Breathing room so the first/last events aren't glued to the edges.
+    const pad = Math.max((end - start) * 0.04, 1500);
+    start -= pad;
+    end += pad;
+    if (end - start < 60_000) end = start + 60_000;
+
+    return { start, end, span: end - start, recording, sessionStart };
+  }, [session, changes, moments]);
 
   const activities = useMemo<Activity[]>(() => {
     const out: Activity[] = [];
@@ -256,9 +288,65 @@ export function SchemaTimeline({
     [trackActivity],
   );
 
+  // Collapse consecutive moves of the same device+parameter into one run so a
+  // knob twiddled five times reads as a single decision (net before → after,
+  // with a count), not five near-identical rows. Notes and switches between
+  // params break a run. trackActivity is newest-first, so each group's lead is
+  // its latest move and the net "before" comes from its oldest.
+  const groupedActivity = useMemo<ActivityGroup[]>(() => {
+    const out: ActivityGroup[] = [];
+    for (const item of trackActivity) {
+      const last = out[out.length - 1];
+      const mergeable =
+        item.kind === "move" &&
+        last !== undefined &&
+        last.lead.kind === "move" &&
+        last.lead.deviceName === item.deviceName &&
+        last.lead.paramName === item.paramName;
+      if (mergeable) {
+        last.items.push(item);
+      } else {
+        out.push({ key: item.id, lead: item, items: [item] });
+      }
+    }
+    return out;
+  }, [trackActivity]);
+
+  // Headline for the dock: which device on this track you touched the most.
+  const mostTouched = useMemo(() => {
+    const tally = new Map<string, number>();
+    for (const item of trackActivity) {
+      if (item.kind !== "move" || !item.deviceName) continue;
+      tally.set(item.deviceName, (tally.get(item.deviceName) ?? 0) + 1);
+    }
+    let best: { name: string; count: number } | null = null;
+    for (const [name, count] of tally) {
+      if (!best || count > best.count) best = { name, count };
+    }
+    return best;
+  }, [trackActivity]);
+
+  const moveCountForTrack = trackActivity.filter((a) => a.kind === "move").length;
+
+  function toggleGroup(key: string) {
+    setExpandedGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }
+
   const hasMap = Boolean(schema?.has_snapshot) && tracks.length > 0;
-  const takeTitle = session?.name ?? schema?.name ?? "Take";
+  const takeTitle = formatTakeTitle(session, schema?.name ?? null);
+  const rawTakeId = session?.name ?? session?.id ?? sessionId;
   const projectContext = session?.display_name ?? session?.project_name ?? null;
+  // Human duration for the header: start → end (or "now" while recording).
+  const durationLabel = session?.started_at_ms
+    ? formatDuration(
+        (session.ended_at_ms ?? Date.now()) - session.started_at_ms,
+      )
+    : null;
 
   async function handleAddNote() {
     if (!sessionId || !selectedTrack) return;
@@ -309,10 +397,15 @@ export function SchemaTimeline({
             {bounds.recording && <span className="tl-eye__dot" />}
             {bounds.recording ? "Recording now" : "Viewing take"}
           </span>
-          <strong>{takeTitle}</strong>
+          <strong title={rawTakeId ?? undefined}>{takeTitle}</strong>
           <span className="tl-bar__sub">
-            {projectContext ? `${projectContext} · ` : ""}
-            read down = your tracks · across = what you did
+            {[
+              projectContext,
+              durationLabel,
+              "tracks down · time across",
+            ]
+              .filter(Boolean)
+              .join(" · ")}
           </span>
         </div>
         <div className="tl-bar__actions">
@@ -321,6 +414,7 @@ export function SchemaTimeline({
             className="tl-btn tl-btn--primary"
             onClick={() => void load(true)}
             disabled={status === "loading"}
+            title="Re-read the current Live set's tracks and devices to refresh this map"
           >
             <ScanIcon />
             {status === "loading" ? "Scanning…" : "Rescan set"}
@@ -339,15 +433,37 @@ export function SchemaTimeline({
       ) : (
         <>
           <div className="tl-legend">
-            <span><span className="tl-key tl-key--move" /> knob move</span>
+            <span><span className="tl-key tl-key--move" /> activity (taller = more changes)</span>
             <span><span className="tl-key tl-key--note" /> note</span>
             {bounds.recording && <span><span className="tl-key tl-key--now" /> now</span>}
           </div>
 
           <div className="tl-arrange">
+            <div className="tl-headers">
+              <div className="tl-rspacer" />
+              {lanes.map((lane) => {
+                const color = trackColor(lane.track);
+                const moveCount = (laneGraphs.moveTimesByLane.get(lane.track.id) ?? []).length;
+                return (
+                  <button
+                    key={lane.track.id}
+                    type="button"
+                    className={`tl-hdr ${lane.track.id === selectedTrackId ? "is-sel" : ""}`}
+                    style={{ ["--lane-color" as string]: color }}
+                    onClick={() => setSelectedTrackId(lane.track.id)}
+                    title={`${lane.track.name ?? "Untitled track"} — ${moveCount} move${moveCount === 1 ? "" : "s"}`}
+                  >
+                    <span className="tl-hdr__sw" style={{ background: color }} />
+                    <span className="tl-hdr__name">{lane.track.name ?? "Untitled track"}</span>
+                    {moveCount > 0 && <span className="tl-hdr__count">{moveCount}</span>}
+                  </button>
+                );
+              })}
+            </div>
+
             <div className="tl-tracks">
               <div className="tl-ruler">
-                {buildTicks(bounds.span).map((tick) => (
+                {buildTicks(bounds).map((tick) => (
                   <span key={tick.label + tick.pct} className="tl-tick" style={{ left: `${tick.pct}%` }}>
                     {tick.label}
                   </span>
@@ -394,24 +510,6 @@ export function SchemaTimeline({
               })}
               {bounds.recording && <span className="tl-playhead" style={{ left: `${pct(Date.now(), bounds)}%` }} />}
             </div>
-
-            <div className="tl-headers">
-              <div className="tl-rspacer" />
-              {lanes.map((lane) => {
-                const color = trackColor(lane.track);
-                return (
-                  <button
-                    key={lane.track.id}
-                    type="button"
-                    className={`tl-hdr ${lane.track.id === selectedTrackId ? "is-sel" : ""}`}
-                    style={{ background: color, color: readableText(color) }}
-                    onClick={() => setSelectedTrackId(lane.track.id)}
-                  >
-                    <span className="tl-hdr__name">{lane.track.name ?? "Untitled track"}</span>
-                  </button>
-                );
-              })}
-            </div>
           </div>
 
           {selectedTrack && (
@@ -424,8 +522,14 @@ export function SchemaTimeline({
                 </span>
                 <span className="tl-dock__meta">
                   {TRACK_TYPE_LABEL[selectedTrack.type]} · {selectedTrack.devices.length} device
-                  {selectedTrack.devices.length === 1 ? "" : "s"} · {trackActivity.filter((a) => a.kind === "move").length} moves
+                  {selectedTrack.devices.length === 1 ? "" : "s"} · {moveCountForTrack} move
+                  {moveCountForTrack === 1 ? "" : "s"}
                 </span>
+                {mostTouched && mostTouched.count > 1 && (
+                  <span className="tl-dock__top">
+                    Most-touched: <b>{mostTouched.name}</b> · {mostTouched.count}
+                  </span>
+                )}
               </div>
 
               {selectedTrack.devices.length > 0 ? (
@@ -446,25 +550,84 @@ export function SchemaTimeline({
               )}
 
               <div className="tl-story-head">What you did to {selectedTrack.name ?? "this track"}</div>
-              {trackActivity.length > 0 ? (
+              {groupedActivity.length > 0 ? (
                 <ul className="tl-story">
-                  {trackActivity.map((item) => (
-                    <li key={item.id} className="tl-ci">
-                      <span className={`tl-ci__ic tl-ci__ic--${item.kind}`}>{item.kind === "note" ? "★" : ""}</span>
-                      <span className="tl-ci__body">{renderActivityBody(item)}</span>
-                      <span className="tl-ci__when">{formatElapsed(item.atMs - bounds.start)}</span>
-                      {item.kind === "note" && (
-                        <button
-                          type="button"
-                          className="tl-ci__del"
-                          aria-label="Delete note"
-                          onClick={() => void handleDeleteNote(item.id)}
+                  {groupedActivity.map((group) => {
+                    const lead = group.lead;
+                    const count = group.items.length;
+                    const oldest = group.items[count - 1];
+                    const when = formatElapsed(lead.atMs - bounds.sessionStart);
+                    const expanded = expandedGroups.has(group.key);
+
+                    if (lead.kind === "note") {
+                      return (
+                        <li key={group.key} className="tl-ci">
+                          <span className="tl-ci__ic tl-ci__ic--note">★</span>
+                          <span className="tl-ci__body">
+                            <span className="tl-ci__what"><b>Note</b></span>
+                            <span className="tl-ci__val">{lead.title ?? ""}</span>
+                          </span>
+                          <span className="tl-ci__when">{when}</span>
+                          <button
+                            type="button"
+                            className="tl-ci__del"
+                            aria-label="Delete note"
+                            onClick={() => void handleDeleteNote(lead.id)}
+                          >
+                            ×
+                          </button>
+                        </li>
+                      );
+                    }
+
+                    return (
+                      <li key={group.key} className="tl-ci-wrap">
+                        <div
+                          className={`tl-ci ${count > 1 ? "tl-ci--group" : ""} ${expanded ? "is-open" : ""}`}
+                          {...(count > 1
+                            ? {
+                                role: "button",
+                                tabIndex: 0,
+                                onClick: () => toggleGroup(group.key),
+                                onKeyDown: (event: KeyboardEvent) => {
+                                  if (event.key === "Enter" || event.key === " ") {
+                                    event.preventDefault();
+                                    toggleGroup(group.key);
+                                  }
+                                },
+                              }
+                            : {})}
                         >
-                          ×
-                        </button>
-                      )}
-                    </li>
-                  ))}
+                          <span className="tl-ci__ic tl-ci__ic--move" />
+                          <span className="tl-ci__body">
+                            {moveWhatNode(lead)}
+                            {moveValueNode(oldest, lead, count)}
+                          </span>
+                          <span className="tl-ci__when">{when}</span>
+                          {count > 1 && (
+                            <span className={`tl-ci__chev ${expanded ? "is-open" : ""}`} aria-hidden="true">
+                              ⌄
+                            </span>
+                          )}
+                        </div>
+                        {expanded && count > 1 && (
+                          <ul className="tl-substory">
+                            {group.items.map((item) => (
+                              <li key={item.id} className="tl-ci tl-ci--sub">
+                                <span className="tl-ci__ic" />
+                                <span className="tl-ci__body">
+                                  {moveValueNode(item, item, 1)}
+                                </span>
+                                <span className="tl-ci__when">
+                                  {formatElapsed(item.atMs - bounds.sessionStart)}
+                                </span>
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                      </li>
+                    );
+                  })}
                 </ul>
               ) : (
                 <p className="tl-story__empty">Nothing logged on this track yet — moves show up here as you tweak it.</p>
@@ -622,20 +785,63 @@ function cumulativeMovePaths(
   return { line, area };
 }
 
-function buildTicks(spanMs: number): Array<{ pct: number; label: string }> {
+function buildTicks(bounds: {
+  start: number;
+  span: number;
+  sessionStart: number;
+}): Array<{ pct: number; label: string }> {
   const steps = 4;
   const out: Array<{ pct: number; label: string }> = [];
   for (let i = 0; i <= steps; i += 1) {
-    out.push({ pct: (i / steps) * 100, label: formatElapsed((spanMs * i) / steps) });
+    // Label each tick by how far into the session it sits, so the axis and the
+    // change-list timestamps share one clock (elapsed from session start).
+    const atMs = bounds.start + (bounds.span * i) / steps;
+    out.push({ pct: (i / steps) * 100, label: formatElapsed(atMs - bounds.sessionStart) });
   }
   return out;
 }
 
 function formatElapsed(ms: number): string {
   const totalSeconds = Math.max(0, Math.round(ms / 1000));
-  const minutes = Math.floor(totalSeconds / 60);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
   const seconds = totalSeconds % 60;
+  // Promote to h:mm:ss past an hour so a long session's axis can't be mistaken
+  // for minutes:seconds.
+  if (hours > 0) {
+    return `${hours}:${minutes.toString().padStart(2, "0")}:${seconds.toString().padStart(2, "0")}`;
+  }
   return `${minutes}:${seconds.toString().padStart(2, "0")}`;
+}
+
+// Human, scannable take title. Auto-generated names (the raw "Session <epoch>"
+// the backend assigns) are replaced with the session's date + start time so the
+// header reads like a memory, not a database row.
+function formatTakeTitle(
+  session: SavedSessionMetadata | null,
+  schemaName: string | null,
+): string {
+  const raw = session?.name?.trim();
+  const isAutoName = !raw || /^session[-\s]?\d+$/i.test(raw);
+  if (raw && !isAutoName) return raw;
+  if (session?.started_at_ms) {
+    const date = new Date(session.started_at_ms);
+    const day = date.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+    const time = date.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+    return `${day} · ${time}`;
+  }
+  return schemaName ?? "Take";
+}
+
+// Compact human duration for the header ("26 min", "1 hr 12 min", "48 sec").
+function formatDuration(ms: number): string {
+  const totalSeconds = Math.max(0, Math.round(ms / 1000));
+  if (totalSeconds < 60) return `${totalSeconds} sec`;
+  const totalMinutes = Math.floor(totalSeconds / 60);
+  if (totalMinutes < 60) return `${totalMinutes} min`;
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  return minutes > 0 ? `${hours} hr ${minutes} min` : `${hours} hr`;
 }
 
 function formatNum(value: number): string {
@@ -680,34 +886,52 @@ function describeActivity(item: Activity): string {
   )}`;
 }
 
-function renderActivityBody(item: Activity) {
-  if (item.kind === "note") {
-    return (
-      <>
-        <b>Note</b>
-        <span className="tl-ci__det"> — {item.title}</span>
-      </>
-    );
-  }
-  const hasBefore =
-    (item.beforeDisplay !== null && item.beforeDisplay !== undefined && item.beforeDisplay !== "") ||
-    (item.before !== null && item.before !== undefined) ||
-    (item.beforePercent !== null && item.beforePercent !== undefined);
+// Left column of a move row: "Device · Parameter", so the eye can lock onto
+// what was touched separately from the value.
+function moveWhatNode(item: Activity) {
   return (
-    <>
+    <span className="tl-ci__what">
       <b>{item.deviceName ?? "Device"}</b>
-      <span className="tl-ci__det"> — {item.paramName ?? "parameter"} </span>
-      {!hasBefore ? (
-        <span className="tl-ba">
-          set to <span className="tl-ba__n">{formatMoveValue(item.after, item.afterPercent, item.unit, item.afterDisplay)}</span>
-        </span>
+      <span className="tl-ci__det"> · {item.paramName ?? "parameter"}</span>
+    </span>
+  );
+}
+
+// Right column of a move row: the value, as "before → after" (or just "after"
+// when no pre-value is known), with an optional "N×" badge for a collapsed run.
+function moveValueNode(beforeItem: Activity, afterItem: Activity, count: number) {
+  const after = formatMoveValue(
+    afterItem.after,
+    afterItem.afterPercent,
+    afterItem.unit,
+    afterItem.afterDisplay,
+  );
+  const hasBefore =
+    (beforeItem.beforeDisplay !== null &&
+      beforeItem.beforeDisplay !== undefined &&
+      beforeItem.beforeDisplay !== "") ||
+    (beforeItem.before !== null && beforeItem.before !== undefined) ||
+    (beforeItem.beforePercent !== null && beforeItem.beforePercent !== undefined);
+  return (
+    <span className="tl-ci__val tl-ba">
+      {hasBefore ? (
+        <>
+          <span className="tl-ba__o">
+            {formatMoveValue(
+              beforeItem.before,
+              beforeItem.beforePercent,
+              beforeItem.unit,
+              beforeItem.beforeDisplay,
+            )}
+          </span>
+          <span className="tl-ba__arr">→</span>
+          <span className="tl-ba__n">{after}</span>
+        </>
       ) : (
-        <span className="tl-ba">
-          <span className="tl-ba__o">{formatMoveValue(item.before, item.beforePercent, item.unit, item.beforeDisplay)}</span> →{" "}
-          <span className="tl-ba__n">{formatMoveValue(item.after, item.afterPercent, item.unit, item.afterDisplay)}</span>
-        </span>
+        <span className="tl-ba__n">{after}</span>
       )}
-    </>
+      {count > 1 && <span className="tl-ba__count">{count}×</span>}
+    </span>
   );
 }
 
@@ -728,17 +952,6 @@ function deviceColor(device: DeviceObj): string {
   if (device.role === "instrument") return "#9c88ff";
   if (device.role === "midi_effect") return "#6382ff";
   return "#5ab4a0";
-}
-
-function readableText(hex: string): string {
-  const match = /^#([0-9a-fA-F]{6})$/.exec(hex);
-  if (!match) return "#f4f6ff";
-  const int = parseInt(match[1], 16);
-  const r = (int >> 16) & 255;
-  const g = (int >> 8) & 255;
-  const b = int & 255;
-  const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
-  return luminance > 0.62 ? "#0d0f18" : "#f4f6ff";
 }
 
 function ScanIcon() {

@@ -298,11 +298,17 @@ impl StorageState {
                     device_chain,
                     parameter_name,
                     parameter_value,
+                    previous_parameter_value,
+                    parameter_value_percent,
+                    previous_parameter_value_percent,
                     clip_name,
                     sample_name,
                     file_path,
                     bpm,
-                    playing
+                    playing,
+                    parameter_display_value,
+                    previous_parameter_display_value,
+                    parameter_is_quantized
                 FROM events
                 WHERE session_id = ?1
                 ORDER BY timestamp_ms ASC, id ASC
@@ -329,11 +335,17 @@ impl StorageState {
                 let device_chain: Option<String> = row.get(11)?;
                 let parameter_name: Option<String> = row.get(12)?;
                 let parameter_value: Option<f64> = row.get(13)?;
-                let clip_name: Option<String> = row.get(14)?;
-                let sample_name: Option<String> = row.get(15)?;
-                let file_path: Option<String> = row.get(16)?;
-                let bpm: Option<f64> = row.get(17)?;
-                let playing: Option<i64> = row.get(18)?;
+                let previous_parameter_value: Option<f64> = row.get(14)?;
+                let parameter_value_percent: Option<f64> = row.get(15)?;
+                let previous_parameter_value_percent: Option<f64> = row.get(16)?;
+                let clip_name: Option<String> = row.get(17)?;
+                let sample_name: Option<String> = row.get(18)?;
+                let file_path: Option<String> = row.get(19)?;
+                let bpm: Option<f64> = row.get(20)?;
+                let playing: Option<i64> = row.get(21)?;
+                let parameter_display_value: Option<String> = row.get(22)?;
+                let previous_parameter_display_value: Option<String> = row.get(23)?;
+                let parameter_is_quantized: Option<i64> = row.get(24)?;
 
                 let payload_json = payload
                     .as_deref()
@@ -361,6 +373,54 @@ impl StorageState {
                         .or_else(|| read_payload_string(pj, &["parameter", "parameter_name"])),
                     parameter_value: parameter_value
                         .or_else(|| read_payload_f64(pj, &["parameter_value", "value"])),
+                    previous_parameter_value: previous_parameter_value.or_else(|| {
+                        read_payload_f64(
+                            pj,
+                            &["previous_parameter_value", "previous_value", "before_value"],
+                        )
+                    }),
+                    parameter_value_percent: parameter_value_percent.or_else(|| {
+                        read_payload_f64(
+                            pj,
+                            &[
+                                "parameter_value_percent",
+                                "value_percent",
+                                "parameter_percent",
+                                "normalized_percent",
+                            ],
+                        )
+                    }),
+                    previous_parameter_value_percent: previous_parameter_value_percent.or_else(
+                        || {
+                            read_payload_f64(
+                                pj,
+                                &[
+                                    "previous_parameter_value_percent",
+                                    "previous_value_percent",
+                                    "before_value_percent",
+                                ],
+                            )
+                        },
+                    ),
+                    parameter_display_value: parameter_display_value.or_else(|| {
+                        read_payload_string(pj, &["parameter_display_value", "display_value"])
+                    }),
+                    previous_parameter_display_value: previous_parameter_display_value.or_else(
+                        || {
+                            read_payload_string(
+                                pj,
+                                &[
+                                    "previous_parameter_display_value",
+                                    "previous_display_value",
+                                ],
+                            )
+                        },
+                    ),
+                    parameter_is_quantized: parameter_is_quantized
+                        .map(|value| value != 0)
+                        .or_else(|| {
+                            read_payload_bool(pj, &["parameter_is_quantized", "is_quantized"])
+                        }),
                     clip_name: clip_name
                         .or_else(|| read_payload_string(pj, &["clip_name", "clip"])),
                     sample_name: sample_name
@@ -1112,6 +1172,12 @@ impl StorageState {
                         device_chain,
                         parameter_name,
                         parameter_value,
+                        previous_parameter_value,
+                        parameter_value_percent,
+                        previous_parameter_value_percent,
+                        parameter_display_value,
+                        previous_parameter_display_value,
+                        parameter_is_quantized,
                         clip_name,
                         sample_name,
                         file_path,
@@ -1121,7 +1187,8 @@ impl StorageState {
                     )
                     VALUES (
                         ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
-                        ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20
+                        ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20,
+                        ?21, ?22, ?23, ?24, ?25, ?26
                     )
                     ",
                 )
@@ -1149,6 +1216,13 @@ impl StorageState {
                         event.device_chain.as_deref(),
                         event.parameter_name.as_deref(),
                         event.parameter_value,
+                        event.previous_parameter_value,
+                        event.parameter_value_percent,
+                        event.previous_parameter_value_percent,
+                        event.parameter_display_value.as_deref(),
+                        event.previous_parameter_display_value.as_deref(),
+                        // SQLite has no boolean type; store is_quantized as 0/1, NULL if absent.
+                        event.parameter_is_quantized.map(|quantized| quantized as i64),
                         event.clip_name.as_deref(),
                         event.sample_name.as_deref(),
                         event.file_path.as_deref(),
@@ -1487,8 +1561,11 @@ impl StorageState {
                 .prepare_cached(
                     "INSERT INTO parameter_changes
                      (id, session_id, parameter_id, track_name, device_name, parameter_name,
-                      before_value, after_value, unit, reason, changed_at_ms, source_event_id)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                      before_value, after_value, before_value_percent, after_value_percent,
+                      unit, before_display_value, after_display_value, is_quantized,
+                      reason, changed_at_ms, source_event_id)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
+                             ?15, ?16, ?17)",
                 )
                 .map_err(|error| {
                     format!("Failed to prepare parameter_changes insert: {}", error)
@@ -1510,7 +1587,12 @@ impl StorageState {
                         change.parameter_name,
                         change.before_value,
                         change.after_value,
+                        change.before_value_percent,
+                        change.after_value_percent,
                         change.unit,
+                        change.before_display_value,
+                        change.after_display_value,
+                        change.is_quantized.map(|quantized| quantized as i64),
                         change.reason,
                         change.changed_at_ms as i64,
                         source_event_id
@@ -1587,7 +1669,9 @@ impl StorageState {
         let mut statement = connection
             .prepare(
                 "SELECT id, parameter_id, track_name, device_name, parameter_name,
-                        before_value, after_value, unit, reason, changed_at_ms
+                        before_value, after_value, before_value_percent, after_value_percent,
+                        unit, before_display_value, after_display_value, is_quantized,
+                        reason, changed_at_ms
                  FROM parameter_changes WHERE session_id = ?1
                  ORDER BY changed_at_ms ASC, id ASC",
             )
@@ -1603,9 +1687,14 @@ impl StorageState {
                     parameter_name: row.get(4)?,
                     before_value: row.get(5)?,
                     after_value: row.get(6)?,
-                    unit: row.get(7)?,
-                    reason: row.get(8)?,
-                    changed_at_ms: row.get::<_, i64>(9)? as u64,
+                    before_value_percent: row.get(7)?,
+                    after_value_percent: row.get(8)?,
+                    unit: row.get(9)?,
+                    before_display_value: row.get(10)?,
+                    after_display_value: row.get(11)?,
+                    is_quantized: row.get::<_, Option<i64>>(12)?.map(|value| value != 0),
+                    reason: row.get(13)?,
+                    changed_at_ms: row.get::<_, i64>(14)? as u64,
                 })
             })
             .map_err(|error| format!("Failed to read parameter_changes: {}", error))?;
@@ -2199,7 +2288,10 @@ fn collect_change_events(
 ) -> Result<Vec<ChangeEvent>, String> {
     let mut statement = connection
         .prepare(
-            "SELECT id, timestamp_ms, track_name, device_name, parameter_name, parameter_value
+            "SELECT id, timestamp_ms, track_name, device_name, parameter_name,
+                    parameter_value, previous_parameter_value, parameter_value_percent,
+                    previous_parameter_value_percent, parameter_display_value,
+                    previous_parameter_display_value, parameter_is_quantized
              FROM events
              WHERE session_id = ?1
                AND event_type IN ('parameter_changed', 'device_parameter_changed', 'automation_created')
@@ -2216,6 +2308,12 @@ fn collect_change_events(
                 device_name: row.get(3)?,
                 parameter_name: row.get(4)?,
                 value: row.get(5)?,
+                previous_value: row.get(6)?,
+                value_percent: row.get(7)?,
+                previous_value_percent: row.get(8)?,
+                display_value: row.get(9)?,
+                previous_display_value: row.get(10)?,
+                is_quantized: row.get::<_, Option<i64>>(11)?.map(|value| value != 0),
             })
         })
         .map_err(|error| format!("Failed to read change events: {}", error))?;
@@ -2409,6 +2507,12 @@ pub fn initialize_database(db_path: &Path) -> rusqlite::Result<()> {
             device_chain TEXT,
             parameter_name TEXT,
             parameter_value REAL,
+            previous_parameter_value REAL,
+            parameter_value_percent REAL,
+            previous_parameter_value_percent REAL,
+            parameter_display_value TEXT,
+            previous_parameter_display_value TEXT,
+            parameter_is_quantized INTEGER,
             clip_name TEXT,
             sample_name TEXT,
             file_path TEXT,
@@ -2512,7 +2616,12 @@ pub fn initialize_database(db_path: &Path) -> rusqlite::Result<()> {
             parameter_name TEXT,
             before_value REAL,
             after_value REAL,
+            before_value_percent REAL,
+            after_value_percent REAL,
             unit TEXT,
+            before_display_value TEXT,
+            after_display_value TEXT,
+            is_quantized INTEGER,
             reason TEXT,
             changed_at_ms INTEGER NOT NULL,
             source_event_id INTEGER,
@@ -2562,6 +2671,7 @@ pub fn initialize_database(db_path: &Path) -> rusqlite::Result<()> {
         ",
     )?;
     migrate_event_columns(&connection)?;
+    migrate_parameter_change_columns(&connection)?;
     backfill_projects(&connection)?;
 
     Ok(())
@@ -2753,6 +2863,12 @@ fn migrate_event_columns(connection: &Connection) -> rusqlite::Result<()> {
         ("device_chain", "TEXT"),
         ("parameter_name", "TEXT"),
         ("parameter_value", "REAL"),
+        ("previous_parameter_value", "REAL"),
+        ("parameter_value_percent", "REAL"),
+        ("previous_parameter_value_percent", "REAL"),
+        ("parameter_display_value", "TEXT"),
+        ("previous_parameter_display_value", "TEXT"),
+        ("parameter_is_quantized", "INTEGER"),
         ("clip_name", "TEXT"),
         ("sample_name", "TEXT"),
         ("file_path", "TEXT"),
@@ -2764,6 +2880,32 @@ fn migrate_event_columns(connection: &Connection) -> rusqlite::Result<()> {
         if !existing.contains(*name) {
             connection
                 .execute_batch(&format!("ALTER TABLE events ADD COLUMN {name} {sql_type};"))?;
+        }
+    }
+
+    Ok(())
+}
+
+fn migrate_parameter_change_columns(connection: &Connection) -> rusqlite::Result<()> {
+    let existing: std::collections::HashSet<String> = {
+        let mut statement = connection.prepare("PRAGMA table_info(parameter_changes)")?;
+        let names = statement.query_map([], |row| row.get::<_, String>(1))?;
+        names.collect::<rusqlite::Result<_>>()?
+    };
+
+    const COLUMNS: &[(&str, &str)] = &[
+        ("before_value_percent", "REAL"),
+        ("after_value_percent", "REAL"),
+        ("before_display_value", "TEXT"),
+        ("after_display_value", "TEXT"),
+        ("is_quantized", "INTEGER"),
+    ];
+
+    for (name, sql_type) in COLUMNS {
+        if !existing.contains(*name) {
+            connection.execute_batch(&format!(
+                "ALTER TABLE parameter_changes ADD COLUMN {name} {sql_type};"
+            ))?;
         }
     }
 
@@ -2823,6 +2965,12 @@ mod tests {
             device_name: None,
             parameter_name: None,
             parameter_value: None,
+            previous_parameter_value: None,
+            parameter_value_percent: None,
+            previous_parameter_value_percent: None,
+            parameter_display_value: None,
+            previous_parameter_display_value: None,
+            parameter_is_quantized: None,
             clip_name: None,
             sample_name: None,
             file_path: None,
@@ -3128,6 +3276,9 @@ mod tests {
             "track_name",
             "track_type",
             "device_chain",
+            "previous_parameter_value",
+            "parameter_value_percent",
+            "previous_parameter_value_percent",
             "sample_name",
             "file_path",
             "bpm",
@@ -3245,6 +3396,7 @@ mod tests {
         event.device_name = Some(device.into());
         event.parameter_name = Some(parameter.into());
         event.parameter_value = Some(value);
+        event.parameter_value_percent = Some(value * 100.0);
         event
     }
 
@@ -3310,12 +3462,15 @@ mod tests {
         assert_eq!(changes.len(), 2);
         assert_eq!(changes[0].before_value, None);
         assert_eq!(changes[0].after_value, Some(0.2));
+        assert_eq!(changes[0].after_value_percent, Some(20.0));
         assert!(
             changes[0].parameter_id.is_some(),
             "change links to tree param"
         );
         assert_eq!(changes[1].before_value, Some(0.2));
         assert_eq!(changes[1].after_value, Some(0.5));
+        assert_eq!(changes[1].before_value_percent, Some(20.0));
+        assert_eq!(changes[1].after_value_percent, Some(50.0));
 
         cleanup(&path);
     }

@@ -36,6 +36,22 @@ pub struct RecallEvent {
     #[serde(default)]
     pub parameter_value: Option<f64>,
     #[serde(default)]
+    pub previous_parameter_value: Option<f64>,
+    #[serde(default)]
+    pub parameter_value_percent: Option<f64>,
+    #[serde(default)]
+    pub previous_parameter_value_percent: Option<f64>,
+    // Live-formatted display strings: the mode name for quantized params
+    // ("Sinefold", "Analog Clip") or the unit-bearing value for continuous ones
+    // ("440 Hz", "-12.0 dB"). parameter_is_quantized tells the frontend which
+    // kind it is, so categorical modes and numeric values can render differently.
+    #[serde(default)]
+    pub parameter_display_value: Option<String>,
+    #[serde(default)]
+    pub previous_parameter_display_value: Option<String>,
+    #[serde(default)]
+    pub parameter_is_quantized: Option<bool>,
+    #[serde(default)]
     pub clip_name: Option<String>,
     // Sample/file backing an audio clip (e.g. a Splice drag-in). sample_name is
     // the bare file name for display; file_path is the full on-disk source.

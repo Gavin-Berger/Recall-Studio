@@ -82,7 +82,15 @@ export type ParameterChange = {
   parameter_name: string | null;
   before_value: number | null;
   after_value: number | null;
+  before_value_percent: number | null;
+  after_value_percent: number | null;
   unit: string | null;
+  // Live-formatted display: mode name for quantized params ("Sinefold"), or the
+  // unit-bearing value for continuous ones ("440 Hz"). is_quantized distinguishes
+  // a categorical mode from a numeric value so they can render differently.
+  before_display_value: string | null;
+  after_display_value: string | null;
+  is_quantized: boolean | null;
   reason: string | null;
   changed_at_ms: number;
 };

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildSchemaStream,
   formatParameterChange,
+  formatPercent,
   formatValue,
   groupTracksByParent,
 } from "./timeline";
@@ -21,7 +22,12 @@ function change(overrides: Partial<ParameterChange>): ParameterChange {
     parameter_name: "Cutoff",
     before_value: null,
     after_value: 0.5,
+    before_value_percent: null,
+    after_value_percent: null,
     unit: null,
+    before_display_value: null,
+    after_display_value: null,
+    is_quantized: null,
     reason: null,
     changed_at_ms: 1_000,
     ...overrides,
@@ -94,6 +100,48 @@ describe("formatParameterChange", () => {
       "Cutoff → 0.2",
     );
   });
+
+  it("prefers before and after percentages when present", () => {
+    expect(
+      formatParameterChange(
+        change({
+          before_value: 0.2,
+          after_value: 0.55,
+          before_value_percent: 20,
+          after_value_percent: 55,
+        }),
+      ),
+    ).toBe("Cutoff: 20% → 55%");
+  });
+
+  it("prefers Live display values over raw numbers (units / mode names)", () => {
+    expect(
+      formatParameterChange(
+        change({
+          parameter_name: "Filter 1 Freq",
+          before_value: 0.4,
+          after_value: 0.6,
+          before_display_value: "200 Hz",
+          after_display_value: "440 Hz",
+        }),
+      ),
+    ).toBe("Filter 1 Freq: 200 Hz → 440 Hz");
+  });
+
+  it("renders a quantized mode name with no before value", () => {
+    expect(
+      formatParameterChange(
+        change({
+          parameter_name: "Saturate Mode",
+          before_value: null,
+          before_value_percent: null,
+          after_value: 2,
+          after_display_value: "Sinefold",
+          is_quantized: true,
+        }),
+      ),
+    ).toBe("Saturate Mode → Sinefold");
+  });
 });
 
 describe("formatValue", () => {
@@ -101,6 +149,14 @@ describe("formatValue", () => {
     expect(formatValue(1)).toBe("1");
     expect(formatValue(0.5)).toBe("0.5");
     expect(formatValue(null)).toBe("—");
+  });
+});
+
+describe("formatPercent", () => {
+  it("rounds percentages to one decimal when needed", () => {
+    expect(formatPercent(67)).toBe("67%");
+    expect(formatPercent(67.25)).toBe("67.3%");
+    expect(formatPercent(null)).toBe("—");
   });
 });
 

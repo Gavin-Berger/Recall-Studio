@@ -295,6 +295,42 @@ fn normalize_udp_json(mut value: Value) -> Result<Value, String> {
         payload_obj,
         &["parameter_value", "value", "param_value"],
     );
+    let previous_parameter_value = find_f64(
+        object,
+        payload_obj,
+        &["previous_parameter_value", "previous_value", "before_value"],
+    );
+    let parameter_value_percent = find_f64(
+        object,
+        payload_obj,
+        &[
+            "parameter_value_percent",
+            "value_percent",
+            "parameter_percent",
+            "normalized_percent",
+        ],
+    );
+    let previous_parameter_value_percent = find_f64(
+        object,
+        payload_obj,
+        &[
+            "previous_parameter_value_percent",
+            "previous_value_percent",
+            "before_value_percent",
+        ],
+    );
+    let parameter_display_value = find_string(
+        object,
+        payload_obj,
+        &["parameter_display_value", "display_value"],
+    );
+    let previous_parameter_display_value = find_string(
+        object,
+        payload_obj,
+        &["previous_parameter_display_value", "previous_display_value"],
+    );
+    let parameter_is_quantized =
+        find_bool(object, payload_obj, &["parameter_is_quantized", "is_quantized"]);
 
     // Write every canonical field back to the top level — present value or explicit null.
     // This guarantees the frontend always sees a flat, predictable shape with no
@@ -350,6 +386,36 @@ fn normalize_udp_json(mut value: Value) -> Result<Value, String> {
     match parameter_value {
         Some(v) => object.insert("parameter_value".to_string(), json!(v)),
         None => object.insert("parameter_value".to_string(), Value::Null),
+    };
+    match previous_parameter_value {
+        Some(v) => object.insert("previous_parameter_value".to_string(), json!(v)),
+        None => object.insert("previous_parameter_value".to_string(), Value::Null),
+    };
+    match parameter_value_percent {
+        Some(v) => object.insert("parameter_value_percent".to_string(), json!(v)),
+        None => object.insert("parameter_value_percent".to_string(), Value::Null),
+    };
+    match previous_parameter_value_percent {
+        Some(v) => object.insert("previous_parameter_value_percent".to_string(), json!(v)),
+        None => object.insert(
+            "previous_parameter_value_percent".to_string(),
+            Value::Null,
+        ),
+    };
+    match parameter_display_value {
+        Some(v) => object.insert("parameter_display_value".to_string(), Value::String(v)),
+        None => object.insert("parameter_display_value".to_string(), Value::Null),
+    };
+    match previous_parameter_display_value {
+        Some(v) => object.insert(
+            "previous_parameter_display_value".to_string(),
+            Value::String(v),
+        ),
+        None => object.insert("previous_parameter_display_value".to_string(), Value::Null),
+    };
+    match parameter_is_quantized {
+        Some(v) => object.insert("parameter_is_quantized".to_string(), json!(v)),
+        None => object.insert("parameter_is_quantized".to_string(), Value::Null),
     };
 
     Ok(value)

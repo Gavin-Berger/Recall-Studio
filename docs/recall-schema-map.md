@@ -186,10 +186,9 @@ parameters. Stored in `parameters` (self-referential via `parent_parameter_id`).
 | `is_enabled` | defined | read in the deep scan, not persisted |
 | `default_value` / `value_items` (enum params) | proposed | e.g. filter-type dropdowns |
 
-> **The biggest single gap in this layer** is not a field — it's the *change* feed. Real-time
-> `parameter_changed` from live knob moves is **defined but not auto-emitted** (manual Max
-> message only). Wiring it — with the debounce specified in the protocol doc — is what fills the
-> parameter-change timeline during an actual session. See the gap list.
+> The change feed now receives selected-track `parameter_changed` moves from the bridge.
+> Each move carries before/after raw values plus normalized percentages, then materializes
+> into `parameter_changes`. Background-track parameter scans remain intentionally out of scope.
 
 ### Clip — **defined** (captured, not materialized)
 
@@ -318,12 +317,12 @@ Max message, not automatic capture) are marked **defined · manual**.
 | `macro_mapped` | defined |
 | `device_event` | defined |
 
-### Parameters & automation — 1/5 live
+### Parameters & automation — 2/5 live
 
 | `event_type` | Status |
 |---|---|
 | `automation_created` | live |
-| `parameter_changed` | defined · manual — **the big gap** (live knob moves) |
+| `parameter_changed` | live (selected track, debounced by focus scan) |
 | `device_parameter_changed` | defined |
 | `automation_edited` | defined |
 | `automation_deleted` | defined |
@@ -428,9 +427,9 @@ being read — they're modeling/wiring work, not new capture.
 2. **Clips as a first-class entity** *(highest value)* — add a `clips` table + tree nodes from
    the deep snapshot's `clip_slots` (sample, length, loop, warp). The data already exists; it
    needs a home. Then wire `clip_launched/moved/renamed` on top.
-3. **Real-time `parameter_changed`** *(pays off twice)* — emit live knob moves from the bridge
-   with the required debounce (protocol doc §"Parameter rate-limiting"). Same task as bridge
-   gesture-coalescing on the beta roadmap. Fills the parameter timeline during a real session.
+3. **Background-track `parameter_changed`** — selected-track knob moves are live; scanning
+   every track's parameters is still too expensive. A future design would need a safe target
+   selection/coalescing strategy rather than a full-set parameter sweep.
 4. **Mixer strip entity + Mixing events** — model volume/pan/sends as current state and emit the
    four mixing events (debounced). Captures the whole "balancing the mix" phase, which is
    invisible today.

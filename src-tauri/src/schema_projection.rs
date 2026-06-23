@@ -165,7 +165,15 @@ pub struct ParameterChange {
     pub parameter_name: Option<String>,
     pub before_value: Option<f64>,
     pub after_value: Option<f64>,
+    pub before_value_percent: Option<f64>,
+    pub after_value_percent: Option<f64>,
     pub unit: Option<String>,
+    // Live-formatted display strings: the mode name for quantized params
+    // ("Sinefold") or the unit-bearing value for continuous ones ("440 Hz").
+    // is_quantized lets the timeline render a mode label vs a numeric value.
+    pub before_display_value: Option<String>,
+    pub after_display_value: Option<String>,
+    pub is_quantized: Option<bool>,
     pub reason: Option<String>,
     pub changed_at_ms: u64,
 }
@@ -360,6 +368,12 @@ pub struct ChangeEvent {
     pub device_name: Option<String>,
     pub parameter_name: Option<String>,
     pub value: Option<f64>,
+    pub previous_value: Option<f64>,
+    pub value_percent: Option<f64>,
+    pub previous_value_percent: Option<f64>,
+    pub display_value: Option<String>,
+    pub previous_display_value: Option<String>,
+    pub is_quantized: Option<bool>,
 }
 
 /// Compute before/after values for a session's parameter changes.
@@ -382,6 +396,8 @@ pub fn build_parameter_changes(
     });
 
     let mut previous: HashMap<(String, String, String), f64> = HashMap::new();
+    let mut previous_percent: HashMap<(String, String, String), f64> = HashMap::new();
+    let mut previous_display: HashMap<(String, String, String), String> = HashMap::new();
     let mut rows = Vec::new();
 
     for change in changes {
@@ -395,8 +411,19 @@ pub fn build_parameter_changes(
             parameter_name.clone(),
         );
 
-        let before_value = previous.get(&key).copied();
+        let before_value = change
+            .previous_value
+            .or_else(|| previous.get(&key).copied());
         let after_value = change.value;
+        let before_value_percent = change
+            .previous_value_percent
+            .or_else(|| previous_percent.get(&key).copied());
+        let after_value_percent = change.value_percent;
+        let before_display_value = change
+            .previous_display_value
+            .clone()
+            .or_else(|| previous_display.get(&key).cloned());
+        let after_display_value = change.display_value.clone();
 
         rows.push(ParameterChange {
             id: format!("pc::{}", change.event_id),
@@ -406,13 +433,26 @@ pub fn build_parameter_changes(
             parameter_name: Some(parameter_name),
             before_value,
             after_value,
+            before_value_percent,
+            after_value_percent,
             unit: None,
+            before_display_value,
+            after_display_value: after_display_value.clone(),
+            is_quantized: change.is_quantized,
             reason: None,
             changed_at_ms: change.timestamp_ms,
         });
 
         if let Some(value) = after_value {
-            previous.insert(key, value);
+            previous.insert(key.clone(), value);
+        }
+
+        if let Some(value) = after_value_percent {
+            previous_percent.insert(key.clone(), value);
+        }
+
+        if let Some(display) = after_display_value {
+            previous_display.insert(key, display);
         }
     }
 
@@ -552,6 +592,12 @@ mod tests {
                 device_name: Some("Synth".into()),
                 parameter_name: Some("Cutoff".into()),
                 value: Some(0.20),
+                previous_value: None,
+                value_percent: None,
+                previous_value_percent: None,
+                display_value: None,
+                previous_display_value: None,
+                is_quantized: None,
             },
             ChangeEvent {
                 event_id: 2,
@@ -560,6 +606,12 @@ mod tests {
                 device_name: Some("Synth".into()),
                 parameter_name: Some("Cutoff".into()),
                 value: Some(0.55),
+                previous_value: None,
+                value_percent: None,
+                previous_value_percent: None,
+                display_value: None,
+                previous_display_value: None,
+                is_quantized: None,
             },
         ];
 
@@ -592,6 +644,12 @@ mod tests {
                 device_name: Some("D".into()),
                 parameter_name: Some("A".into()),
                 value: Some(1.0),
+                previous_value: None,
+                value_percent: None,
+                previous_value_percent: None,
+                display_value: None,
+                previous_display_value: None,
+                is_quantized: None,
             },
             ChangeEvent {
                 event_id: 2,
@@ -600,11 +658,43 @@ mod tests {
                 device_name: Some("D".into()),
                 parameter_name: Some("B".into()),
                 value: Some(9.0),
+                previous_value: None,
+                value_percent: None,
+                previous_value_percent: None,
+                display_value: None,
+                previous_display_value: None,
+                is_quantized: None,
             },
         ];
         let rows = build_parameter_changes(changes, &HashMap::new());
         // Each first-in-group change has no before value.
         assert!(rows.iter().all(|r| r.before_value.is_none()));
         assert!(rows.iter().all(|r| r.parameter_id.is_none()));
+    }
+
+    #[test]
+    fn explicit_previous_values_and_percents_win_on_first_change() {
+        let changes = vec![ChangeEvent {
+            event_id: 1,
+            timestamp_ms: 100,
+            track_name: Some("Bass 1".into()),
+            device_name: Some("Synth".into()),
+            parameter_name: Some("Cutoff".into()),
+            value: Some(0.8),
+            previous_value: Some(0.2),
+            value_percent: Some(80.0),
+            previous_value_percent: Some(20.0),
+            display_value: None,
+            previous_display_value: None,
+            is_quantized: None,
+        }];
+
+        let rows = build_parameter_changes(changes, &HashMap::new());
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].before_value, Some(0.2));
+        assert_eq!(rows[0].after_value, Some(0.8));
+        assert_eq!(rows[0].before_value_percent, Some(20.0));
+        assert_eq!(rows[0].after_value_percent, Some(80.0));
     }
 }

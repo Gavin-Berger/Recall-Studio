@@ -344,17 +344,18 @@ pub static CATALOG: &[EventDef] = &[
         "A macro control was mapped to a parameter.",
     ),
     // ── Parameters & automation ─────────────────────────────────────────────
-    // Live parameter moves are Coalescible (frequent, debounced at the bridge).
-    // Writing automation is a creative decision and is Critical.
+    // Live parameter moves are already debounced at the bridge, so keep them
+    // durable under queue pressure. Writing automation is a creative decision
+    // and is Critical.
     def(
         "parameter_changed",
-        Coalescible,
+        Important,
         "Parameter Changed",
         "A device parameter was adjusted.",
     ),
     def(
         "device_parameter_changed",
-        Coalescible,
+        Important,
         "Parameter Changed",
         "A device parameter was adjusted.",
     ),

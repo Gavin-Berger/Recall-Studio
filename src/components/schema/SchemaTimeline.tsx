@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
 import "./SchemaTimeline.css";
 import {
   createCreativeMoment,
@@ -22,6 +23,23 @@ import type { SavedSessionMetadata } from "../../types/recall";
 
 type LoadStatus = "idle" | "loading" | "ready" | "error";
 
+const LIVE_REFRESH_DEBOUNCE_MS = 700;
+const LIVE_REFRESH_EVENT_TYPES = new Set([
+  "parameter_changed",
+  "device_parameter_changed",
+  "automation_created",
+  "selected_track_focus_snapshot",
+  "live_set_snapshot",
+  "device_added",
+  "device_removed",
+  "device_chain_changed",
+]);
+
+type LiveRecallEvent = {
+  session_id?: string | null;
+  event_type?: string | null;
+};
+
 // One thing that happened on a track this take — a knob move or a note.
 type Activity = {
   id: string;
@@ -33,7 +51,14 @@ type Activity = {
   paramName?: string | null;
   before?: number | null;
   after?: number | null;
+  beforePercent?: number | null;
+  afterPercent?: number | null;
   unit?: string | null;
+  // Live-formatted display: mode name for quantized params ("Sinefold"), or the
+  // unit-bearing value for continuous ones ("440 Hz"). Preferred over the raw
+  // number/percent when present.
+  beforeDisplay?: string | null;
+  afterDisplay?: string | null;
   // note
   title?: string;
   starred?: boolean;
@@ -56,9 +81,9 @@ export function SchemaTimeline({
   const [noteStar, setNoteStar] = useState(false);
 
   const load = useCallback(
-    async (rematerialize: boolean) => {
+    async (rematerialize: boolean, quiet = false) => {
       if (!sessionId) return;
-      setStatus("loading");
+      if (!quiet) setStatus("loading");
       setError(null);
       try {
         if (rematerialize) await materializeSessionSchema(sessionId);
@@ -86,6 +111,42 @@ export function SchemaTimeline({
     setSelectedTrackId(null);
     void load(true);
   }, [sessionId, load]);
+
+  useEffect(() => {
+    if (!sessionId || session?.ended_at_ms !== null) return;
+
+    let disposed = false;
+    let unlisten: (() => void) | null = null;
+    let refreshTimer: number | null = null;
+
+    const scheduleRefresh = () => {
+      if (refreshTimer !== null) window.clearTimeout(refreshTimer);
+      refreshTimer = window.setTimeout(() => {
+        refreshTimer = null;
+        void load(true, true);
+      }, LIVE_REFRESH_DEBOUNCE_MS);
+    };
+
+    void listen<LiveRecallEvent>("recall-event", (event) => {
+      const incoming = event.payload;
+      if (incoming.session_id !== sessionId) return;
+      const eventType = incoming.event_type ?? "";
+      if (!LIVE_REFRESH_EVENT_TYPES.has(eventType)) return;
+      scheduleRefresh();
+    }).then((cleanup) => {
+      if (disposed) {
+        cleanup();
+      } else {
+        unlisten = cleanup;
+      }
+    });
+
+    return () => {
+      disposed = true;
+      if (refreshTimer !== null) window.clearTimeout(refreshTimer);
+      if (unlisten) unlisten();
+    };
+  }, [sessionId, session?.ended_at_ms, load]);
 
   const refreshMoments = useCallback(async () => {
     if (!sessionId) return;
@@ -126,7 +187,11 @@ export function SchemaTimeline({
         paramName: change.parameter_name,
         before: change.before_value,
         after: change.after_value,
+        beforePercent: change.before_value_percent,
+        afterPercent: change.after_value_percent,
         unit: change.unit,
+        beforeDisplay: change.before_display_value,
+        afterDisplay: change.after_display_value,
       });
     }
     for (const moment of moments) {
@@ -148,6 +213,27 @@ export function SchemaTimeline({
     () => tracks.map((track) => ({ track, items: activities.filter((a) => a.trackId === track.id) })),
     [tracks, activities],
   );
+
+  // Shared y-scale for the per-lane activity graphs: the busiest channel peaks
+  // at the top, so taller curve = more changes. Sorted move timestamps per lane
+  // feed a cumulative step-line that builds left→right.
+  const laneGraphs = useMemo(() => {
+    const moveTimesByLane = new Map<string, number[]>();
+    let maxMoves = 0;
+    for (const lane of lanes) {
+      const times = lane.items
+        .filter((item) => item.kind === "move")
+        .map((item) => item.atMs)
+        .sort((a, b) => a - b);
+      moveTimesByLane.set(lane.track.id, times);
+      maxMoves = Math.max(maxMoves, times.length);
+    }
+    return { moveTimesByLane, maxMoves };
+  }, [lanes]);
+
+  // Right edge of every lane graph: the live playhead while recording, else the
+  // full width so a finished take's curve reaches the end.
+  const xEnd = bounds.recording ? pct(Date.now(), bounds) : 100;
 
   // Default the dock to the first track once a scan lands.
   useEffect(() => {
@@ -267,26 +353,45 @@ export function SchemaTimeline({
                   </span>
                 ))}
               </div>
-              {lanes.map((lane) => (
-                <button
-                  key={lane.track.id}
-                  type="button"
-                  className={`tl-lane ${lane.track.id === selectedTrackId ? "is-sel" : ""}`}
-                  onClick={() => setSelectedTrackId(lane.track.id)}
-                  aria-label={`${lane.track.name ?? "Untitled track"} — ${lane.items.length} moves`}
-                >
-                  {lane.items.map((item) => (
-                    <span
-                      key={item.id}
-                      className={`tl-mk tl-mk--${item.kind}`}
-                      style={{ left: `${pct(item.atMs, bounds)}%` }}
-                      title={describeActivity(item)}
-                    >
-                      {item.kind === "note" ? "★" : ""}
-                    </span>
-                  ))}
-                </button>
-              ))}
+              {lanes.map((lane) => {
+                const moveTimes = laneGraphs.moveTimesByLane.get(lane.track.id) ?? [];
+                const graph = cumulativeMovePaths(moveTimes, bounds, laneGraphs.maxMoves, xEnd);
+                const moveCount = moveTimes.length;
+                return (
+                  <button
+                    key={lane.track.id}
+                    type="button"
+                    className={`tl-lane ${lane.track.id === selectedTrackId ? "is-sel" : ""}`}
+                    onClick={() => setSelectedTrackId(lane.track.id)}
+                    aria-label={`${lane.track.name ?? "Untitled track"} — ${moveCount} moves`}
+                  >
+                    {graph && (
+                      <svg
+                        className="tl-graph"
+                        viewBox="0 0 100 100"
+                        preserveAspectRatio="none"
+                        style={{ color: trackColor(lane.track) }}
+                        aria-hidden="true"
+                      >
+                        <path className="tl-graph__area" d={graph.area} />
+                        <path className="tl-graph__line" d={graph.line} vectorEffect="non-scaling-stroke" />
+                      </svg>
+                    )}
+                    {lane.items
+                      .filter((item) => item.kind === "note")
+                      .map((item) => (
+                        <span
+                          key={item.id}
+                          className="tl-mk tl-mk--note"
+                          style={{ left: `${pct(item.atMs, bounds)}%` }}
+                          title={describeActivity(item)}
+                        >
+                          ★
+                        </span>
+                      ))}
+                  </button>
+                );
+              })}
               {bounds.recording && <span className="tl-playhead" style={{ left: `${pct(Date.now(), bounds)}%` }} />}
             </div>
 
@@ -487,6 +592,36 @@ function pct(atMs: number, bounds: { start: number; span: number }): number {
   return Math.min(100, Math.max(0, value));
 }
 
+// Build a cumulative step-line (and matching filled area) for one lane's moves,
+// in a 0–100 × 0–100 viewBox drawn with preserveAspectRatio="none". The curve
+// stays flat then steps up at each move, so its rising height tells the story of
+// how much a channel was touched. `globalMax` is shared across lanes so the
+// busiest channel peaks at the top. Returns null when there's nothing to draw.
+function cumulativeMovePaths(
+  moveTimes: number[],
+  bounds: { start: number; span: number },
+  globalMax: number,
+  xEnd: number,
+): { line: string; area: string } | null {
+  if (moveTimes.length === 0 || globalMax <= 0) return null;
+
+  const TOP_PAD = 8; // leaves headroom so the tallest curve isn't clipped
+  const f = (n: number) => n.toFixed(2);
+  const y = (count: number) => 100 - (count / globalMax) * (100 - TOP_PAD);
+
+  let line = `M 0 ${f(y(0))}`;
+  moveTimes.forEach((atMs, index) => {
+    const x = pct(atMs, bounds);
+    // Hold the previous level to this move's x, then step up by one.
+    line += ` L ${f(x)} ${f(y(index))} L ${f(x)} ${f(y(index + 1))}`;
+  });
+  // Carry the final level out to the right edge.
+  line += ` L ${f(xEnd)} ${f(y(moveTimes.length))}`;
+
+  const area = `${line} L ${f(xEnd)} 100 Z`;
+  return { line, area };
+}
+
 function buildTicks(spanMs: number): Array<{ pct: number; label: string }> {
   const steps = 4;
   const out: Array<{ pct: number; label: string }> = [];
@@ -512,10 +647,37 @@ function formatValue(value: number | null | undefined, unit: string | null | und
   return unit ? `${formatNum(value)} ${unit}` : formatNum(value);
 }
 
+function formatPercent(value: number | null | undefined): string {
+  if (value === null || value === undefined) return "—";
+  const rounded = Math.round(value * 10) / 10;
+  return Number.isInteger(rounded) ? `${rounded}%` : `${rounded.toFixed(1)}%`;
+}
+
+function formatMoveValue(
+  value: number | null | undefined,
+  percent: number | null | undefined,
+  unit: string | null | undefined,
+  display?: string | null,
+): string {
+  // The Live-formatted string ("440 Hz", "Sinefold", "1") is the truest
+  // representation of what the producer saw, so it wins when present.
+  if (display !== null && display !== undefined && display !== "") {
+    return display;
+  }
+  return percent !== null && percent !== undefined
+    ? formatPercent(percent)
+    : formatValue(value, unit);
+}
+
 function describeActivity(item: Activity): string {
   if (item.kind === "note") return item.title ?? "Note";
   const where = [item.deviceName, item.paramName].filter(Boolean).join(" · ");
-  return `${where}: ${formatValue(item.before, item.unit)} → ${formatValue(item.after, item.unit)}`;
+  return `${where}: ${formatMoveValue(item.before, item.beforePercent, item.unit, item.beforeDisplay)} → ${formatMoveValue(
+    item.after,
+    item.afterPercent,
+    item.unit,
+    item.afterDisplay,
+  )}`;
 }
 
 function renderActivityBody(item: Activity) {
@@ -527,18 +689,22 @@ function renderActivityBody(item: Activity) {
       </>
     );
   }
+  const hasBefore =
+    (item.beforeDisplay !== null && item.beforeDisplay !== undefined && item.beforeDisplay !== "") ||
+    (item.before !== null && item.before !== undefined) ||
+    (item.beforePercent !== null && item.beforePercent !== undefined);
   return (
     <>
       <b>{item.deviceName ?? "Device"}</b>
       <span className="tl-ci__det"> — {item.paramName ?? "parameter"} </span>
-      {item.before === null || item.before === undefined ? (
+      {!hasBefore ? (
         <span className="tl-ba">
-          set to <span className="tl-ba__n">{formatValue(item.after, item.unit)}</span>
+          set to <span className="tl-ba__n">{formatMoveValue(item.after, item.afterPercent, item.unit, item.afterDisplay)}</span>
         </span>
       ) : (
         <span className="tl-ba">
-          <span className="tl-ba__o">{formatValue(item.before, item.unit)}</span> →{" "}
-          <span className="tl-ba__n">{formatValue(item.after, item.unit)}</span>
+          <span className="tl-ba__o">{formatMoveValue(item.before, item.beforePercent, item.unit, item.beforeDisplay)}</span> →{" "}
+          <span className="tl-ba__n">{formatMoveValue(item.after, item.afterPercent, item.unit, item.afterDisplay)}</span>
         </span>
       )}
     </>

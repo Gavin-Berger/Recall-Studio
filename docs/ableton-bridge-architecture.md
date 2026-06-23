@@ -299,10 +299,9 @@ duplicate-on-reload.
 4. **Two clocks.** `timestamp_ms` is set in JS (Max's clock) and only falls back to Rust's
    `now_ms()` if absent. Ordering trusts the JS clock — fine for a single local machine,
    worth stating explicitly.
-5. **`parameter_changed` is effectively dormant.** The v2 contract specifies debounced
-   parameter capture, but the current bridge does not stream parameters from a continuous
-   gesture (focus scans intentionally exclude parameter values). There is no live parameter
-   flood today; building a coalescer now would be speculative.
+5. **`parameter_changed` is selected-track scoped.** The bridge reads bounded parameter values
+   during the focused-track scan, emits only settled before/after moves, and leaves
+   background-track parameters alone to avoid a full-set LiveAPI sweep.
 6. **Normalization is the corruption surface.** Any LOM property that returns an unexpected
    shape (multi-element array, locale-formatted number) would be silently coerced or
    dropped by `get_prop`/`value_to_*`. Worth a targeted audit if a field ever looks wrong.

@@ -1348,12 +1348,29 @@
   justify-content: center;
 }
 
-.tl-mk--move {
-  width: 9px;
-  height: 9px;
-  border-radius: 50%;
-  background: #aab4ff;
-  box-shadow: 0 0 0 3px rgba(99, 130, 255, 0.12);
+/* Per-lane cumulative activity graph: a step-line that builds up to show how
+   much a channel was changed, scaled against the busiest lane. */
+.tl-graph {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  overflow: visible;
+}
+
+.tl-graph__area {
+  fill: currentColor;
+  fill-opacity: 0.14;
+}
+
+.tl-graph__line {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5px;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+  filter: drop-shadow(0 0 3px rgba(99, 130, 255, 0.35));
 }
 
 .tl-mk--note {

@@ -85,6 +85,15 @@ pub struct SavedSessionEvent {
     pub device_chain: Option<String>,
     pub parameter: Option<String>,
     pub parameter_value: Option<f64>,
+    pub previous_parameter_value: Option<f64>,
+    pub parameter_value_percent: Option<f64>,
+    pub previous_parameter_value_percent: Option<f64>,
+    // Live-formatted display: mode name for quantized params ("Sinefold"), or the
+    // unit-bearing value for continuous ones ("440 Hz"). parameter_is_quantized
+    // distinguishes the two so the UI can render a mode label vs a numeric value.
+    pub parameter_display_value: Option<String>,
+    pub previous_parameter_display_value: Option<String>,
+    pub parameter_is_quantized: Option<bool>,
     pub clip_name: Option<String>,
     pub sample_name: Option<String>,
     pub file_path: Option<String>,
@@ -119,6 +128,12 @@ impl From<RecallEvent> for SavedSessionEvent {
             device_chain: event.device_chain,
             parameter: event.parameter_name,
             parameter_value: event.parameter_value,
+            previous_parameter_value: event.previous_parameter_value,
+            parameter_value_percent: event.parameter_value_percent,
+            previous_parameter_value_percent: event.previous_parameter_value_percent,
+            parameter_display_value: event.parameter_display_value,
+            previous_parameter_display_value: event.previous_parameter_display_value,
+            parameter_is_quantized: event.parameter_is_quantized,
             clip_name: event.clip_name,
             sample_name: event.sample_name,
             file_path: event.file_path,

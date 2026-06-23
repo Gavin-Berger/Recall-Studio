@@ -61,9 +61,11 @@ reads them directly. Send only what's relevant to the event; send `null` or omit
 | `track_name` | string | any event about a specific track | which track they were working on |
 | `device_name` | string | `device_added` / `device_removed` | the instrument or effect, e.g. "Serum 2" |
 | `device_chain` | string | `device_*` | the full signal chain, e.g. "Serum 2 : Saturator : Vocoder" |
-| `parameter_name` | string | `automation_created` (and manual `parameter_changed`) | the knob/control, e.g. "Filter Cutoff" |
-| `parameter_value` | number | manual `parameter_changed` | the settled value |
-| `parameter_value_min` / `_max` | number | manual `parameter_changed` | the range swept during a move |
+| `parameter_name` | string | `automation_created` / `parameter_changed` | the knob/control, e.g. "Filter Cutoff" |
+| `parameter_value` | number | `parameter_changed` | the settled value |
+| `previous_parameter_value` | number | `parameter_changed` | the previous value seen on the selected-track scan |
+| `parameter_value_percent` / `previous_parameter_value_percent` | number | `parameter_changed` | before/after value normalized to the parameter range, 0-100 |
+| `parameter_value_min` / `_max` | number | `parameter_changed` | the range swept during a move |
 | `clip_name` | string | `clip_*`, `sample_added`, `*_clip_*` | the clip's name |
 | `sample_name` | string | `sample_added` | the actual sample file, e.g. "Deep_House_Vocal_120bpm.wav" |
 | `file_path` | string | `sample_added` | where the sample came from on disk (Splice folder, etc.) |
@@ -170,9 +172,10 @@ a known limit, not a broken promise.
 2. **Background-track automation is not captured.** Automation writing is read only on the
    **selected** track — reading every parameter on every track is the documented Ableton
    crash trigger. Automate a track you're not looking at and it won't be logged.
-3. **Live knob/fader moves are not captured.** Only automation *creation* is detected
-   (an envelope now exists). Riding a reverb decay by hand in real time isn't logged unless
-   it becomes automation. (`parameter_changed` is reserved/manual-only — see below.)
+3. **Live knob/fader moves are selected-track only.** The bridge polls the focused
+   track's bounded device/parameter set and emits settled `parameter_changed` moves
+   with before/after values and normalized percentages. Background tracks are not
+   parameter-scanned.
 4. **Session View clip slots only — Arrangement timeline clips are not diffed yet.** Sample
    and clip detection watches Session View clip slots. Dropping a sample onto the
    **Arrangement** timeline may not register. (High-priority gap to close.)
@@ -184,18 +187,14 @@ a known limit, not a broken promise.
 7. **No MIDI note editing.** Adding/moving/velocity of individual notes isn't captured.
 8. **Clip moves / renames / duplicates** aren't tracked (only created/deleted via slot diff).
 
-## Parameter rate-limiting (reserved)
+## Parameter rate-limiting
 
-`parameter_changed` is specified but **not auto-emitted** by the current bridge (it would be
-the path to live knob-move capture; see gap #3). If/when enabled, it MUST be debounced:
+`parameter_changed` is auto-emitted only from the selected-track focus scan. The scan cadence
+is the rate limit: a continuous knob ride collapses to one settled event per scan, carrying
+`previous_parameter_value`, `parameter_value`, optional swept `parameter_value_min` /
+`parameter_value_max`, and normalized before/after percentages.
 
-1. Start a timer on first change; reset it on each subsequent change.
-2. When the timer fires (≈100ms of silence) send ONE `parameter_changed` with the settled
-   `parameter_value` and optional `parameter_value_min` / `_max`.
-
-This turns a 60fps automation sweep (3600 events/min/param — enough to saturate both
-Ableton's M4L thread and the UDP socket) into one meaningful event. Sending per-frame events
-is a hard no.
+Sending per-frame parameter events is still a hard no.
 
 ## Heartbeat
 

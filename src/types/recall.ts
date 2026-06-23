@@ -98,6 +98,15 @@ export type SavedSessionEvent = {
   device_chain: string | null;
   parameter: string | null;
   parameter_value: number | null;
+  previous_parameter_value: number | null;
+  parameter_value_percent: number | null;
+  previous_parameter_value_percent: number | null;
+  // Live-formatted display: mode name for quantized params ("Sinefold"), or the
+  // unit-bearing value for continuous ones ("440 Hz"). parameter_is_quantized
+  // distinguishes the two so categorical modes and numeric values render differently.
+  parameter_display_value: string | null;
+  previous_parameter_display_value: string | null;
+  parameter_is_quantized: boolean | null;
   clip_name: string | null;
   sample_name: string | null;
   file_path: string | null;

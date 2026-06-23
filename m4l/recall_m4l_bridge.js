@@ -43,7 +43,7 @@ outlets = 2;
 var PROTOCOL = "recall.v2";
 var SOURCE = "max_for_live";
 var DEVICE_ID = "recall-m4l-bridge-dev";
-var BRIDGE_VERSION = "0.14.0";
+var BRIDGE_VERSION = "0.15.0";
 
 // Canonical v2 flat fields. emit() lifts any of these from its `fields` arg up
 // to the TOP LEVEL of the packet, because the Rust normalizer reads canonical
@@ -55,8 +55,14 @@ var CANONICAL_FIELDS = [
     "device_name",
     "parameter_name",
     "parameter_value",
+    "previous_parameter_value",
+    "parameter_value_percent",
+    "previous_parameter_value_percent",
     "parameter_value_min",
     "parameter_value_max",
+    "parameter_display_value",
+    "previous_parameter_display_value",
+    "parameter_is_quantized",
     "clip_name",
     "sample_name",
     "file_path",
@@ -79,6 +85,14 @@ var lastProjectContextFingerprint = null;
 // tiny heartbeat + lifecycle events.
 var captureTransport = true;
 var captureFocus = true;
+// Live knob/fader moves on the SELECTED track. Piggybacks on the focus scan's
+// existing (already-hardened) parameter read, adding only a value diff per
+// parameter - no observers, no extra traversal. The focus cadence is the
+// rate-limit (the protocol's debounce, realized by polling): a continuous knob
+// ride collapses to at most one settled event per scan, never per-frame. Gated
+// separately so [capture_parameter_moves 0] disables only this, not the whole
+// focus scan.
+var captureParameterMoves = true;
 // Shallow round-robin scan across ALL tracks so device/sample/clip additions on
 // non-selected tracks are caught too. Cheap by design: it reuses the same bounded
 // name/clip collectors as the focus scan and does NO parameter reads (automation
@@ -97,7 +111,10 @@ var captureLiveSet = false;
 var MAX_TRACK_SUMMARIES = 16;
 var MAX_SCENE_SUMMARIES = 16;
 var MAX_FOCUS_DEVICES = 8;
-var MAX_FOCUS_PARAMETERS_PER_DEVICE = 12;
+var MAX_FOCUS_PARAMETERS_PER_DEVICE = 128;
+// Floor for parameter_changed: ignore sub-epsilon value wobble so floating-point
+// representation noise never fires a move. Any real knob/fader change clears it.
+var PARAMETER_VALUE_EPSILON = 1e-6;
 var MAX_FOCUS_CLIP_SLOTS = 16;
 // How many tracks the lightweight lifecycle roster scan covers each transport
 // tick. Only cheap props are read per track (name/mute/solo/arm), so this can be
@@ -337,6 +354,19 @@ function stop_bridge() {
     if (!bridgeRunning) {
         debug("bridge already stopped; stop_bridge ignored");
         return;
+    }
+
+    // Final flush: the move detector only samples on the focus poll (every
+    // FOCUS_INTERVAL_MS, and throttled while playing), so a knob moved to its
+    // resting spot right before stopping would otherwise never be read. Run one
+    // last focus scan here to capture that last value. Guarded + try/catch like
+    // focus_tick, and done while bridgeRunning is still true so emit() works.
+    if (captureFocus) {
+        try {
+            send_selected_track_focus_if_changed();
+        } catch (error) {
+            debug("final focus flush failed: " + error);
+        }
     }
 
     bridgeRunning = false;
@@ -778,6 +808,71 @@ function value_to_number(value, fallbackValue) {
     }
 
     return n;
+}
+
+function parameter_value_percent(value, minValue, maxValue) {
+    var numericValue = value_to_number(value, null);
+    var numericMin = value_to_number(minValue, null);
+    var numericMax = value_to_number(maxValue, null);
+
+    if (numericValue === null || numericMin === null || numericMax === null) {
+        return null;
+    }
+
+    var span = numericMax - numericMin;
+
+    if (span === 0) {
+        return null;
+    }
+
+    var percent = ((numericValue - numericMin) / span) * 100;
+
+    if (!isFinite(percent)) {
+        return null;
+    }
+
+    return Math.max(0, Math.min(100, percent));
+}
+
+// Safe wrapper for LiveAPI function calls (e.g. DeviceParameter.str_for_value).
+// Calling .call() on a zombie/closed object is a native crash, so guard like the
+// property readers do and swallow any error into null.
+function safe_call(api, fnName, arg) {
+    try {
+        if (!api || typeof api.call !== "function") {
+            return null;
+        }
+
+        return api.call(fnName, arg);
+    } catch (error) {
+        return null;
+    }
+}
+
+// Human-readable display for a parameter value — the string the producer
+// actually sees in Live, so the app can show "what it is" instead of a raw
+// float. Two cases:
+//   • quantized params (mode selectors like Saturate's "Analog Clip" /
+//     "Sinefold") — value is an index into value_items; return that label.
+//   • continuous params (Filter 1 Freq, etc.) — ask Live to format the value,
+//     which yields the unit-bearing string ("440 Hz", "-12.0 dB").
+function parameter_display(param, value, isQuantized) {
+    if (!param || value === null || value === undefined) {
+        return null;
+    }
+
+    if (isQuantized) {
+        var items = get_prop(param, "value_items", null);
+        if (items instanceof Array) {
+            var index = Math.round(value);
+            if (index >= 0 && index < items.length) {
+                return value_to_string(items[index]);
+            }
+        }
+        return null;
+    }
+
+    return value_to_string(safe_call(param, "str_for_value", value));
 }
 
 // Classify a device by its chain role from the Live API Device.type integer.
@@ -1384,16 +1479,51 @@ function build_device_chain(devices) {
     return names.join(" : ");
 }
 
+// Re-scan a specific track's parameters by id and emit any pending move. Used to
+// flush a track's FINAL knob position the moment focus leaves it — otherwise a
+// tweak made right before switching tracks would never be read, because the poll
+// only ever scans the currently-selected track. Reads live via path, so the
+// track must still exist; a deleted/missing track is a safe no-op.
+function flush_track_parameter_moves(trackId) {
+    if (!trackId) {
+        return;
+    }
+
+    var index = find_track_index_by_id(trackId);
+    if (index < 0) {
+        return;
+    }
+
+    var snapshot = collect_track_focus_snapshot(index);
+    if (snapshot && snapshot.available && snapshot.id) {
+        detect_automation_created(snapshot, String(snapshot.id), snapshot.name);
+    }
+}
+
 function send_selected_track_focus_if_changed() {
     var snapshot = collect_selected_track_focus_snapshot();
+
+    // If focus moved to a different track since the last scan, flush the OUTGOING
+    // track first so its last knob position is captured before we move on. Done
+    // before the new track's scan; the two use separate per-track caches so order
+    // is otherwise independent.
+    var currentId = snapshot && snapshot.available && snapshot.id ? String(snapshot.id) : null;
+    if (lastFocusedTrackId && currentId && currentId !== String(lastFocusedTrackId)) {
+        try {
+            flush_track_parameter_moves(lastFocusedTrackId);
+        } catch (error) {
+            debug("outgoing-track flush failed: " + error);
+        }
+    }
 
     // Detect discrete creative actions BEFORE the snapshot dedup, so we emit
     // device_added/clip_created etc. even though the bulky snapshot itself may
     // be deduped away.
     detect_focus_changes(snapshot);
 
-    // Automation detection reads device parameters — the expensive path — so it
-    // runs ONLY here, for the selected track, never in the all-track scan.
+    // Parameter scanning (automation creation + live value moves) reads device
+    // parameters — the expensive path — so it runs ONLY here, for the selected
+    // track, never in the all-track scan.
     if (snapshot && snapshot.available && snapshot.id) {
         detect_automation_created(snapshot, String(snapshot.id), snapshot.name);
     }
@@ -1520,6 +1650,11 @@ function detect_focus_changes(snapshot) {
 // Cache of paramId -> had_automation per track.
 var automationCacheByTrack = {};
 
+// Cache of paramId -> last settled value per track, for live knob/fader move
+// detection (parameter_changed). Mirrors automationCacheByTrack's seed-then-diff
+// lifecycle so pre-existing values never fire as moves on track select.
+var parameterValueCacheByTrack = {};
+
 function detect_automation_created(snapshot, trackKey, trackName) {
     if (!snapshot || !snapshot.available || snapshot.index === null || snapshot.index === undefined) {
         return;
@@ -1529,6 +1664,8 @@ function detect_automation_created(snapshot, trackKey, trackName) {
     var deviceCount = Math.min(snapshot.device_count || 0, MAX_FOCUS_DEVICES);
     var oldCache = automationCacheByTrack[trackKey] || {};
     var newCache = {};
+    var oldValues = parameterValueCacheByTrack[trackKey] || {};
+    var newValues = {};
     var isFirstScan = !automationCacheByTrack.hasOwnProperty(trackKey);
 
     for (var d = 0; d < deviceCount; d++) {
@@ -1583,10 +1720,84 @@ function detect_automation_created(snapshot, trackKey, trackName) {
                     }
                 );
             }
+
+            // Live knob/fader move: emit the settled value whenever it differs
+            // from the previous scan. Poll cadence is the rate-limit (the
+            // protocol's debounce, realized by polling) - never per-frame. Seeded
+            // silently on the first scan and for newly appearing params, so
+            // pre-existing values don't fire. Reuses paramId to stay aligned with
+            // the automation cache above.
+            if (captureParameterMoves) {
+                var currentValue = value_to_number(get_prop(param, "value", null), null);
+                var minValue = value_to_number(get_prop(param, "min", null), null);
+                var maxValue = value_to_number(get_prop(param, "max", null), null);
+
+                if (currentValue !== null) {
+                    newValues[paramId] = currentValue;
+                    var previousValue = oldValues[paramId];
+
+                    if (!isFirstScan &&
+                        previousValue !== undefined &&
+                        Math.abs(currentValue - previousValue) > PARAMETER_VALUE_EPSILON) {
+                        var movedParamName =
+                            value_to_string(get_prop(param, "name", null)) || ("Param " + p);
+                        var currentPercent = parameter_value_percent(currentValue, minValue, maxValue);
+                        var previousPercent = parameter_value_percent(previousValue, minValue, maxValue);
+                        var sweptMin = Math.min(previousValue, currentValue);
+                        var sweptMax = Math.max(previousValue, currentValue);
+
+                        // Live-formatted display so the app shows the mode name
+                        // ("Sinefold") or unit-bearing value ("440 Hz"), not a
+                        // raw float. is_quantized tells the frontend whether this
+                        // is a categorical mode or a continuous value.
+                        var isQuantized = value_to_bool(get_prop(param, "is_quantized", 0));
+                        var currentDisplay = parameter_display(param, currentValue, isQuantized);
+                        var previousDisplay = parameter_display(param, previousValue, isQuantized);
+
+                        // emit(type, title, description, payload, fields):
+                        // the 5th arg holds the canonical keys lifted to top level.
+                        emit(
+                            "parameter_changed",
+                            "Parameter Changed",
+                            movedParamName + " moved on " + deviceName + ".",
+                            {
+                                track_name: trackName,
+                                device_name: deviceName,
+                                parameter_name: movedParamName,
+                                parameter_value: currentValue,
+                                previous_parameter_value: previousValue,
+                                previous_value: previousValue,
+                                parameter_value_percent: currentPercent,
+                                previous_parameter_value_percent: previousPercent,
+                                parameter_value_min: sweptMin,
+                                parameter_value_max: sweptMax,
+                                parameter_display_value: currentDisplay,
+                                previous_parameter_display_value: previousDisplay,
+                                parameter_is_quantized: isQuantized
+                            },
+                            {
+                                track_name: trackName,
+                                device_name: deviceName,
+                                parameter_name: movedParamName,
+                                parameter_value: currentValue,
+                                previous_parameter_value: previousValue,
+                                parameter_value_percent: currentPercent,
+                                previous_parameter_value_percent: previousPercent,
+                                parameter_value_min: sweptMin,
+                                parameter_value_max: sweptMax,
+                                parameter_display_value: currentDisplay,
+                                previous_parameter_display_value: previousDisplay,
+                                parameter_is_quantized: isQuantized
+                            }
+                        );
+                    }
+                }
+            }
         }
     }
 
     automationCacheByTrack[trackKey] = newCache;
+    parameterValueCacheByTrack[trackKey] = newValues;
 }
 
 function build_id_name_map(items, idKey, nameKey) {
@@ -2109,6 +2320,11 @@ function recapture_set() {
 function capture_structure(value) {
     captureStructure = Number(value) === 1;
     debug("capture_structure = " + captureStructure);
+}
+
+function capture_parameter_moves(value) {
+    captureParameterMoves = Number(value) === 1;
+    debug("capture_parameter_moves = " + captureParameterMoves);
 }
 
 function deep_snapshot() {

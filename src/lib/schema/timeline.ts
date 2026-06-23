@@ -76,16 +76,30 @@ export function groupTracksByParent(schema: ProjectSchema): {
   return { groups: [...byGroupId.values()], ungrouped };
 }
 
-/** Render a control change as "Name: before → after" (or "Name → after" when the pre-value is unknown). */
+/** Render a control change as "Name: before → after" (or "Name → after" when the pre-value is unknown).
+ *
+ * Prefers the Live-formatted display value when present — the mode name for
+ * quantized params ("Sinefold") or the unit-bearing value for continuous ones
+ * ("440 Hz") — and falls back to the raw numeric/percent value otherwise. */
 export function formatParameterChange(change: ParameterChange): string {
   const name = change.parameter_name ?? "Control";
-  const after = formatValue(change.after_value);
+  const after =
+    change.after_display_value ??
+    formatChangeValue(change.after_value, change.after_value_percent);
+  const hasBefore =
+    (change.before_display_value !== null &&
+      change.before_display_value !== undefined) ||
+    (change.before_value !== null && change.before_value !== undefined) ||
+    (change.before_value_percent !== null && change.before_value_percent !== undefined);
 
-  if (change.before_value === null || change.before_value === undefined) {
+  if (!hasBefore) {
     return `${name} → ${after}`;
   }
 
-  return `${name}: ${formatValue(change.before_value)} → ${after}`;
+  const before =
+    change.before_display_value ??
+    formatChangeValue(change.before_value, change.before_value_percent);
+  return `${name}: ${before} → ${after}`;
 }
 
 /** A short "Track · Device" context line for a change, omitting missing parts. */
@@ -103,4 +117,25 @@ export function formatValue(value: number | null | undefined): string {
   }
 
   return value.toFixed(2).replace(/\.?0+$/, "");
+}
+
+export function formatPercent(value: number | null | undefined): string {
+  if (value === null || value === undefined) {
+    return "—";
+  }
+
+  const rounded = Math.round(value * 10) / 10;
+  const text = Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1);
+  return `${text}%`;
+}
+
+function formatChangeValue(
+  value: number | null | undefined,
+  percent: number | null | undefined,
+): string {
+  if (percent !== null && percent !== undefined) {
+    return formatPercent(percent);
+  }
+
+  return formatValue(value);
 }

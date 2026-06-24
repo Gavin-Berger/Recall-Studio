@@ -461,6 +461,36 @@ export function SchemaTimeline({
     }
   }
 
+  // Session-level "pulse": headline counts + a momentum read, so the take feels
+  // like an event you're in, not a table you're reading.
+  const pulse = useMemo(() => {
+    const moveCount = changes.length;
+    const decisionCount = changes.filter((c) => c.is_quantized).length;
+    const keeperCount = moments.filter(
+      (m) => m.confidence === "keeper" || m.confidence === "final" || m.tags.includes("keeper"),
+    ).length;
+    const tracksTouched = new Set(
+      changes.map((c) => c.track_name).filter((name): name is string => Boolean(name)),
+    ).size;
+    const times = changes.map((c) => c.changed_at_ms).sort((a, b) => a - b);
+
+    // Momentum from recent cadence (moves in the last two minutes).
+    const now = Date.now();
+    const recent = times.filter((t) => now - t < 120_000).length;
+    let momentum: { label: string; tone: "hot" | "warm" | "calm" };
+    if (!bounds.recording) {
+      momentum = { label: "Take complete", tone: "calm" };
+    } else if (recent >= 6) {
+      momentum = { label: "In the zone", tone: "hot" };
+    } else if (recent >= 1) {
+      momentum = { label: "On a roll", tone: "warm" };
+    } else {
+      momentum = { label: "Listening…", tone: "calm" };
+    }
+
+    return { moveCount, decisionCount, keeperCount, tracksTouched, times, momentum };
+  }, [changes, moments, bounds.recording]);
+
   function toggleGroup(key: string) {
     setExpandedGroups((prev) => {
       const next = new Set(prev);
@@ -565,6 +595,54 @@ export function SchemaTimeline({
         />
       ) : (
         <>
+          <div className="tl-pulse">
+            <div className="tl-pulse__stats">
+              <span className="tl-stat">
+                <b>{pulse.moveCount}</b>
+                <span>move{pulse.moveCount === 1 ? "" : "s"}</span>
+              </span>
+              {pulse.decisionCount > 0 && (
+                <span className="tl-stat">
+                  <b>{pulse.decisionCount}</b>
+                  <span>character move{pulse.decisionCount === 1 ? "" : "s"}</span>
+                </span>
+              )}
+              <span className="tl-stat">
+                <b>{pulse.tracksTouched}</b>
+                <span>track{pulse.tracksTouched === 1 ? "" : "s"} touched</span>
+              </span>
+              {pulse.keeperCount > 0 && (
+                <span className="tl-stat tl-stat--keep">
+                  <b>{pulse.keeperCount}</b>
+                  <span>keeper{pulse.keeperCount === 1 ? "" : "s"}</span>
+                </span>
+              )}
+            </div>
+            {(() => {
+              const spark = cumulativeMovePaths(
+                pulse.times,
+                bounds,
+                Math.max(pulse.times.length, 1),
+                xEnd,
+              );
+              return spark ? (
+                <svg
+                  className="tl-pulse__spark"
+                  viewBox="0 0 100 100"
+                  preserveAspectRatio="none"
+                  aria-hidden="true"
+                >
+                  <path className="tl-graph__area" d={spark.area} />
+                  <path className="tl-graph__line" d={spark.line} vectorEffect="non-scaling-stroke" />
+                </svg>
+              ) : null;
+            })()}
+            <span className={`tl-pulse__state is-${pulse.momentum.tone}`}>
+              <span className="tl-pulse__pip" />
+              {pulse.momentum.label}
+            </span>
+          </div>
+
           <div className="tl-legend">
             <span><span className="tl-key tl-key--move" /> activity (taller = more changes)</span>
             <span><span className="tl-key tl-key--note" /> note</span>

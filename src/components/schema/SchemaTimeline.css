@@ -1280,6 +1280,110 @@
   background: #7fe6ff;
 }
 
+/* ── Session pulse hero strip ─────────────────────────────────────────────── */
+.tl-pulse {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  padding: 10px 16px;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 10px;
+  background:
+    linear-gradient(135deg, rgba(99, 130, 255, 0.08), transparent 55%),
+    rgba(13, 16, 26, 0.85);
+}
+
+.tl-pulse__stats {
+  display: flex;
+  gap: 20px;
+  flex-wrap: wrap;
+  flex-shrink: 0;
+}
+
+.tl-stat {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.tl-stat b {
+  font-family: var(--font-display);
+  font-size: 1.3rem;
+  font-weight: 760;
+  line-height: 1;
+  color: var(--paper-strong);
+}
+
+.tl-stat span {
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+
+.tl-stat--keep b {
+  color: #ffd98a;
+}
+
+.tl-pulse__spark {
+  flex: 1;
+  min-width: 70px;
+  height: 34px;
+  color: #aab4ff;
+  opacity: 0.9;
+}
+
+.tl-pulse__state {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  flex-shrink: 0;
+  padding: 5px 12px;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.tl-pulse__pip {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+}
+
+.tl-pulse__state.is-hot {
+  color: #ffcaa0;
+  background: rgba(255, 140, 80, 0.14);
+}
+
+.tl-pulse__state.is-hot .tl-pulse__pip {
+  background: #ff9a5a;
+  box-shadow: 0 0 9px rgba(255, 140, 80, 0.85);
+  animation: tl-pip-pulse 1.4s ease-in-out infinite;
+}
+
+.tl-pulse__state.is-warm {
+  color: #bcd0ff;
+  background: rgba(99, 130, 255, 0.14);
+}
+
+.tl-pulse__state.is-warm .tl-pulse__pip {
+  background: #7fa0ff;
+  box-shadow: 0 0 8px rgba(99, 130, 255, 0.7);
+}
+
+.tl-pulse__state.is-calm {
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.tl-pulse__state.is-calm .tl-pulse__pip {
+  background: #6b7390;
+}
+
+@keyframes tl-pip-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.5; transform: scale(0.8); }
+}
+
 .tl-arrange {
   display: grid;
   grid-template-columns: 150px 1fr;

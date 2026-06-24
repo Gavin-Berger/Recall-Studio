@@ -1815,6 +1815,158 @@
   height: 28px;
 }
 
+/* ── "Worth keeping" rail ─────────────────────────────────────────────────── */
+.tl-keep {
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 10px;
+  background:
+    linear-gradient(135deg, rgba(99, 130, 255, 0.06), transparent 45%),
+    rgba(11, 14, 22, 0.85);
+  padding: 14px;
+}
+
+.tl-keep__head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.tl-keep__kick {
+  font-family: var(--font-display);
+  font-size: 0.66rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: #cdd6ff;
+  font-weight: 700;
+}
+
+.tl-keep__sub {
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+
+.tl-keep__rail {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(210px, 1fr);
+  gap: 10px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+  scrollbar-width: thin;
+}
+
+.tl-card {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 11px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-left: 3px solid var(--lane-color, #6382ff);
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.025);
+  transition: border-color 120ms ease, background 120ms ease, transform 120ms ease;
+}
+
+.tl-card:hover {
+  background: rgba(255, 255, 255, 0.045);
+  transform: translateY(-1px);
+}
+
+.tl-card--note {
+  background: rgba(240, 207, 160, 0.06);
+}
+
+.tl-card__top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.tl-card__badge {
+  font-size: 0.6rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  font-weight: 700;
+  color: var(--lane-color, #aab4ff);
+}
+
+.tl-card--note .tl-card__badge {
+  color: #ffd98a;
+}
+
+.tl-card__when {
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+}
+
+.tl-card__where {
+  color: var(--muted);
+  font-size: 0.7rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tl-card__body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-height: 34px;
+}
+
+.tl-card__param {
+  color: var(--paper-strong);
+  font-weight: 600;
+  font-size: 0.84rem;
+}
+
+.tl-card__note {
+  color: var(--paper);
+  font-size: 0.82rem;
+  line-height: 1.35;
+}
+
+.tl-card__val {
+  font-size: 0.78rem;
+}
+
+.tl-card__actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 2px;
+}
+
+.tl-card__act {
+  flex: 1;
+  height: 26px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--paper);
+  font-size: 0.72rem;
+  cursor: pointer;
+  transition: border-color 120ms ease, background 120ms ease;
+}
+
+.tl-card__act:hover {
+  border-color: rgba(99, 130, 255, 0.45);
+  background: rgba(99, 130, 255, 0.12);
+}
+
+.tl-card__act--keep:hover {
+  border-color: rgba(240, 207, 160, 0.55);
+  background: rgba(240, 207, 160, 0.14);
+  color: #ffd98a;
+}
+
+.tl-card__kept {
+  font-size: 0.68rem;
+  color: #ffd98a;
+  font-weight: 600;
+}
+
 .tl-scan {
   display: flex;
   flex-direction: column;

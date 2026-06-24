@@ -73,6 +73,30 @@ type ActivityGroup = {
   items: Activity[];
 };
 
+// A session-wide "worth keeping" candidate — a starred note, a deliberate mode
+// flip, or a large net parameter move — surfaced so the producer can flag what
+// mattered without scrolling the full log.
+type Highlight = {
+  id: string;
+  kind: "note" | "mode" | "move";
+  momentId?: string;
+  trackId: string | null;
+  trackName: string | null;
+  deviceName: string | null;
+  paramName: string | null;
+  before: number | null;
+  beforePercent: number | null;
+  beforeDisplay: string | null;
+  after: number | null;
+  afterPercent: number | null;
+  afterDisplay: string | null;
+  unit: string | null;
+  title: string | null;
+  starred: boolean;
+  atMs: number;
+  score: number;
+};
+
 export function SchemaTimeline({
   sessionId,
   session,
@@ -327,6 +351,115 @@ export function SchemaTimeline({
   }, [trackActivity]);
 
   const moveCountForTrack = trackActivity.filter((a) => a.kind === "move").length;
+
+  // Session-wide "worth keeping" candidates. Notes are intentional, so they rank
+  // first; then deliberate mode flips; then the biggest net parameter swings.
+  // Parameter changes are collapsed to one net move per device+param so the same
+  // knob doesn't flood the rail.
+  const highlights = useMemo<Highlight[]>(() => {
+    const resolveTrackId = (change: ParameterChange): string | null =>
+      (change.parameter_id ? lookups.paramTrack.get(change.parameter_id) : undefined) ??
+      (change.track_name ? lookups.nameTrack.get(change.track_name.toLowerCase()) : undefined) ??
+      null;
+
+    const out: Highlight[] = [];
+
+    for (const moment of moments) {
+      const trackId = noteTrackId(moment, lookups);
+      out.push({
+        id: `note-${moment.id}`,
+        kind: "note",
+        momentId: moment.id,
+        trackId,
+        trackName: trackId ? tracks.find((t) => t.id === trackId)?.name ?? null : null,
+        deviceName: null,
+        paramName: null,
+        before: null,
+        beforePercent: null,
+        beforeDisplay: null,
+        after: null,
+        afterPercent: null,
+        afterDisplay: null,
+        unit: null,
+        title: moment.title,
+        starred:
+          moment.confidence === "keeper" ||
+          moment.confidence === "final" ||
+          moment.tags.includes("keeper"),
+        atMs: moment.timeline_start_ms ?? moment.created_at_ms,
+        score: 10_000,
+      });
+    }
+
+    // Net change per device+param, walked in time order.
+    const sorted = [...changes].sort((a, b) => a.changed_at_ms - b.changed_at_ms);
+    const byKey = new Map<string, { first: ParameterChange; last: ParameterChange }>();
+    for (const change of sorted) {
+      if (!change.parameter_name) continue;
+      const key = `${change.track_name ?? ""}|${change.device_name ?? ""}|${change.parameter_name}`;
+      const existing = byKey.get(key);
+      if (existing) existing.last = change;
+      else byKey.set(key, { first: change, last: change });
+    }
+
+    for (const { first, last } of byKey.values()) {
+      const magnitude =
+        last.after_value_percent !== null &&
+        last.after_value_percent !== undefined &&
+        first.before_value_percent !== null &&
+        first.before_value_percent !== undefined
+          ? Math.abs(last.after_value_percent - first.before_value_percent)
+          : last.is_quantized
+            ? 60
+            : 30;
+      out.push({
+        id: `pc-${last.id}`,
+        kind: last.is_quantized ? "mode" : "move",
+        trackId: resolveTrackId(last),
+        trackName: last.track_name,
+        deviceName: last.device_name,
+        paramName: last.parameter_name,
+        before: first.before_value,
+        beforePercent: first.before_value_percent,
+        beforeDisplay: first.before_display_value,
+        after: last.after_value,
+        afterPercent: last.after_value_percent,
+        afterDisplay: last.after_display_value,
+        unit: last.unit,
+        title: null,
+        starred: false,
+        atMs: last.changed_at_ms,
+        score: (last.is_quantized ? 100 : 0) + magnitude,
+      });
+    }
+
+    out.sort((a, b) => b.score - a.score || b.atMs - a.atMs);
+    return out.slice(0, 8);
+  }, [changes, moments, lookups, tracks]);
+
+  async function keepHighlight(highlight: Highlight, confidence: "keeper" | "working") {
+    if (!sessionId || !highlight.trackId) return;
+    const label =
+      highlight.kind === "note"
+        ? highlight.title ?? "Moment"
+        : [highlight.deviceName, highlight.paramName].filter(Boolean).join(" · ") || "Move";
+    try {
+      await createCreativeMoment({
+        id: crypto.randomUUID(),
+        sessionId,
+        title: label,
+        momentType: highlight.kind === "mode" ? "sound_design" : "automation",
+        note: label,
+        tags: confidence === "keeper" ? ["keeper"] : [],
+        confidence,
+        timelineStartMs: highlight.atMs ?? null,
+        targets: [{ target_type: "track", target_id: highlight.trackId }],
+      });
+      await refreshMoments();
+    } catch (keepError) {
+      setError(String(keepError));
+    }
+  }
 
   function toggleGroup(key: string) {
     setExpandedGroups((prev) => {
@@ -660,6 +793,98 @@ export function SchemaTimeline({
                 >
                   Add note
                 </button>
+              </div>
+            </div>
+          )}
+
+          {highlights.length > 0 && (
+            <div className="tl-keep">
+              <div className="tl-keep__head">
+                <span className="tl-keep__kick">Worth keeping</span>
+                <span className="tl-keep__sub">this session · flag what mattered</span>
+              </div>
+              <div className="tl-keep__rail">
+                {highlights.map((highlight) => {
+                  const track = highlight.trackId
+                    ? tracks.find((t) => t.id === highlight.trackId)
+                    : null;
+                  const color = track ? trackColor(track) : "#6382ff";
+                  const isNote = highlight.kind === "note";
+                  const hasBefore =
+                    (highlight.beforeDisplay !== null && highlight.beforeDisplay !== "") ||
+                    highlight.before !== null ||
+                    highlight.beforePercent !== null;
+                  const after = formatMoveValue(
+                    highlight.after,
+                    highlight.afterPercent,
+                    highlight.unit,
+                    highlight.afterDisplay,
+                  );
+                  return (
+                    <div
+                      key={highlight.id}
+                      className={`tl-card ${isNote ? "tl-card--note" : ""}`}
+                      style={{ ["--lane-color" as string]: color }}
+                    >
+                      <div className="tl-card__top">
+                        <span className="tl-card__badge">
+                          {isNote ? "★ Note" : highlight.kind === "mode" ? "Mode" : "Move"}
+                        </span>
+                        <span className="tl-card__when">
+                          {formatElapsed(highlight.atMs - bounds.sessionStart)}
+                        </span>
+                      </div>
+                      <div className="tl-card__where">
+                        {[highlight.trackName, highlight.deviceName].filter(Boolean).join(" · ")}
+                      </div>
+                      <div className="tl-card__body">
+                        {isNote ? (
+                          <span className="tl-card__note">{highlight.title}</span>
+                        ) : (
+                          <>
+                            <span className="tl-card__param">{highlight.paramName}</span>
+                            <span className="tl-ba tl-card__val">
+                              {hasBefore && (
+                                <>
+                                  <span className="tl-ba__o">
+                                    {formatMoveValue(
+                                      highlight.before,
+                                      highlight.beforePercent,
+                                      highlight.unit,
+                                      highlight.beforeDisplay,
+                                    )}
+                                  </span>
+                                  <span className="tl-ba__arr">→</span>
+                                </>
+                              )}
+                              <span className="tl-ba__n">{after}</span>
+                            </span>
+                          </>
+                        )}
+                      </div>
+                      {isNote ? (
+                        highlight.starred && <div className="tl-card__kept">★ Kept</div>
+                      ) : (
+                        <div className="tl-card__actions">
+                          <button
+                            type="button"
+                            className="tl-card__act tl-card__act--keep"
+                            onClick={() => void keepHighlight(highlight, "keeper")}
+                          >
+                            ★ Keep
+                          </button>
+                          <button
+                            type="button"
+                            className="tl-card__act"
+                            onClick={() => void keepHighlight(highlight, "working")}
+                          >
+                            ↩ Revisit
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
             </div>
           )}

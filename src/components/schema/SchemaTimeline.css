@@ -2004,6 +2004,29 @@
   font-size: 0.72rem;
 }
 
+.tl-keep__keys {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--faint);
+  font-size: 0.68rem;
+}
+
+.tl-keep__keys kbd {
+  display: inline-block;
+  min-width: 15px;
+  padding: 1px 4px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.05);
+  font-family: var(--font-mono);
+  font-size: 0.64rem;
+  line-height: 1.3;
+  text-align: center;
+  color: var(--paper);
+}
+
 .tl-keep__rail {
   display: grid;
   grid-auto-flow: column;
@@ -2012,6 +2035,7 @@
   overflow-x: auto;
   padding-bottom: 4px;
   scrollbar-width: thin;
+  outline: none;
 }
 
 .tl-card {
@@ -2031,6 +2055,11 @@
   transform: translateY(-1px);
 }
 
+.tl-card.is-focused {
+  border-color: rgba(205, 214, 255, 0.55);
+  box-shadow: 0 0 0 1px rgba(205, 214, 255, 0.4), 0 0 14px rgba(99, 130, 255, 0.25);
+}
+
 .tl-card--note {
   background: rgba(240, 207, 160, 0.06);
 }
@@ -2038,15 +2067,34 @@
 .tl-card__top {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  gap: 7px;
 }
 
 .tl-card__badge {
+  margin-right: auto;
   font-size: 0.6rem;
   letter-spacing: 0.08em;
   text-transform: uppercase;
   font-weight: 700;
   color: var(--lane-color, #aab4ff);
+}
+
+/* Strength meter: how strongly this ranked, 1–3 pips. */
+.tl-card__meter {
+  display: inline-flex;
+  gap: 2px;
+  align-items: center;
+}
+
+.tl-card__pip {
+  width: 4px;
+  height: 9px;
+  border-radius: 1px;
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.tl-card__pip.is-on {
+  background: var(--lane-color, #aab4ff);
 }
 
 .tl-card--note .tl-card__badge {

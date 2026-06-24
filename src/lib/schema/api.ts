@@ -18,6 +18,11 @@ export function materializeSessionSchema(sessionId: string): Promise<void> {
   return invoke<void>("materialize_session_schema", { sessionId });
 }
 
+/** Write a UTF-8 text document to a user-chosen path (used by share/export). */
+export function writeTextFile(path: string, contents: string): Promise<void> {
+  return invoke<void>("write_text_file", { path, contents });
+}
+
 export function getProjectSchema(sessionId: string): Promise<ProjectSchema> {
   return invoke<ProjectSchema>("get_project_schema", { sessionId });
 }

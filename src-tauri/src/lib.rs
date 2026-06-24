@@ -24,6 +24,14 @@ struct AppState {
     metrics: Arc<BridgeMetrics>,
 }
 
+/// Write a UTF-8 text document to disk. Used by the timeline's share/export so a
+/// session recap can be saved as a Markdown file the producer can send anywhere.
+/// The path comes from the native save dialog, so it's a location the user chose.
+#[tauri::command]
+fn write_text_file(path: String, contents: String) -> Result<(), String> {
+    std::fs::write(&path, contents).map_err(|error| format!("Failed to write file: {}", error))
+}
+
 #[tauri::command]
 fn get_connection_status(state: State<'_, AppState>) -> ConnectionStatus {
     let status = get_status(state.connection.clone());
@@ -809,6 +817,7 @@ pub fn run() {
             metrics: bridge_metrics,
         })
         .invoke_handler(tauri::generate_handler![
+            write_text_file,
             get_connection_status,
             get_recent_events,
             start_session,

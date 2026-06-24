@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { listen } from "@tauri-apps/api/event";
+import { save } from "@tauri-apps/plugin-dialog";
 import "./SchemaTimeline.css";
 import {
   createCreativeMoment,
@@ -8,6 +9,7 @@ import {
   getProjectSchema,
   listCreativeMoments,
   materializeSessionSchema,
+  writeTextFile,
 } from "../../lib/schema/api";
 import {
   DEVICE_ROLE_LABEL,
@@ -127,6 +129,8 @@ export function SchemaTimeline({
   // Keyboard-driven curation: which highlight card is focused in the rail.
   const [focusedCard, setFocusedCard] = useState(-1);
   const railRef = useRef<HTMLDivElement>(null);
+  // Transient "Copied!" feedback for the share button.
+  const [copied, setCopied] = useState(false);
 
   const load = useCallback(
     async (rematerialize: boolean, quiet = false) => {
@@ -717,6 +721,106 @@ export function SchemaTimeline({
     }
   }
 
+  // Assemble a shareable Markdown recap of the take from what's on screen: the
+  // story, the worth-keeping highlights, and the full change log grouped by track.
+  function buildShareDocument(): string {
+    const lines: string[] = [];
+    lines.push(`# ${takeTitle}${projectContext ? ` — ${projectContext}` : ""}`);
+    const meta = [
+      durationLabel,
+      `${pulse.moveCount} move${pulse.moveCount === 1 ? "" : "s"}`,
+      pulse.tracksTouched > 0
+        ? `${pulse.tracksTouched} track${pulse.tracksTouched === 1 ? "" : "s"} touched`
+        : null,
+      pulse.keeperCount > 0 ? `${pulse.keeperCount} keeper${pulse.keeperCount === 1 ? "" : "s"}` : null,
+    ]
+      .filter(Boolean)
+      .join(" · ");
+    if (meta) lines.push(`_${meta}_`);
+    lines.push("");
+
+    if (sessionStory) {
+      lines.push("## The story so far", "", sessionStory.join(" "), "");
+    }
+
+    const keepWorthy = highlights.filter((h) => h.kind !== "note");
+    if (keepWorthy.length > 0) {
+      lines.push("## Worth keeping", "");
+      for (const h of keepWorthy) {
+        const where = [h.trackName, h.deviceName].filter(Boolean).join(" · ");
+        const after = formatMoveValue(h.after, h.afterPercent, h.unit, h.afterDisplay);
+        const hasBefore = h.before !== null || h.beforePercent !== null || Boolean(h.beforeDisplay);
+        const before = formatMoveValue(h.before, h.beforePercent, h.unit, h.beforeDisplay);
+        const value = hasBefore ? `${before} → ${after}` : after;
+        lines.push(`- **${h.paramName ?? "Move"}** (${where}) — ${value} · ${h.reason}`);
+      }
+      lines.push("");
+    }
+
+    const byTrack = new Map<string, ParameterChange[]>();
+    for (const change of [...changes].sort((a, b) => a.changed_at_ms - b.changed_at_ms)) {
+      const key = change.track_name ?? "Unknown track";
+      const arr = byTrack.get(key);
+      if (arr) arr.push(change);
+      else byTrack.set(key, [change]);
+    }
+    if (byTrack.size > 0) {
+      lines.push("## What you changed", "");
+      for (const [track, list] of byTrack) {
+        lines.push(`### ${track}`);
+        for (const change of list) {
+          const where = [change.device_name, change.parameter_name].filter(Boolean).join(" · ");
+          const after = formatMoveValue(
+            change.after_value,
+            change.after_value_percent,
+            change.unit,
+            change.after_display_value,
+          );
+          const hasBefore =
+            change.before_value !== null ||
+            change.before_value_percent !== null ||
+            Boolean(change.before_display_value);
+          const before = formatMoveValue(
+            change.before_value,
+            change.before_value_percent,
+            change.unit,
+            change.before_display_value,
+          );
+          const when = formatElapsed(change.changed_at_ms - bounds.sessionStart);
+          lines.push(`- ${where}: ${hasBefore ? `${before} → ${after}` : after} _(${when})_`);
+        }
+        lines.push("");
+      }
+    }
+
+    lines.push("---", "_Exported from Recall Studio_");
+    return lines.join("\n");
+  }
+
+  async function handleCopyShare() {
+    try {
+      await navigator.clipboard.writeText(buildShareDocument());
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1600);
+    } catch (copyError) {
+      setError(String(copyError));
+    }
+  }
+
+  async function handleExportShare() {
+    try {
+      const fileName = `${takeTitle.replace(/[^\w.-]+/g, "-")}-recall.md`;
+      const path = await save({
+        defaultPath: fileName,
+        filters: [{ name: "Markdown", extensions: ["md"] }],
+      });
+      if (!path) return;
+      await writeTextFile(path, buildShareDocument());
+    } catch (exportError) {
+      setError(String(exportError));
+    }
+  }
+
   if (!sessionId) {
     return (
       <div className="tl-empty-screen">
@@ -745,6 +849,28 @@ export function SchemaTimeline({
           </span>
         </div>
         <div className="tl-bar__actions">
+          {hasMap && (
+            <>
+              <button
+                type="button"
+                className="tl-btn"
+                onClick={() => void handleCopyShare()}
+                title="Copy a Markdown recap of this take to the clipboard"
+              >
+                <CopyIcon />
+                {copied ? "Copied!" : "Copy recap"}
+              </button>
+              <button
+                type="button"
+                className="tl-btn"
+                onClick={() => void handleExportShare()}
+                title="Save this take as a Markdown file to share"
+              >
+                <ExportIcon />
+                Export
+              </button>
+            </>
+          )}
           <button
             type="button"
             className="tl-btn tl-btn--primary"
@@ -1560,6 +1686,24 @@ function ScanIcon() {
         strokeWidth="1.5"
         strokeLinecap="round"
       />
+    </svg>
+  );
+}
+
+function CopyIcon() {
+  return (
+    <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.4" aria-hidden="true">
+      <rect x="5.5" y="5.5" width="8" height="8" rx="1.5" />
+      <path d="M10.5 5.5V4a1.5 1.5 0 0 0-1.5-1.5H4A1.5 1.5 0 0 0 2.5 4v5A1.5 1.5 0 0 0 4 10.5h1.5" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function ExportIcon() {
+  return (
+    <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.4" aria-hidden="true">
+      <path d="M8 10V2.5M8 2.5 5.5 5M8 2.5 10.5 5" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M3 9.5v3A1.5 1.5 0 0 0 4.5 14h7a1.5 1.5 0 0 0 1.5-1.5v-3" strokeLinecap="round" />
     </svg>
   );
 }

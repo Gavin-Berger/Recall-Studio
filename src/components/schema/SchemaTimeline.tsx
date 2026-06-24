@@ -15,98 +15,43 @@ import {
   DEVICE_ROLE_LABEL,
   TRACK_TYPE_LABEL,
   type CreativeMoment,
-  type DeviceObj,
   type ParameterChange,
-  type ParameterObj,
   type ProjectSchema,
-  type TrackObj,
-} from "../../types/schema";
-import type { SavedSessionMetadata } from "../../types/recall";
-
-type LoadStatus = "idle" | "loading" | "ready" | "error";
-type ExportFormat = "md" | "txt" | "json" | "pdf";
-
-const LIVE_REFRESH_DEBOUNCE_MS = 700;
-const LIVE_REFRESH_EVENT_TYPES = new Set([
-  "parameter_changed",
-  "device_parameter_changed",
-  "automation_created",
-  "selected_track_focus_snapshot",
-  "live_set_snapshot",
-  "device_added",
-  "device_removed",
-  "device_chain_changed",
-]);
-
-type LiveRecallEvent = {
-  session_id?: string | null;
-  event_type?: string | null;
-};
-
-// One thing that happened on a track this take — a knob move or a note.
-type Activity = {
-  id: string;
-  kind: "move" | "note";
-  trackId: string;
-  atMs: number;
-  // move
-  deviceName?: string | null;
-  paramName?: string | null;
-  before?: number | null;
-  after?: number | null;
-  beforePercent?: number | null;
-  afterPercent?: number | null;
-  unit?: string | null;
-  // Live-formatted display: mode name for quantized params ("Sinefold"), or the
-  // unit-bearing value for continuous ones ("440 Hz"). Preferred over the raw
-  // number/percent when present.
-  beforeDisplay?: string | null;
-  afterDisplay?: string | null;
-  // Whether this parameter is categorical (a mode selector) rather than a
-  // continuous value — drives pill-vs-number rendering and suppresses the
-  // up/down direction caret (a mode flip has no direction).
-  quantized?: boolean | null;
-  // note
-  title?: string;
-  starred?: boolean;
-};
-
-// A run of consecutive same-parameter moves collapsed into one story row.
-// `lead` is the newest move (its after-value is the net result); `items` holds
-// every move in the run, newest-first, for the expanded view.
-type ActivityGroup = {
-  key: string;
-  lead: Activity;
-  items: Activity[];
-};
-
-// A session-wide "worth keeping" candidate — a starred note, a deliberate mode
-// flip, or a large net parameter move — surfaced so the producer can flag what
-// mattered without scrolling the full log.
-type Highlight = {
-  id: string;
-  kind: "note" | "mode" | "move";
-  momentId?: string;
-  trackId: string | null;
-  trackName: string | null;
-  deviceName: string | null;
-  paramName: string | null;
-  before: number | null;
-  beforePercent: number | null;
-  beforeDisplay: string | null;
-  after: number | null;
-  afterPercent: number | null;
-  afterDisplay: string | null;
-  unit: string | null;
-  title: string | null;
-  starred: boolean;
-  atMs: number;
-  score: number;
-  // Why this surfaced — shown on the card so the curation isn't a black box.
-  reason: string;
-  // Relative rank strength 0–1, for the per-card strength meter.
-  strength: number;
-};
+  type SavedSessionMetadata,
+} from "../../types";
+import {
+  ActivitySpark,
+  buildLookups,
+  buildShareData,
+  buildShareDocument,
+  buildTicks,
+  CopyIcon,
+  cumulativeMovePaths,
+  deviceColor,
+  describeActivity,
+  ExportIcon,
+  exportPdf,
+  formatDuration,
+  formatElapsed,
+  formatMoveValue,
+  formatPercent,
+  formatTakeTitle,
+  LIVE_REFRESH_DEBOUNCE_MS,
+  LIVE_REFRESH_EVENT_TYPES,
+  moveValueNode,
+  moveWhatNode,
+  noteTrackId,
+  pct,
+  ScanEmptyState,
+  ScanIcon,
+  trackColor,
+  type Activity,
+  type ActivityGroup,
+  type ExportFormat,
+  type Highlight,
+  type LiveRecallEvent,
+  type LoadStatus,
+} from "./timeline";
 
 export function SchemaTimeline({
   sessionId,
@@ -724,239 +669,31 @@ export function SchemaTimeline({
     }
   }
 
-  // One structured snapshot of the take, shared by every export format so JSON,
-  // Markdown, and plain text never drift apart. Strings are the producer-facing
-  // display values; raw numeric fields are kept alongside for machine consumers.
-  function buildShareData() {
-    const valueOf = (
-      value: number | null,
-      percent: number | null,
-      unit: string | null,
-      display: string | null,
-    ) => formatMoveValue(value, percent, unit, display);
-
-    const byTrack = new Map<string, ParameterChange[]>();
-    for (const change of [...changes].sort((a, b) => a.changed_at_ms - b.changed_at_ms)) {
-      const key = change.track_name ?? "Unknown track";
-      const arr = byTrack.get(key);
-      if (arr) arr.push(change);
-      else byTrack.set(key, [change]);
-    }
-
-    return {
+  // Assemble the structured snapshot every export format shares, from the
+  // current derived state. The rendering itself lives in timeline-share.
+  function currentShareData() {
+    return buildShareData({
       title: takeTitle,
       project: projectContext,
       duration: durationLabel,
       recordedAtMs: session?.started_at_ms ?? null,
-      exportedAtMs: Date.now(),
+      changes,
       stats: {
         moves: pulse.moveCount,
         characterMoves: pulse.decisionCount,
         tracksTouched: pulse.tracksTouched,
         keepers: pulse.keeperCount,
       },
-      story: sessionStory ? sessionStory.join(" ") : null,
-      worthKeeping: highlights
-        .filter((h) => h.kind !== "note")
-        .map((h) => ({
-          parameter: h.paramName,
-          track: h.trackName,
-          device: h.deviceName,
-          before: valueOf(h.before, h.beforePercent, h.unit, h.beforeDisplay),
-          after: valueOf(h.after, h.afterPercent, h.unit, h.afterDisplay),
-          reason: h.reason,
-          isMode: h.kind === "mode",
-          atMs: h.atMs,
-          elapsedMs: h.atMs - bounds.sessionStart,
-        })),
-      tracks: [...byTrack.entries()].map(([name, list]) => ({
-        name,
-        moves: list.length,
-        changes: list.map((c) => ({
-          device: c.device_name,
-          parameter: c.parameter_name,
-          before: valueOf(c.before_value, c.before_value_percent, c.unit, c.before_display_value),
-          after: valueOf(c.after_value, c.after_value_percent, c.unit, c.after_display_value),
-          beforeValue: c.before_value,
-          afterValue: c.after_value,
-          unit: c.unit,
-          isQuantized: c.is_quantized ?? false,
-          atMs: c.changed_at_ms,
-          elapsedMs: c.changed_at_ms - bounds.sessionStart,
-        })),
-      })),
-    };
-  }
-
-  type ShareData = ReturnType<typeof buildShareData>;
-
-  function renderMarkdown(d: ShareData): string {
-    const lines: string[] = [];
-    lines.push(`# ${d.title}${d.project ? ` — ${d.project}` : ""}`);
-    const meta = [
-      d.duration,
-      `${d.stats.moves} move${d.stats.moves === 1 ? "" : "s"}`,
-      d.stats.tracksTouched > 0
-        ? `${d.stats.tracksTouched} track${d.stats.tracksTouched === 1 ? "" : "s"} touched`
-        : null,
-      d.stats.keepers > 0 ? `${d.stats.keepers} keeper${d.stats.keepers === 1 ? "" : "s"}` : null,
-    ]
-      .filter(Boolean)
-      .join(" · ");
-    if (meta) lines.push(`_${meta}_`);
-    lines.push("");
-    if (d.story) lines.push("## The story so far", "", d.story, "");
-    if (d.worthKeeping.length > 0) {
-      lines.push("## Worth keeping", "");
-      for (const h of d.worthKeeping) {
-        const where = [h.track, h.device].filter(Boolean).join(" · ");
-        const value = h.before !== "—" ? `${h.before} → ${h.after}` : h.after;
-        lines.push(`- **${h.parameter ?? "Move"}** (${where}) — ${value} · ${h.reason}`);
-      }
-      lines.push("");
-    }
-    if (d.tracks.length > 0) {
-      lines.push("## What you changed", "");
-      for (const track of d.tracks) {
-        lines.push(`### ${track.name}`);
-        for (const c of track.changes) {
-          const where = [c.device, c.parameter].filter(Boolean).join(" · ");
-          const value = c.before !== "—" ? `${c.before} → ${c.after}` : c.after;
-          lines.push(`- ${where}: ${value} _(${formatElapsed(c.elapsedMs)})_`);
-        }
-        lines.push("");
-      }
-    }
-    lines.push("---", "_Exported from Recall Studio_");
-    return lines.join("\n");
-  }
-
-  function renderText(d: ShareData): string {
-    const lines: string[] = [];
-    lines.push(`${d.title}${d.project ? ` — ${d.project}` : ""}`);
-    const meta = [d.duration, `${d.stats.moves} moves`].filter(Boolean).join(" · ");
-    if (meta) lines.push(meta);
-    lines.push("");
-    if (d.story) lines.push("THE STORY SO FAR", d.story, "");
-    if (d.worthKeeping.length > 0) {
-      lines.push("WORTH KEEPING");
-      for (const h of d.worthKeeping) {
-        const where = [h.track, h.device].filter(Boolean).join(" · ");
-        const value = h.before !== "—" ? `${h.before} -> ${h.after}` : h.after;
-        lines.push(`  - ${h.parameter ?? "Move"} (${where}): ${value} [${h.reason}]`);
-      }
-      lines.push("");
-    }
-    if (d.tracks.length > 0) {
-      lines.push("WHAT YOU CHANGED");
-      for (const track of d.tracks) {
-        lines.push(`  ${track.name}`);
-        for (const c of track.changes) {
-          const where = [c.device, c.parameter].filter(Boolean).join(" · ");
-          const value = c.before !== "—" ? `${c.before} -> ${c.after}` : c.after;
-          lines.push(`    - ${where}: ${value} (${formatElapsed(c.elapsedMs)})`);
-        }
-      }
-      lines.push("");
-    }
-    lines.push("Exported from Recall Studio");
-    return lines.join("\n");
-  }
-
-  function buildShareDocument(format: Exclude<ExportFormat, "pdf">): string {
-    const data = buildShareData();
-    if (format === "json") return JSON.stringify(data, null, 2);
-    if (format === "txt") return renderText(data);
-    return renderMarkdown(data);
-  }
-
-  // A print-ready HTML document for the PDF path. Rendering through the webview's
-  // print dialog ("Save as PDF") gives a properly typeset page instead of a
-  // text-dumped PDF, with no extra dependency.
-  function renderHtml(d: ShareData): string {
-    const esc = (value: string | null | undefined) =>
-      (value ?? "").replace(/[&<>]/g, (c) => (c === "&" ? "&amp;" : c === "<" ? "&lt;" : "&gt;"));
-    const meta = [
-      d.duration,
-      `${d.stats.moves} move${d.stats.moves === 1 ? "" : "s"}`,
-      d.stats.tracksTouched > 0 ? `${d.stats.tracksTouched} tracks touched` : null,
-      d.stats.keepers > 0 ? `${d.stats.keepers} keepers` : null,
-    ]
-      .filter(Boolean)
-      .join(" · ");
-
-    const keep = d.worthKeeping
-      .map((h) => {
-        const where = [h.track, h.device].filter(Boolean).map(esc).join(" · ");
-        const value = h.before !== "—" ? `${esc(h.before)} → ${esc(h.after)}` : esc(h.after);
-        return `<li><b>${esc(h.parameter ?? "Move")}</b> <span class="where">(${where})</span> — <span class="val">${value}</span> <span class="reason">· ${esc(h.reason)}</span></li>`;
-      })
-      .join("");
-
-    const tracks = d.tracks
-      .map((track) => {
-        const rows = track.changes
-          .map((c) => {
-            const where = [c.device, c.parameter].filter(Boolean).map(esc).join(" · ");
-            const value = c.before !== "—" ? `${esc(c.before)} → ${esc(c.after)}` : esc(c.after);
-            return `<li>${where}: <span class="val">${value}</span> <span class="when">(${formatElapsed(c.elapsedMs)})</span></li>`;
-          })
-          .join("");
-        return `<h3>${esc(track.name)}</h3><ul>${rows}</ul>`;
-      })
-      .join("");
-
-    return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${esc(d.title)}</title>
-<style>
-  @page { margin: 0.9in; }
-  * { box-sizing: border-box; }
-  body { font-family: -apple-system, "Segoe UI", Roboto, sans-serif; color: #1b1b1f; line-height: 1.5; margin: 0; }
-  h1 { font-size: 22px; margin: 0 0 2px; }
-  .meta { color: #6a6a72; font-size: 12px; margin-bottom: 20px; }
-  h2 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; color: #6366f1; border-bottom: 1px solid #e3e3ea; padding-bottom: 5px; margin: 26px 0 8px; }
-  h3 { font-size: 13px; margin: 14px 0 3px; color: #2b2b33; }
-  .story { font-size: 14px; max-width: 70ch; }
-  ul { margin: 4px 0; padding-left: 18px; }
-  li { font-size: 12.5px; margin: 3px 0; }
-  .val { font-family: ui-monospace, "SFMono-Regular", Menlo, monospace; }
-  .where, .reason, .when { color: #8a8a93; }
-  .foot { margin-top: 30px; color: #b0b0b8; font-size: 11px; }
-</style></head><body>
-  <h1>${esc(d.title)}${d.project ? ` — ${esc(d.project)}` : ""}</h1>
-  <div class="meta">${esc(meta)}</div>
-  ${d.story ? `<h2>The story so far</h2><p class="story">${esc(d.story)}</p>` : ""}
-  ${keep ? `<h2>Worth keeping</h2><ul>${keep}</ul>` : ""}
-  ${tracks ? `<h2>What you changed</h2>${tracks}` : ""}
-  <div class="foot">Exported from Recall Studio</div>
-</body></html>`;
-  }
-
-  function exportPdf() {
-    const html = renderHtml(buildShareData());
-    const frame = document.createElement("iframe");
-    frame.setAttribute("aria-hidden", "true");
-    frame.style.cssText = "position:fixed;right:0;bottom:0;width:0;height:0;border:0;";
-    document.body.appendChild(frame);
-    const doc = frame.contentWindow?.document;
-    if (!doc) {
-      document.body.removeChild(frame);
-      return;
-    }
-    doc.open();
-    doc.write(html);
-    doc.close();
-    // Let the iframe lay out before invoking the print/save-as-PDF dialog.
-    window.setTimeout(() => {
-      frame.contentWindow?.focus();
-      frame.contentWindow?.print();
-      window.setTimeout(() => document.body.removeChild(frame), 1500);
-    }, 250);
+      story: sessionStory,
+      highlights,
+      sessionStart: bounds.sessionStart,
+    });
   }
 
   async function handleCopyShare() {
     if (exportFormat === "pdf") return;
     try {
-      await navigator.clipboard.writeText(buildShareDocument(exportFormat));
+      await navigator.clipboard.writeText(buildShareDocument(currentShareData(), exportFormat));
       setCopied(true);
       window.setTimeout(() => setCopied(false), 1600);
     } catch (copyError) {
@@ -966,7 +703,7 @@ export function SchemaTimeline({
 
   async function handleExportShare() {
     if (exportFormat === "pdf") {
-      exportPdf();
+      exportPdf(currentShareData());
       return;
     }
     try {
@@ -978,7 +715,7 @@ export function SchemaTimeline({
         filters: [{ name: filterName, extensions: [ext] }],
       });
       if (!path) return;
-      await writeTextFile(path, buildShareDocument(ext));
+      await writeTextFile(path, buildShareDocument(currentShareData(), ext));
     } catch (exportError) {
       setError(String(exportError));
     }
@@ -1514,386 +1251,5 @@ export function SchemaTimeline({
         </>
       )}
     </div>
-  );
-}
-
-function ScanEmptyState({
-  existingSet,
-  loading,
-  onScan,
-}: {
-  existingSet: boolean;
-  loading: boolean;
-  onScan: () => void;
-}) {
-  return (
-    <div className="tl-scan">
-      <div className="tl-scan__ic">
-        <ScanIcon />
-      </div>
-      <h3>{existingSet ? "Catching up on this set" : "Waiting for your first move"}</h3>
-      <p>
-        {existingSet
-          ? "This set was built before Recall was watching, so it's baselining every track and device already in it. Give it a few seconds on a big set, then refresh."
-          : "Make a move in Ableton — your first tweak lays out the tracks and starts the map."}
-      </p>
-      <button type="button" className="tl-btn tl-btn--primary" onClick={onScan} disabled={loading}>
-        <ScanIcon />
-        {loading ? "Scanning…" : existingSet ? "Refresh map" : "Refresh"}
-      </button>
-      <div className="tl-scan__ghost">
-        <span />
-        <span />
-        <span />
-        <span />
-      </div>
-    </div>
-  );
-}
-
-// ── data helpers ──────────────────────────────────────────────────────────────
-
-type Lookups = {
-  paramTrack: Map<string, string>;
-  deviceTrack: Map<string, string>;
-  nameTrack: Map<string, string>;
-};
-
-function buildLookups(schema: ProjectSchema | null): Lookups {
-  const paramTrack = new Map<string, string>();
-  const deviceTrack = new Map<string, string>();
-  const nameTrack = new Map<string, string>();
-  if (!schema) return { paramTrack, deviceTrack, nameTrack };
-
-  const walkParams = (params: ParameterObj[], trackId: string) => {
-    for (const param of params) {
-      paramTrack.set(param.id, trackId);
-      if (param.children.length > 0) walkParams(param.children, trackId);
-    }
-  };
-
-  for (const track of schema.tracks) {
-    if (track.name) nameTrack.set(track.name.toLowerCase(), track.id);
-    for (const device of track.devices) {
-      deviceTrack.set(device.id, track.id);
-      walkParams(device.parameters, track.id);
-    }
-  }
-  return { paramTrack, deviceTrack, nameTrack };
-}
-
-function noteTrackId(moment: CreativeMoment, lookups: Lookups): string | null {
-  for (const target of moment.targets) {
-    if (target.target_type === "track") return target.target_id;
-    if (target.target_type === "device") {
-      const trackId = lookups.deviceTrack.get(target.target_id);
-      if (trackId) return trackId;
-    }
-    if (target.target_type === "parameter" || target.target_type === "parameter_change") {
-      const trackId = lookups.paramTrack.get(target.target_id);
-      if (trackId) return trackId;
-    }
-  }
-  return null;
-}
-
-function pct(atMs: number, bounds: { start: number; span: number }): number {
-  if (bounds.span <= 0) return 50;
-  const value = ((atMs - bounds.start) / bounds.span) * 100;
-  return Math.min(100, Math.max(0, value));
-}
-
-// Build a cumulative step-line (and matching filled area) for one lane's moves,
-// in a 0–100 × 0–100 viewBox drawn with preserveAspectRatio="none". The curve
-// stays flat then steps up at each move, so its rising height tells the story of
-// how much a channel was touched. `globalMax` is shared across lanes so the
-// busiest channel peaks at the top. Returns null when there's nothing to draw.
-function cumulativeMovePaths(
-  moveTimes: number[],
-  bounds: { start: number; span: number },
-  globalMax: number,
-  xEnd: number,
-): { line: string; area: string } | null {
-  if (moveTimes.length === 0 || globalMax <= 0) return null;
-
-  const TOP_PAD = 8; // leaves headroom so the tallest curve isn't clipped
-  const f = (n: number) => n.toFixed(2);
-  const y = (count: number) => 100 - (count / globalMax) * (100 - TOP_PAD);
-
-  let line = `M 0 ${f(y(0))}`;
-  moveTimes.forEach((atMs, index) => {
-    const x = pct(atMs, bounds);
-    // Hold the previous level to this move's x, then step up by one.
-    line += ` L ${f(x)} ${f(y(index))} L ${f(x)} ${f(y(index + 1))}`;
-  });
-  // Carry the final level out to the right edge.
-  line += ` L ${f(xEnd)} ${f(y(moveTimes.length))}`;
-
-  const area = `${line} L ${f(xEnd)} 100 Z`;
-  return { line, area };
-}
-
-// Renders a cumulative activity curve as a glowing, gradient-filled spark that
-// draws itself in on mount. Shared by the track lanes and the session pulse so
-// the timeline reads like a living waveform rather than a chart. The vertical
-// gradient (currentColor → transparent) is defined per instance so each lane can
-// carry its own track color.
-function ActivitySpark({
-  paths,
-  color,
-  gradientId,
-  className = "tl-graph",
-}: {
-  paths: { line: string; area: string };
-  color: string;
-  gradientId: string;
-  className?: string;
-}) {
-  return (
-    <svg
-      className={className}
-      viewBox="0 0 100 100"
-      preserveAspectRatio="none"
-      style={{ color }}
-      aria-hidden="true"
-    >
-      <defs>
-        <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor="currentColor" stopOpacity="0.34" />
-          <stop offset="100%" stopColor="currentColor" stopOpacity="0" />
-        </linearGradient>
-      </defs>
-      <path className="tl-graph__area" d={paths.area} style={{ fill: `url(#${gradientId})` }} />
-      <path
-        className="tl-graph__line"
-        d={paths.line}
-        pathLength={1}
-        vectorEffect="non-scaling-stroke"
-      />
-    </svg>
-  );
-}
-
-function buildTicks(bounds: {
-  start: number;
-  span: number;
-  sessionStart: number;
-}): Array<{ pct: number; label: string }> {
-  const steps = 4;
-  const out: Array<{ pct: number; label: string }> = [];
-  for (let i = 0; i <= steps; i += 1) {
-    // Label each tick by how far into the session it sits, so the axis and the
-    // change-list timestamps share one clock (elapsed from session start).
-    const atMs = bounds.start + (bounds.span * i) / steps;
-    out.push({ pct: (i / steps) * 100, label: formatElapsed(atMs - bounds.sessionStart) });
-  }
-  return out;
-}
-
-function formatElapsed(ms: number): string {
-  const totalSeconds = Math.max(0, Math.round(ms / 1000));
-  const hours = Math.floor(totalSeconds / 3600);
-  const minutes = Math.floor((totalSeconds % 3600) / 60);
-  const seconds = totalSeconds % 60;
-  // Promote to h:mm:ss past an hour so a long session's axis can't be mistaken
-  // for minutes:seconds.
-  if (hours > 0) {
-    return `${hours}:${minutes.toString().padStart(2, "0")}:${seconds.toString().padStart(2, "0")}`;
-  }
-  return `${minutes}:${seconds.toString().padStart(2, "0")}`;
-}
-
-// Human, scannable take title. Auto-generated names (the raw "Session <epoch>"
-// the backend assigns) are replaced with the session's date + start time so the
-// header reads like a memory, not a database row.
-function formatTakeTitle(
-  session: SavedSessionMetadata | null,
-  schemaName: string | null,
-): string {
-  const raw = session?.name?.trim();
-  const isAutoName = !raw || /^session[-\s]?\d+$/i.test(raw);
-  if (raw && !isAutoName) return raw;
-  if (session?.started_at_ms) {
-    const date = new Date(session.started_at_ms);
-    const day = date.toLocaleDateString(undefined, { month: "short", day: "numeric" });
-    const time = date.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
-    return `${day} · ${time}`;
-  }
-  return schemaName ?? "Take";
-}
-
-// Compact human duration for the header ("26 min", "1 hr 12 min", "48 sec").
-function formatDuration(ms: number): string {
-  const totalSeconds = Math.max(0, Math.round(ms / 1000));
-  if (totalSeconds < 60) return `${totalSeconds} sec`;
-  const totalMinutes = Math.floor(totalSeconds / 60);
-  if (totalMinutes < 60) return `${totalMinutes} min`;
-  const hours = Math.floor(totalMinutes / 60);
-  const minutes = totalMinutes % 60;
-  return minutes > 0 ? `${hours} hr ${minutes} min` : `${hours} hr`;
-}
-
-function formatNum(value: number): string {
-  return Number.isInteger(value) ? String(value) : (Math.round(value * 100) / 100).toString();
-}
-
-function formatValue(value: number | null | undefined, unit: string | null | undefined): string {
-  if (value === null || value === undefined) return "—";
-  return unit ? `${formatNum(value)} ${unit}` : formatNum(value);
-}
-
-function formatPercent(value: number | null | undefined): string {
-  if (value === null || value === undefined) return "—";
-  const rounded = Math.round(value * 10) / 10;
-  return Number.isInteger(rounded) ? `${rounded}%` : `${rounded.toFixed(1)}%`;
-}
-
-function formatMoveValue(
-  value: number | null | undefined,
-  percent: number | null | undefined,
-  unit: string | null | undefined,
-  display?: string | null,
-): string {
-  // The Live-formatted string ("440 Hz", "Sinefold", "1") is the truest
-  // representation of what the producer saw, so it wins when present.
-  if (display !== null && display !== undefined && display !== "") {
-    return display;
-  }
-  return percent !== null && percent !== undefined
-    ? formatPercent(percent)
-    : formatValue(value, unit);
-}
-
-function describeActivity(item: Activity): string {
-  if (item.kind === "note") return item.title ?? "Note";
-  const where = [item.deviceName, item.paramName].filter(Boolean).join(" · ");
-  return `${where}: ${formatMoveValue(item.before, item.beforePercent, item.unit, item.beforeDisplay)} → ${formatMoveValue(
-    item.after,
-    item.afterPercent,
-    item.unit,
-    item.afterDisplay,
-  )}`;
-}
-
-// Left column of a move row: "Device · Parameter", so the eye can lock onto
-// what was touched separately from the value.
-function moveWhatNode(item: Activity) {
-  return (
-    <span className="tl-ci__what">
-      <b>{item.deviceName ?? "Device"}</b>
-      <span className="tl-ci__det"> · {item.paramName ?? "parameter"}</span>
-    </span>
-  );
-}
-
-// Up/down direction of a continuous move, by percent-of-range when known, else
-// raw value. Mode (quantized) changes have no direction. Used to tint a caret so
-// a knob raised reads warm and one lowered reads cool — sound, not spreadsheet.
-function moveDirection(beforeItem: Activity, afterItem: Activity): "up" | "down" | null {
-  if (afterItem.quantized) return null;
-  const before = beforeItem.beforePercent ?? beforeItem.before;
-  const after = afterItem.afterPercent ?? afterItem.after;
-  if (before === null || before === undefined || after === null || after === undefined) {
-    return null;
-  }
-  if (after > before) return "up";
-  if (after < before) return "down";
-  return null;
-}
-
-// Right column of a move row: the value as "before → after" (or just "after"
-// when no pre-value is known). Continuous values get a direction caret; mode
-// (quantized) values render as a categorical pill so they read distinct from a
-// number. An optional "N×" badge marks a collapsed run.
-function moveValueNode(beforeItem: Activity, afterItem: Activity, count: number) {
-  const quantized = afterItem.quantized === true;
-  const after = formatMoveValue(
-    afterItem.after,
-    afterItem.afterPercent,
-    afterItem.unit,
-    afterItem.afterDisplay,
-  );
-  const hasBefore =
-    (beforeItem.beforeDisplay !== null &&
-      beforeItem.beforeDisplay !== undefined &&
-      beforeItem.beforeDisplay !== "") ||
-    (beforeItem.before !== null && beforeItem.before !== undefined) ||
-    (beforeItem.beforePercent !== null && beforeItem.beforePercent !== undefined);
-  const direction = moveDirection(beforeItem, afterItem);
-  return (
-    <span className={`tl-ci__val tl-ba ${quantized ? "is-mode" : ""}`}>
-      {hasBefore && (
-        <>
-          <span className="tl-ba__o">
-            {formatMoveValue(
-              beforeItem.before,
-              beforeItem.beforePercent,
-              beforeItem.unit,
-              beforeItem.beforeDisplay,
-            )}
-          </span>
-          <span className="tl-ba__arr">→</span>
-        </>
-      )}
-      <span className="tl-ba__n">{after}</span>
-      {direction && (
-        <span className={`tl-ba__dir is-${direction}`} aria-hidden="true">
-          {direction === "up" ? "▲" : "▼"}
-        </span>
-      )}
-      {count > 1 && <span className="tl-ba__count">{count}×</span>}
-    </span>
-  );
-}
-
-const TRACK_FALLBACK: Record<TrackObj["type"], string> = {
-  midi: "#6382ff",
-  audio: "#aaccf0",
-  return: "#f0cfa0",
-  group: "#9c88ff",
-  master: "#9aa3c4",
-};
-
-function trackColor(track: TrackObj): string {
-  if (track.color && /^#[0-9a-fA-F]{6}$/.test(track.color)) return track.color;
-  return TRACK_FALLBACK[track.type];
-}
-
-function deviceColor(device: DeviceObj): string {
-  if (device.role === "instrument") return "#9c88ff";
-  if (device.role === "midi_effect") return "#6382ff";
-  return "#5ab4a0";
-}
-
-function ScanIcon() {
-  return (
-    <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
-      <circle cx="8" cy="8" r="2" fill="currentColor" />
-      <path
-        d="M8 2.2a5.8 5.8 0 0 1 5.8 5.8M8 13.8A5.8 5.8 0 0 1 2.2 8"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.5"
-        strokeLinecap="round"
-      />
-    </svg>
-  );
-}
-
-function CopyIcon() {
-  return (
-    <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.4" aria-hidden="true">
-      <rect x="5.5" y="5.5" width="8" height="8" rx="1.5" />
-      <path d="M10.5 5.5V4a1.5 1.5 0 0 0-1.5-1.5H4A1.5 1.5 0 0 0 2.5 4v5A1.5 1.5 0 0 0 4 10.5h1.5" strokeLinecap="round" />
-    </svg>
-  );
-}
-
-function ExportIcon() {
-  return (
-    <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.4" aria-hidden="true">
-      <path d="M8 10V2.5M8 2.5 5.5 5M8 2.5 10.5 5" strokeLinecap="round" strokeLinejoin="round" />
-      <path d="M3 9.5v3A1.5 1.5 0 0 0 4.5 14h7a1.5 1.5 0 0 0 1.5-1.5v-3" strokeLinecap="round" />
-    </svg>
   );
 }

@@ -12,59 +12,6 @@ export type SessionStatus = {
   ended_at_ms: number | null;
 };
 
-export type RecallEventType =
-  | "heartbeat"
-  | "transport"
-  | "tempo"
-  | "track"
-  | "group"
-  | "device"
-  | "parameter"
-  | "clip"
-  | "scene"
-  | "mixer"
-  | "arrangement"
-  | "session"
-  | "file"
-  | "creative_moment"
-  | "unknown";
-
-export type RecallMetadataValue =
-  | string
-  | number
-  | boolean
-  | null
-  | string[];
-
-export type RecallTimelineMoment = {
-  id: string;
-  type: RecallEventType;
-  rawEventType?: string;
-  timelineRole?: "creative" | "transport" | "context" | "debug";
-  rawEvent?: unknown;
-  timestamp: number;
-  sessionTimecode: string;
-  summary: string;
-  detail?: string;
-  trackName?: string;
-  groupName?: string;
-  groupPath?: string[];
-  deviceName?: string;
-  deviceChain?: string;
-  source?: string;
-  metadata?: Record<string, RecallMetadataValue>;
-};
-
-export type PlaybackState = {
-  playing: boolean | null;
-  tempo: number | null;
-  projectClock: string | null;
-  arrangementPosition: string | null;
-  rawSongTime: number | null;
-  selectedTrack: string | null;
-  lastUpdatedAt: number | null;
-};
-
 export type SavedSessionMetadata = {
   id: string;
   name: string;
@@ -133,15 +80,3 @@ export type SavedProject = {
   captures: SavedSessionMetadata[];
 };
 
-export type SessionViewMode = "live" | "saved";
-
-export type SessionStats = {
-  totalEvents: number;
-  creativeEvents: number;
-  transportEvents: number;
-  tempoEvents: number;
-  trackEvents: number;
-  deviceEvents: number;
-  parameterEvents: number;
-  heartbeatEvents: number;
-};

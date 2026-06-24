@@ -12,14 +12,6 @@ export type TrackType = "midi" | "audio" | "return" | "group" | "master";
 
 export type DeviceRole = "instrument" | "midi_effect" | "audio_effect";
 
-export type ReturnPurpose =
-  | "reverb"
-  | "delay"
-  | "parallel"
-  | "distortion"
-  | "utility"
-  | "custom";
-
 export type MomentType =
   | "sound_design"
   | "arrangement"
@@ -131,27 +123,3 @@ export const DEVICE_ROLE_LABEL: Record<DeviceRole, string> = {
   audio_effect: "Audio FX",
 };
 
-export const MOMENT_TYPE_LABEL: Record<MomentType, string> = {
-  sound_design: "Sound design",
-  arrangement: "Arrangement",
-  mix_move: "Mix move",
-  automation: "Automation",
-  routing: "Routing",
-  happy_accident: "Happy accident",
-  idea_to_revisit: "Idea to revisit",
-};
-
-// Order matters: rough → working → keeper → final is the producer's confidence ramp.
-export const CONFIDENCE_ORDER: Confidence[] = [
-  "rough",
-  "working",
-  "keeper",
-  "final",
-];
-
-export const CONFIDENCE_LABEL: Record<Confidence, string> = {
-  rough: "Rough",
-  working: "Working",
-  keeper: "Keeper",
-  final: "Final",
-};

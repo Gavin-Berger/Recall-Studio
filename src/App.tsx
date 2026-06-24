@@ -7,10 +7,8 @@ import { AppShell } from "./components/AppShell";
 import type { AppSurface } from "./components/AppShell";
 import { ProductionCheatSheet } from "./components/ProductionCheatSheet";
 import { SchemaTimeline } from "./components/schema/SchemaTimeline";
-import { ProjectManagerScreen } from "./features/projects/ProjectManagerScreen";
-import { SessionRecapScreen } from "./features/projects/SessionRecapScreen";
-import { StartupScreen } from "./features/startup/StartupScreen";
-import type { ConnectionStatus, SavedProject, SavedSessionMetadata, SessionStatus } from "./types/recall";
+import { ProjectManagerScreen, SessionRecapScreen, StartupScreen } from "./features";
+import type { ConnectionStatus, SavedProject, SavedSessionMetadata, SessionStatus } from "./types";
 
 const BACKEND_CONNECTION_COMMAND = "get_connection_status";
 const BACKEND_LIST_SESSIONS_COMMAND = "list_saved_sessions";

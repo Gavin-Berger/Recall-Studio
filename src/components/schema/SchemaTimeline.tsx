@@ -99,6 +99,8 @@ type Highlight = {
   starred: boolean;
   atMs: number;
   score: number;
+  // Why this surfaced — shown on the card so the curation isn't a black box.
+  reason: string;
 };
 
 export function SchemaTimeline({
@@ -118,6 +120,8 @@ export function SchemaTimeline({
   const [noteStar, setNoteStar] = useState(false);
   // Group ids the user expanded to see each move inside a collapsed run.
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
+  // Highlight ids the user has kept/flagged this session, for instant card feedback.
+  const [keptHighlights, setKeptHighlights] = useState<Map<string, "keeper" | "working">>(new Map());
 
   const load = useCallback(
     async (rematerialize: boolean, quiet = false) => {
@@ -371,6 +375,10 @@ export function SchemaTimeline({
 
     for (const moment of moments) {
       const trackId = noteTrackId(moment, lookups);
+      const starred =
+        moment.confidence === "keeper" ||
+        moment.confidence === "final" ||
+        moment.tags.includes("keeper");
       out.push({
         id: `note-${moment.id}`,
         kind: "note",
@@ -387,27 +395,30 @@ export function SchemaTimeline({
         afterDisplay: null,
         unit: null,
         title: moment.title,
-        starred:
-          moment.confidence === "keeper" ||
-          moment.confidence === "final" ||
-          moment.tags.includes("keeper"),
+        starred,
         atMs: moment.timeline_start_ms ?? moment.created_at_ms,
         score: 10_000,
+        reason: starred ? "★ Kept" : "★ Flagged",
       });
     }
 
-    // Net change per device+param, walked in time order.
+    // Net change per device+param, walked in time order; count = how many times
+    // you touched it (a strong "I cared" signal on its own).
     const sorted = [...changes].sort((a, b) => a.changed_at_ms - b.changed_at_ms);
-    const byKey = new Map<string, { first: ParameterChange; last: ParameterChange }>();
+    const byKey = new Map<string, { first: ParameterChange; last: ParameterChange; count: number }>();
     for (const change of sorted) {
       if (!change.parameter_name) continue;
       const key = `${change.track_name ?? ""}|${change.device_name ?? ""}|${change.parameter_name}`;
       const existing = byKey.get(key);
-      if (existing) existing.last = change;
-      else byKey.set(key, { first: change, last: change });
+      if (existing) {
+        existing.last = change;
+        existing.count += 1;
+      } else {
+        byKey.set(key, { first: change, last: change, count: 1 });
+      }
     }
 
-    for (const { first, last } of byKey.values()) {
+    for (const { first, last, count } of byKey.values()) {
       const magnitude =
         last.after_value_percent !== null &&
         last.after_value_percent !== undefined &&
@@ -417,6 +428,24 @@ export function SchemaTimeline({
           : last.is_quantized
             ? 60
             : 30;
+
+      // Three signals of "worth keeping", each its own contribution to the score:
+      //  • iteration — you kept coming back to it (deliberate craft)
+      //  • character — a mode/type flip changes the sound's identity
+      //  • magnitude — a big swing is a decisive move
+      const iterationScore = count > 1 ? (count - 1) * 30 : 0;
+      const characterScore = last.is_quantized ? 70 : 0;
+      const magnitudeScore = magnitude;
+      const score = iterationScore + characterScore + magnitudeScore;
+
+      // The reason shown is the strongest signal, with sensible thresholds so a
+      // tiny one-off move doesn't claim "Big swing".
+      let reason = "Move";
+      if (count >= 3) reason = `Came back ${count}×`;
+      else if (last.is_quantized) reason = "Character move";
+      else if (magnitude >= 50) reason = "Big swing";
+      else if (count === 2) reason = "Revisited";
+
       out.push({
         id: `pc-${last.id}`,
         kind: last.is_quantized ? "mode" : "move",
@@ -434,7 +463,8 @@ export function SchemaTimeline({
         title: null,
         starred: false,
         atMs: last.changed_at_ms,
-        score: (last.is_quantized ? 100 : 0) + magnitude,
+        score,
+        reason,
       });
     }
 
@@ -460,6 +490,7 @@ export function SchemaTimeline({
         timelineStartMs: highlight.atMs ?? null,
         targets: [{ target_type: "track", target_id: highlight.trackId }],
       });
+      setKeptHighlights((prev) => new Map(prev).set(highlight.id, confidence));
       await refreshMoments();
     } catch (keepError) {
       setError(String(keepError));
@@ -876,7 +907,7 @@ export function SchemaTimeline({
             <div className="tl-keep">
               <div className="tl-keep__head">
                 <span className="tl-keep__kick">Worth keeping</span>
-                <span className="tl-keep__sub">this session · flag what mattered</span>
+                <span className="tl-keep__sub">ranked by what you worked · keep or revisit</span>
               </div>
               <div className="tl-keep__rail">
                 {highlights.map((highlight) => {
@@ -917,9 +948,7 @@ export function SchemaTimeline({
                       style={{ ["--lane-color" as string]: color }}
                     >
                       <div className="tl-card__top">
-                        <span className="tl-card__badge">
-                          {isNote ? "★ Note" : highlight.kind === "mode" ? "Mode" : "Move"}
-                        </span>
+                        <span className="tl-card__badge">{highlight.reason}</span>
                         <span className="tl-card__when">
                           {formatElapsed(highlight.atMs - bounds.sessionStart)}
                         </span>
@@ -964,6 +993,10 @@ export function SchemaTimeline({
                       </div>
                       {isNote ? (
                         highlight.starred && <div className="tl-card__kept">★ Kept</div>
+                      ) : keptHighlights.has(highlight.id) ? (
+                        <div className="tl-card__kept">
+                          {keptHighlights.get(highlight.id) === "keeper" ? "★ Kept" : "↩ Saved to revisit"}
+                        </div>
                       ) : (
                         <div className="tl-card__actions">
                           <button

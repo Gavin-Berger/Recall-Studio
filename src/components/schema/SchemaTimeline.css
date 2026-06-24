@@ -1466,18 +1466,48 @@
   overflow: visible;
 }
 
+/* Fill comes from a per-instance vertical gradient (set inline), so the area
+   glows near the curve and fades to nothing at the floor. Fades in on mount. */
 .tl-graph__area {
-  fill: currentColor;
-  fill-opacity: 0.14;
+  animation: tl-graph-fade 760ms ease-out both;
 }
 
+/* Draws itself in left→right on mount via a normalized (pathLength=1) dash. */
 .tl-graph__line {
   fill: none;
   stroke: currentColor;
-  stroke-width: 1.5px;
+  stroke-width: 1.6px;
   stroke-linejoin: round;
   stroke-linecap: round;
-  filter: drop-shadow(0 0 3px rgba(99, 130, 255, 0.35));
+  filter: drop-shadow(0 0 4px rgba(99, 130, 255, 0.45));
+  stroke-dasharray: 1;
+  stroke-dashoffset: 1;
+  animation: tl-graph-draw 760ms ease-out forwards;
+}
+
+@keyframes tl-graph-draw {
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+@keyframes tl-graph-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tl-graph__line {
+    animation: none;
+    stroke-dashoffset: 0;
+  }
+  .tl-graph__area {
+    animation: none;
+  }
 }
 
 .tl-mk--note {

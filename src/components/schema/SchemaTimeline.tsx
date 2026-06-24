@@ -631,15 +631,12 @@ export function SchemaTimeline({
                 xEnd,
               );
               return spark ? (
-                <svg
+                <ActivitySpark
+                  paths={spark}
+                  color="#aab4ff"
+                  gradientId="spark-pulse"
                   className="tl-pulse__spark"
-                  viewBox="0 0 100 100"
-                  preserveAspectRatio="none"
-                  aria-hidden="true"
-                >
-                  <path className="tl-graph__area" d={spark.area} />
-                  <path className="tl-graph__line" d={spark.line} vectorEffect="non-scaling-stroke" />
-                </svg>
+                />
               ) : null;
             })()}
             <span className={`tl-pulse__state is-${pulse.momentum.tone}`}>
@@ -698,16 +695,11 @@ export function SchemaTimeline({
                     aria-label={`${lane.track.name ?? "Untitled track"} — ${moveCount} moves`}
                   >
                     {graph && (
-                      <svg
-                        className="tl-graph"
-                        viewBox="0 0 100 100"
-                        preserveAspectRatio="none"
-                        style={{ color: trackColor(lane.track) }}
-                        aria-hidden="true"
-                      >
-                        <path className="tl-graph__area" d={graph.area} />
-                        <path className="tl-graph__line" d={graph.line} vectorEffect="non-scaling-stroke" />
-                      </svg>
+                      <ActivitySpark
+                        paths={graph}
+                        color={trackColor(lane.track)}
+                        gradientId={`spark-${lane.track.id}`}
+                      />
                     )}
                     {lane.items
                       .filter((item) => item.kind === "note")
@@ -1116,6 +1108,47 @@ function cumulativeMovePaths(
 
   const area = `${line} L ${f(xEnd)} 100 Z`;
   return { line, area };
+}
+
+// Renders a cumulative activity curve as a glowing, gradient-filled spark that
+// draws itself in on mount. Shared by the track lanes and the session pulse so
+// the timeline reads like a living waveform rather than a chart. The vertical
+// gradient (currentColor → transparent) is defined per instance so each lane can
+// carry its own track color.
+function ActivitySpark({
+  paths,
+  color,
+  gradientId,
+  className = "tl-graph",
+}: {
+  paths: { line: string; area: string };
+  color: string;
+  gradientId: string;
+  className?: string;
+}) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 100 100"
+      preserveAspectRatio="none"
+      style={{ color }}
+      aria-hidden="true"
+    >
+      <defs>
+        <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor="currentColor" stopOpacity="0.34" />
+          <stop offset="100%" stopColor="currentColor" stopOpacity="0" />
+        </linearGradient>
+      </defs>
+      <path className="tl-graph__area" d={paths.area} style={{ fill: `url(#${gradientId})` }} />
+      <path
+        className="tl-graph__line"
+        d={paths.line}
+        pathLength={1}
+        vectorEffect="non-scaling-stroke"
+      />
+    </svg>
+  );
 }
 
 function buildTicks(bounds: {

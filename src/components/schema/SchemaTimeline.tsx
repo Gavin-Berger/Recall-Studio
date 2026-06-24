@@ -59,6 +59,10 @@ type Activity = {
   // number/percent when present.
   beforeDisplay?: string | null;
   afterDisplay?: string | null;
+  // Whether this parameter is categorical (a mode selector) rather than a
+  // continuous value — drives pill-vs-number rendering and suppresses the
+  // up/down direction caret (a mode flip has no direction).
+  quantized?: boolean | null;
   // note
   title?: string;
   starred?: boolean;
@@ -248,6 +252,7 @@ export function SchemaTimeline({
         unit: change.unit,
         beforeDisplay: change.before_display_value,
         afterDisplay: change.after_display_value,
+        quantized: change.is_quantized,
       });
     }
     for (const moment of moments) {
@@ -898,6 +903,21 @@ export function SchemaTimeline({
                     highlight.unit,
                     highlight.afterDisplay,
                   );
+                  const isMode = highlight.kind === "mode";
+                  const beforeRef = highlight.beforePercent ?? highlight.before;
+                  const afterRef = highlight.afterPercent ?? highlight.after;
+                  const direction =
+                    !isMode && beforeRef !== null && afterRef !== null
+                      ? afterRef > beforeRef
+                        ? "up"
+                        : afterRef < beforeRef
+                          ? "down"
+                          : null
+                      : null;
+                  const barPct =
+                    !isMode && highlight.afterPercent !== null
+                      ? Math.max(0, Math.min(100, highlight.afterPercent))
+                      : null;
                   return (
                     <div
                       key={highlight.id}
@@ -921,7 +941,7 @@ export function SchemaTimeline({
                         ) : (
                           <>
                             <span className="tl-card__param">{highlight.paramName}</span>
-                            <span className="tl-ba tl-card__val">
+                            <span className={`tl-ba tl-card__val ${isMode ? "is-mode" : ""}`}>
                               {hasBefore && (
                                 <>
                                   <span className="tl-ba__o">
@@ -936,7 +956,17 @@ export function SchemaTimeline({
                                 </>
                               )}
                               <span className="tl-ba__n">{after}</span>
+                              {direction && (
+                                <span className={`tl-ba__dir is-${direction}`} aria-hidden="true">
+                                  {direction === "up" ? "▲" : "▼"}
+                                </span>
+                              )}
                             </span>
+                            {barPct !== null && (
+                              <span className="tl-card__bar" aria-hidden="true">
+                                <span className="tl-card__bar-fill" style={{ width: `${barPct}%` }} />
+                              </span>
+                            )}
                           </>
                         )}
                       </div>
@@ -1200,9 +1230,27 @@ function moveWhatNode(item: Activity) {
   );
 }
 
-// Right column of a move row: the value, as "before → after" (or just "after"
-// when no pre-value is known), with an optional "N×" badge for a collapsed run.
+// Up/down direction of a continuous move, by percent-of-range when known, else
+// raw value. Mode (quantized) changes have no direction. Used to tint a caret so
+// a knob raised reads warm and one lowered reads cool — sound, not spreadsheet.
+function moveDirection(beforeItem: Activity, afterItem: Activity): "up" | "down" | null {
+  if (afterItem.quantized) return null;
+  const before = beforeItem.beforePercent ?? beforeItem.before;
+  const after = afterItem.afterPercent ?? afterItem.after;
+  if (before === null || before === undefined || after === null || after === undefined) {
+    return null;
+  }
+  if (after > before) return "up";
+  if (after < before) return "down";
+  return null;
+}
+
+// Right column of a move row: the value as "before → after" (or just "after"
+// when no pre-value is known). Continuous values get a direction caret; mode
+// (quantized) values render as a categorical pill so they read distinct from a
+// number. An optional "N×" badge marks a collapsed run.
 function moveValueNode(beforeItem: Activity, afterItem: Activity, count: number) {
+  const quantized = afterItem.quantized === true;
   const after = formatMoveValue(
     afterItem.after,
     afterItem.afterPercent,
@@ -1215,9 +1263,10 @@ function moveValueNode(beforeItem: Activity, afterItem: Activity, count: number)
       beforeItem.beforeDisplay !== "") ||
     (beforeItem.before !== null && beforeItem.before !== undefined) ||
     (beforeItem.beforePercent !== null && beforeItem.beforePercent !== undefined);
+  const direction = moveDirection(beforeItem, afterItem);
   return (
-    <span className="tl-ci__val tl-ba">
-      {hasBefore ? (
+    <span className={`tl-ci__val tl-ba ${quantized ? "is-mode" : ""}`}>
+      {hasBefore && (
         <>
           <span className="tl-ba__o">
             {formatMoveValue(
@@ -1228,10 +1277,13 @@ function moveValueNode(beforeItem: Activity, afterItem: Activity, count: number)
             )}
           </span>
           <span className="tl-ba__arr">→</span>
-          <span className="tl-ba__n">{after}</span>
         </>
-      ) : (
-        <span className="tl-ba__n">{after}</span>
+      )}
+      <span className="tl-ba__n">{after}</span>
+      {direction && (
+        <span className={`tl-ba__dir is-${direction}`} aria-hidden="true">
+          {direction === "up" ? "▲" : "▼"}
+        </span>
       )}
       {count > 1 && <span className="tl-ba__count">{count}×</span>}
     </span>

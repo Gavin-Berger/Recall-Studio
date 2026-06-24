@@ -151,7 +151,7 @@ export function ProjectManagerScreen({
               ? activeAbletonName
                 ? `Ableton: ${activeAbletonName}`
                 : "Ableton connected"
-              : "Awaiting bridge"}
+              : "Listening for Ableton…"}
           </span>
         </div>
       </header>

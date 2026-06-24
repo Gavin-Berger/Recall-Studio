@@ -552,7 +552,7 @@ export function SchemaTimeline({
   if (!sessionId) {
     return (
       <div className="tl-empty-screen">
-        <p>Open a take from your project library to see what changed and keep what worked.</p>
+        <p>Open a take to relive what you did — and keep what worked.</p>
       </div>
     );
   }
@@ -563,7 +563,7 @@ export function SchemaTimeline({
         <div className="tl-bar__title">
           <span className={`tl-eye ${bounds.recording ? "is-rec" : ""}`}>
             {bounds.recording && <span className="tl-eye__dot" />}
-            {bounds.recording ? "Recording now" : "Viewing take"}
+            {bounds.recording ? "Recording now" : "Looking back"}
           </span>
           <strong title={rawTakeId ?? undefined}>{takeTitle}</strong>
           <span className="tl-bar__sub">
@@ -1008,7 +1008,7 @@ function ScanEmptyState({
       <div className="tl-scan__ic">
         <ScanIcon />
       </div>
-      <h3>{existingSet ? "Capturing what's already in this set" : "This take isn't mapped yet"}</h3>
+      <h3>{existingSet ? "Catching up on this set" : "Waiting for your first move"}</h3>
       <p>
         {existingSet
           ? "This set was built before Recall was watching, so it's baselining every track and device already in it. Give it a few seconds on a big set, then refresh."

@@ -77,7 +77,7 @@ export function AppShell({
             }`}
           >
             <span className="recall-sidebar__status-dot" aria-hidden="true" />
-            <span>{connected ? "Live bridge connected" : "Awaiting bridge"}</span>
+            <span>{connected ? "Listening to Ableton" : "Listening for Ableton…"}</span>
           </div>
         </nav>
 

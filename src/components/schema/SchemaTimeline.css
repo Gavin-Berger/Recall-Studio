@@ -1187,8 +1187,41 @@
 
 .tl-bar__actions {
   display: flex;
+  align-items: center;
   gap: 8px;
   flex-shrink: 0;
+}
+
+/* Segmented export-format picker (MD / TXT / JSON). */
+.tl-fmt {
+  display: inline-flex;
+  padding: 2px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.tl-fmt__opt {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  padding: 4px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease;
+}
+
+.tl-fmt__opt:hover {
+  color: var(--paper);
+}
+
+.tl-fmt__opt.is-on {
+  background: rgba(99, 130, 255, 0.18);
+  color: #cdd6ff;
 }
 
 .tl-btn {

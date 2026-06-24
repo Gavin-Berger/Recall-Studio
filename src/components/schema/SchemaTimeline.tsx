@@ -24,6 +24,7 @@ import {
 import type { SavedSessionMetadata } from "../../types/recall";
 
 type LoadStatus = "idle" | "loading" | "ready" | "error";
+type ExportFormat = "md" | "txt" | "json";
 
 const LIVE_REFRESH_DEBOUNCE_MS = 700;
 const LIVE_REFRESH_EVENT_TYPES = new Set([
@@ -131,6 +132,8 @@ export function SchemaTimeline({
   const railRef = useRef<HTMLDivElement>(null);
   // Transient "Copied!" feedback for the share button.
   const [copied, setCopied] = useState(false);
+  // Selected export format for copy/save.
+  const [exportFormat, setExportFormat] = useState<ExportFormat>("md");
 
   const load = useCallback(
     async (rematerialize: boolean, quiet = false) => {
@@ -721,41 +724,16 @@ export function SchemaTimeline({
     }
   }
 
-  // Assemble a shareable Markdown recap of the take from what's on screen: the
-  // story, the worth-keeping highlights, and the full change log grouped by track.
-  function buildShareDocument(): string {
-    const lines: string[] = [];
-    lines.push(`# ${takeTitle}${projectContext ? ` — ${projectContext}` : ""}`);
-    const meta = [
-      durationLabel,
-      `${pulse.moveCount} move${pulse.moveCount === 1 ? "" : "s"}`,
-      pulse.tracksTouched > 0
-        ? `${pulse.tracksTouched} track${pulse.tracksTouched === 1 ? "" : "s"} touched`
-        : null,
-      pulse.keeperCount > 0 ? `${pulse.keeperCount} keeper${pulse.keeperCount === 1 ? "" : "s"}` : null,
-    ]
-      .filter(Boolean)
-      .join(" · ");
-    if (meta) lines.push(`_${meta}_`);
-    lines.push("");
-
-    if (sessionStory) {
-      lines.push("## The story so far", "", sessionStory.join(" "), "");
-    }
-
-    const keepWorthy = highlights.filter((h) => h.kind !== "note");
-    if (keepWorthy.length > 0) {
-      lines.push("## Worth keeping", "");
-      for (const h of keepWorthy) {
-        const where = [h.trackName, h.deviceName].filter(Boolean).join(" · ");
-        const after = formatMoveValue(h.after, h.afterPercent, h.unit, h.afterDisplay);
-        const hasBefore = h.before !== null || h.beforePercent !== null || Boolean(h.beforeDisplay);
-        const before = formatMoveValue(h.before, h.beforePercent, h.unit, h.beforeDisplay);
-        const value = hasBefore ? `${before} → ${after}` : after;
-        lines.push(`- **${h.paramName ?? "Move"}** (${where}) — ${value} · ${h.reason}`);
-      }
-      lines.push("");
-    }
+  // One structured snapshot of the take, shared by every export format so JSON,
+  // Markdown, and plain text never drift apart. Strings are the producer-facing
+  // display values; raw numeric fields are kept alongside for machine consumers.
+  function buildShareData() {
+    const valueOf = (
+      value: number | null,
+      percent: number | null,
+      unit: string | null,
+      display: string | null,
+    ) => formatMoveValue(value, percent, unit, display);
 
     const byTrack = new Map<string, ParameterChange[]>();
     for (const change of [...changes].sort((a, b) => a.changed_at_ms - b.changed_at_ms)) {
@@ -764,42 +742,137 @@ export function SchemaTimeline({
       if (arr) arr.push(change);
       else byTrack.set(key, [change]);
     }
-    if (byTrack.size > 0) {
+
+    return {
+      title: takeTitle,
+      project: projectContext,
+      duration: durationLabel,
+      recordedAtMs: session?.started_at_ms ?? null,
+      exportedAtMs: Date.now(),
+      stats: {
+        moves: pulse.moveCount,
+        characterMoves: pulse.decisionCount,
+        tracksTouched: pulse.tracksTouched,
+        keepers: pulse.keeperCount,
+      },
+      story: sessionStory ? sessionStory.join(" ") : null,
+      worthKeeping: highlights
+        .filter((h) => h.kind !== "note")
+        .map((h) => ({
+          parameter: h.paramName,
+          track: h.trackName,
+          device: h.deviceName,
+          before: valueOf(h.before, h.beforePercent, h.unit, h.beforeDisplay),
+          after: valueOf(h.after, h.afterPercent, h.unit, h.afterDisplay),
+          reason: h.reason,
+          isMode: h.kind === "mode",
+          atMs: h.atMs,
+          elapsedMs: h.atMs - bounds.sessionStart,
+        })),
+      tracks: [...byTrack.entries()].map(([name, list]) => ({
+        name,
+        moves: list.length,
+        changes: list.map((c) => ({
+          device: c.device_name,
+          parameter: c.parameter_name,
+          before: valueOf(c.before_value, c.before_value_percent, c.unit, c.before_display_value),
+          after: valueOf(c.after_value, c.after_value_percent, c.unit, c.after_display_value),
+          beforeValue: c.before_value,
+          afterValue: c.after_value,
+          unit: c.unit,
+          isQuantized: c.is_quantized ?? false,
+          atMs: c.changed_at_ms,
+          elapsedMs: c.changed_at_ms - bounds.sessionStart,
+        })),
+      })),
+    };
+  }
+
+  type ShareData = ReturnType<typeof buildShareData>;
+
+  function renderMarkdown(d: ShareData): string {
+    const lines: string[] = [];
+    lines.push(`# ${d.title}${d.project ? ` — ${d.project}` : ""}`);
+    const meta = [
+      d.duration,
+      `${d.stats.moves} move${d.stats.moves === 1 ? "" : "s"}`,
+      d.stats.tracksTouched > 0
+        ? `${d.stats.tracksTouched} track${d.stats.tracksTouched === 1 ? "" : "s"} touched`
+        : null,
+      d.stats.keepers > 0 ? `${d.stats.keepers} keeper${d.stats.keepers === 1 ? "" : "s"}` : null,
+    ]
+      .filter(Boolean)
+      .join(" · ");
+    if (meta) lines.push(`_${meta}_`);
+    lines.push("");
+    if (d.story) lines.push("## The story so far", "", d.story, "");
+    if (d.worthKeeping.length > 0) {
+      lines.push("## Worth keeping", "");
+      for (const h of d.worthKeeping) {
+        const where = [h.track, h.device].filter(Boolean).join(" · ");
+        const value = h.before !== "—" ? `${h.before} → ${h.after}` : h.after;
+        lines.push(`- **${h.parameter ?? "Move"}** (${where}) — ${value} · ${h.reason}`);
+      }
+      lines.push("");
+    }
+    if (d.tracks.length > 0) {
       lines.push("## What you changed", "");
-      for (const [track, list] of byTrack) {
-        lines.push(`### ${track}`);
-        for (const change of list) {
-          const where = [change.device_name, change.parameter_name].filter(Boolean).join(" · ");
-          const after = formatMoveValue(
-            change.after_value,
-            change.after_value_percent,
-            change.unit,
-            change.after_display_value,
-          );
-          const hasBefore =
-            change.before_value !== null ||
-            change.before_value_percent !== null ||
-            Boolean(change.before_display_value);
-          const before = formatMoveValue(
-            change.before_value,
-            change.before_value_percent,
-            change.unit,
-            change.before_display_value,
-          );
-          const when = formatElapsed(change.changed_at_ms - bounds.sessionStart);
-          lines.push(`- ${where}: ${hasBefore ? `${before} → ${after}` : after} _(${when})_`);
+      for (const track of d.tracks) {
+        lines.push(`### ${track.name}`);
+        for (const c of track.changes) {
+          const where = [c.device, c.parameter].filter(Boolean).join(" · ");
+          const value = c.before !== "—" ? `${c.before} → ${c.after}` : c.after;
+          lines.push(`- ${where}: ${value} _(${formatElapsed(c.elapsedMs)})_`);
         }
         lines.push("");
       }
     }
-
     lines.push("---", "_Exported from Recall Studio_");
     return lines.join("\n");
   }
 
+  function renderText(d: ShareData): string {
+    const lines: string[] = [];
+    lines.push(`${d.title}${d.project ? ` — ${d.project}` : ""}`);
+    const meta = [d.duration, `${d.stats.moves} moves`].filter(Boolean).join(" · ");
+    if (meta) lines.push(meta);
+    lines.push("");
+    if (d.story) lines.push("THE STORY SO FAR", d.story, "");
+    if (d.worthKeeping.length > 0) {
+      lines.push("WORTH KEEPING");
+      for (const h of d.worthKeeping) {
+        const where = [h.track, h.device].filter(Boolean).join(" · ");
+        const value = h.before !== "—" ? `${h.before} -> ${h.after}` : h.after;
+        lines.push(`  - ${h.parameter ?? "Move"} (${where}): ${value} [${h.reason}]`);
+      }
+      lines.push("");
+    }
+    if (d.tracks.length > 0) {
+      lines.push("WHAT YOU CHANGED");
+      for (const track of d.tracks) {
+        lines.push(`  ${track.name}`);
+        for (const c of track.changes) {
+          const where = [c.device, c.parameter].filter(Boolean).join(" · ");
+          const value = c.before !== "—" ? `${c.before} -> ${c.after}` : c.after;
+          lines.push(`    - ${where}: ${value} (${formatElapsed(c.elapsedMs)})`);
+        }
+      }
+      lines.push("");
+    }
+    lines.push("Exported from Recall Studio");
+    return lines.join("\n");
+  }
+
+  function buildShareDocument(format: ExportFormat): string {
+    const data = buildShareData();
+    if (format === "json") return JSON.stringify(data, null, 2);
+    if (format === "txt") return renderText(data);
+    return renderMarkdown(data);
+  }
+
   async function handleCopyShare() {
     try {
-      await navigator.clipboard.writeText(buildShareDocument());
+      await navigator.clipboard.writeText(buildShareDocument(exportFormat));
       setCopied(true);
       window.setTimeout(() => setCopied(false), 1600);
     } catch (copyError) {
@@ -809,13 +882,15 @@ export function SchemaTimeline({
 
   async function handleExportShare() {
     try {
-      const fileName = `${takeTitle.replace(/[^\w.-]+/g, "-")}-recall.md`;
+      const ext = exportFormat;
+      const filterName = ext === "md" ? "Markdown" : ext === "txt" ? "Text" : "JSON";
+      const fileName = `${takeTitle.replace(/[^\w.-]+/g, "-")}-recall.${ext}`;
       const path = await save({
         defaultPath: fileName,
-        filters: [{ name: "Markdown", extensions: ["md"] }],
+        filters: [{ name: filterName, extensions: [ext] }],
       });
       if (!path) return;
-      await writeTextFile(path, buildShareDocument());
+      await writeTextFile(path, buildShareDocument(exportFormat));
     } catch (exportError) {
       setError(String(exportError));
     }
@@ -851,20 +926,34 @@ export function SchemaTimeline({
         <div className="tl-bar__actions">
           {hasMap && (
             <>
+              <div className="tl-fmt" role="group" aria-label="Export format">
+                {(["md", "txt", "json"] as ExportFormat[]).map((fmt) => (
+                  <button
+                    key={fmt}
+                    type="button"
+                    className={`tl-fmt__opt ${exportFormat === fmt ? "is-on" : ""}`}
+                    onClick={() => setExportFormat(fmt)}
+                    aria-pressed={exportFormat === fmt}
+                    title={`Export as ${fmt === "md" ? "Markdown" : fmt === "txt" ? "plain text" : "JSON"}`}
+                  >
+                    {fmt.toUpperCase()}
+                  </button>
+                ))}
+              </div>
               <button
                 type="button"
                 className="tl-btn"
                 onClick={() => void handleCopyShare()}
-                title="Copy a Markdown recap of this take to the clipboard"
+                title={`Copy this take as ${exportFormat.toUpperCase()} to the clipboard`}
               >
                 <CopyIcon />
-                {copied ? "Copied!" : "Copy recap"}
+                {copied ? "Copied!" : "Copy"}
               </button>
               <button
                 type="button"
                 className="tl-btn"
                 onClick={() => void handleExportShare()}
-                title="Save this take as a Markdown file to share"
+                title={`Save this take as a .${exportFormat} file`}
               >
                 <ExportIcon />
                 Export

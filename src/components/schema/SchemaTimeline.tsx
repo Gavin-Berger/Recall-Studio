@@ -593,6 +593,77 @@ export function SchemaTimeline({
     return { moveCount, decisionCount, keeperCount, tracksTouched, times, momentum };
   }, [changes, moments, bounds.recording]);
 
+  // An auto-written recap of the take — prose that ties the numbers together so
+  // the session reads like a memory you can skim, not a table you decode.
+  const sessionStory = useMemo<string[] | null>(() => {
+    if (changes.length === 0) return null;
+    const sentences: string[] = [];
+
+    const trackTally = new Map<string, number>();
+    const deviceTally = new Map<string, number>();
+    for (const change of changes) {
+      if (change.track_name) trackTally.set(change.track_name, (trackTally.get(change.track_name) ?? 0) + 1);
+      if (change.device_name) deviceTally.set(change.device_name, (deviceTally.get(change.device_name) ?? 0) + 1);
+    }
+    const topTrack = [...trackTally.entries()].sort((a, b) => b[1] - a[1])[0];
+    const topDevice = [...deviceTally.entries()].sort((a, b) => b[1] - a[1])[0];
+    const trackCount = trackTally.size;
+
+    // Boldest continuous swing, by percent-of-range.
+    let biggest: { param: string; before: string; after: string; mag: number } | null = null;
+    for (const change of changes) {
+      if (!change.parameter_name || change.is_quantized) continue;
+      if (change.after_value_percent === null || change.before_value_percent === null) continue;
+      const mag = Math.abs(change.after_value_percent - change.before_value_percent);
+      if (!biggest || mag > biggest.mag) {
+        biggest = {
+          param: change.parameter_name,
+          before: change.before_display_value ?? formatPercent(change.before_value_percent),
+          after: change.after_display_value ?? formatPercent(change.after_value_percent),
+          mag,
+        };
+      }
+    }
+
+    const modes = changes.filter((c) => c.is_quantized && c.parameter_name);
+    const keepers = moments.filter(
+      (m) => m.confidence === "keeper" || m.confidence === "final" || m.tags.includes("keeper"),
+    ).length;
+
+    const durationMs = session?.started_at_ms
+      ? (session.ended_at_ms ?? Date.now()) - session.started_at_ms
+      : null;
+    const project = session?.display_name ?? session?.project_name ?? null;
+
+    sentences.push(
+      `${durationMs ? formatDuration(durationMs) : "A take"}${project ? ` on ${project}` : ""}.`,
+    );
+    if (topTrack) {
+      sentences.push(
+        trackCount === 1
+          ? `Nearly all of it on ${topTrack[0]} — ${topTrack[1]} move${topTrack[1] === 1 ? "" : "s"}.`
+          : `Across ${trackCount} tracks, mostly ${topTrack[0]} (${topTrack[1]} moves).`,
+      );
+    }
+    if (topDevice && topDevice[1] >= 2) {
+      sentences.push(`The ${topDevice[0]} got the most hands-on attention.`);
+    }
+    if (biggest) {
+      sentences.push(`Boldest move: ${biggest.param}, ${biggest.before} → ${biggest.after}.`);
+    }
+    if (modes.length > 0) {
+      const last = modes[modes.length - 1];
+      sentences.push(
+        `You reshaped its character — ${last.parameter_name} to ${last.after_display_value ?? "a new mode"}.`,
+      );
+    }
+    if (keepers > 0) {
+      sentences.push(`${keepers} keeper${keepers === 1 ? "" : "s"} flagged.`);
+    }
+
+    return sentences;
+  }, [changes, moments, session]);
+
   function toggleGroup(key: string) {
     setExpandedGroups((prev) => {
       const next = new Set(prev);
@@ -1115,6 +1186,13 @@ export function SchemaTimeline({
                   );
                 })}
               </div>
+            </div>
+          )}
+
+          {sessionStory && (
+            <div className="tl-recap">
+              <div className="tl-recap__kick">The story so far</div>
+              <p className="tl-recap__text">{sessionStory.join(" ")}</p>
             </div>
           )}
         </>

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { formatSessionDate, formatSessionDuration } from "../sessionFormat";
 import type { SavedSession, SavedSessionMetadata } from "../../types/recall";
 
 type SessionRecapScreenProps = {
@@ -73,7 +74,7 @@ export function SessionRecapScreen({
           <span className="eyebrow">Session Recap</span>
           <h1>{displaySession.name}</h1>
           <p>
-            {formatSessionDate(displaySession.started_at_ms)} / {formatDuration(displaySession)}
+            {formatSessionDate(displaySession.started_at_ms)} / {formatSessionDuration(displaySession)}
           </p>
         </div>
         <div className="session-recap__actions">
@@ -193,29 +194,9 @@ function buildRecap(session: SavedSession | null) {
   };
 }
 
-function formatSessionDate(ms: number): string {
-  return new Date(ms).toLocaleDateString(undefined, {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-  });
-}
-
 function formatClock(ms: number): string {
   return new Date(ms).toLocaleTimeString(undefined, {
     hour: "2-digit",
     minute: "2-digit",
   });
-}
-
-function formatDuration(session: SavedSessionMetadata | SavedSession): string {
-  if (session.ended_at_ms === null) return "In progress";
-  const ms = Math.max(0, session.ended_at_ms - session.started_at_ms);
-  const totalMinutes = Math.floor(ms / 60000);
-  const hours = Math.floor(totalMinutes / 60);
-  const minutes = totalMinutes % 60;
-
-  if (hours > 0) return `${hours}h ${minutes}m`;
-  if (minutes > 0) return `${minutes}m`;
-  return "< 1m";
 }

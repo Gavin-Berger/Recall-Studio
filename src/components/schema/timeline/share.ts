@@ -9,7 +9,7 @@ import { formatElapsed, formatMoveValue } from "./format";
 
 // Everything the share snapshot needs from the component, passed in so the
 // builder stays pure and testable.
-export type ShareInput = {
+type ShareInput = {
   title: string;
   project: string | null;
   duration: string | null;
@@ -86,7 +86,7 @@ export function buildShareData(input: ShareInput) {
   };
 }
 
-export type ShareData = ReturnType<typeof buildShareData>;
+type ShareData = ReturnType<typeof buildShareData>;
 
 function renderMarkdown(d: ShareData): string {
   const lines: string[] = [];

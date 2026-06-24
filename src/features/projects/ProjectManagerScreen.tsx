@@ -7,6 +7,7 @@ import {
 } from "react";
 import { RecallMark } from "../../components/RecallMark";
 import { BridgeSetup } from "../home/BridgeSetup";
+import { formatSessionDate, formatSessionDuration } from "../sessionFormat";
 import type { ConnectionStatus, SavedProject, SavedSessionMetadata } from "../../types/recall";
 
 type ProjectManagerScreenProps = {
@@ -720,7 +721,7 @@ function TakeRow({
         <span className="px-take__meta">
           {formatSessionDate(session.started_at_ms)}
           {" · "}
-          {formatDuration(session)}
+          {formatSessionDuration(session)}
           {" · "}
           {session.creative_event_count} {countLabel(session.creative_event_count, "moment")}
           {isActive ? " · live" : ""}
@@ -983,26 +984,6 @@ function captureName(session: SavedSessionMetadata): string {
 
 function countLabel(count: number, noun: string): string {
   return `${noun}${count === 1 ? "" : "s"}`;
-}
-
-function formatSessionDate(ms: number): string {
-  return new Date(ms).toLocaleDateString(undefined, {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-  });
-}
-
-function formatDuration(session: SavedSessionMetadata): string {
-  if (session.ended_at_ms === null) return "In progress";
-  const ms = Math.max(0, session.ended_at_ms - session.started_at_ms);
-  const totalMinutes = Math.floor(ms / 60000);
-  const hours = Math.floor(totalMinutes / 60);
-  const minutes = totalMinutes % 60;
-
-  if (hours > 0) return `${hours}h ${minutes}m`;
-  if (minutes > 0) return `${minutes}m`;
-  return "< 1m";
 }
 
 function Chevron({ open }: { open: boolean }) {

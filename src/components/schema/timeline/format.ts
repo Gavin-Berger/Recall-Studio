@@ -51,7 +51,7 @@ function formatNum(value: number): string {
   return Number.isInteger(value) ? String(value) : (Math.round(value * 100) / 100).toString();
 }
 
-export function formatValue(value: number | null | undefined, unit: string | null | undefined): string {
+function formatValue(value: number | null | undefined, unit: string | null | undefined): string {
   if (value === null || value === undefined) return "—";
   return unit ? `${formatNum(value)} ${unit}` : formatNum(value);
 }

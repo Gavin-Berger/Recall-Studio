@@ -63,37 +63,6 @@ export function createCreativeMoment(input: CreateMomentInput): Promise<void> {
   });
 }
 
-export type UpdateMomentInput = {
-  id: string;
-  title: string;
-  momentType: MomentType;
-  timelineStartMs?: number | null;
-  timelineEndMs?: number | null;
-  note?: string | null;
-  tags: string[];
-  confidence: Confidence;
-};
-
-export function updateCreativeMoment(input: UpdateMomentInput): Promise<void> {
-  return invoke<void>("update_creative_moment", {
-    id: input.id,
-    title: input.title,
-    momentType: input.momentType,
-    timelineStartMs: input.timelineStartMs ?? null,
-    timelineEndMs: input.timelineEndMs ?? null,
-    note: input.note ?? null,
-    tags: input.tags,
-    confidence: input.confidence,
-  });
-}
-
 export function deleteCreativeMoment(id: string): Promise<void> {
   return invoke<void>("delete_creative_moment", { id });
-}
-
-export function setCreativeMomentTargets(
-  momentId: string,
-  targets: CreativeMomentTarget[],
-): Promise<void> {
-  return invoke<void>("set_creative_moment_targets", { momentId, targets });
 }

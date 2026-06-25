@@ -497,6 +497,44 @@ fn rescan_project_folder(state: State<'_, AppState>, project_id: String) -> Resu
     rescan_project(&storage, &project_id)
 }
 
+/// A `.als` version in a project folder, for the relink picker.
+#[derive(serde::Serialize)]
+struct AlsFileInfo {
+    name: String,
+    path: String,
+}
+
+/// List the `.als` versions in a project's connected folder, for choosing a relink
+/// target. Empty if the project has no folder.
+#[tauri::command]
+fn list_project_als_files(
+    state: State<'_, AppState>,
+    project_id: String,
+) -> Result<Vec<AlsFileInfo>, String> {
+    let storage = state.storage.lock().expect("Storage state lock failed");
+    let Some(folder) = storage.project_ableton_path(&project_id)? else {
+        return Ok(Vec::new());
+    };
+    Ok(list_als_files(std::path::Path::new(&folder))
+        .into_iter()
+        .map(|file| AlsFileInfo {
+            name: file.name,
+            path: file.path,
+        })
+        .collect())
+}
+
+/// Move a take's history onto a different `.als` version (e.g. after a rename).
+#[tauri::command]
+fn relink_take(
+    state: State<'_, AppState>,
+    session_id: String,
+    als_path: String,
+) -> Result<(), String> {
+    let storage = state.storage.lock().expect("Storage state lock failed");
+    storage.relink_take(&session_id, &als_path)
+}
+
 #[tauri::command]
 fn assign_session_to_project(
     state: State<'_, AppState>,
@@ -975,6 +1013,8 @@ pub fn run() {
             create_project,
             connect_project_folder,
             rescan_project_folder,
+            list_project_als_files,
+            relink_take,
             rename_project,
             archive_project,
             assign_session_to_project,

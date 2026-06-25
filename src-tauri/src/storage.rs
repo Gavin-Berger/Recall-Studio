@@ -848,6 +848,75 @@ impl StorageState {
         })
     }
 
+    /// Re-point a take's history to a different `.als` version. If a `scanned`
+    /// placeholder take already sits on the target file it's absorbed (deleted), so
+    /// the relinked take cleanly takes its place. If a *recorded* take already owns
+    /// the target, the relink is refused — merging two histories is out of scope.
+    /// This is how a producer moves their memory onto a renamed file.
+    pub fn relink_take(&self, session_id: &str, als_path: &str) -> Result<(), String> {
+        let clean = als_path.trim();
+        if clean.is_empty() {
+            return Err("No file chosen to relink to.".to_string());
+        }
+
+        let connection = self.open_connection()?;
+
+        // Scope the conflict check to the take's own project.
+        let take_project: Option<Option<String>> = connection
+            .query_row(
+                "SELECT project_id FROM sessions WHERE id = ?1",
+                params![session_id],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .optional()
+            .map_err(|error| format!("Failed to read take: {}", error))?;
+        let project_id = match take_project {
+            Some(project_id) => project_id,
+            None => return Err(format!("Take not found: {}", session_id)),
+        };
+
+        // Is another take already anchored to the target file?
+        let conflict: Option<(String, String)> = connection
+            .query_row(
+                "
+                SELECT id, COALESCE(take_origin, 'recorded')
+                FROM sessions
+                WHERE als_path = ?1 AND id != ?2 AND project_id IS ?3
+                LIMIT 1
+                ",
+                params![clean, session_id, project_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(|error| format!("Failed to check relink target: {}", error))?;
+
+        if let Some((other_id, origin)) = conflict {
+            if origin == "scanned" {
+                // A scanned placeholder has no events — absorb it.
+                connection
+                    .execute("DELETE FROM sessions WHERE id = ?1", params![other_id])
+                    .map_err(|error| format!("Failed to absorb scanned take: {}", error))?;
+            } else {
+                return Err(
+                    "That version already has a recorded take. Move or merge isn't supported yet."
+                        .to_string(),
+                );
+            }
+        }
+
+        let updated = connection
+            .execute(
+                "UPDATE sessions SET als_path = ?1 WHERE id = ?2",
+                params![clean, session_id],
+            )
+            .map_err(|error| format!("Failed to relink take: {}", error))?;
+        if updated == 0 {
+            return Err(format!("Take not found: {}", session_id));
+        }
+
+        Ok(())
+    }
+
     /// The Ableton folder a project is connected to, if any.
     pub fn project_ableton_path(&self, project_id: &str) -> Result<Option<String>, String> {
         let connection = self.open_connection()?;
@@ -3422,6 +3491,50 @@ mod tests {
         let fresh_take = storage.load_session(fresh.session_id.as_deref().unwrap()).unwrap();
         assert_eq!(fresh_take.als_path.as_deref(), Some(als("v9").as_str()));
         assert_eq!(fresh_take.take_origin, "recorded");
+
+        cleanup(&path);
+    }
+
+    #[test]
+    fn relinking_a_take_repoints_it_and_absorbs_the_scanned_placeholder() {
+        let (storage, path) = temp_storage();
+        let project_id = storage
+            .create_project("Idols Perseus", None, Some("/Projects/Idols Perseus Project"))
+            .unwrap();
+        let als = |name: &str| format!("/Projects/Idols Perseus Project/{name}.als");
+
+        storage
+            .rescan_project_takes(
+                &project_id,
+                &[("v8".into(), als("v8"), 1_000), ("v8 final".into(), als("v8 final"), 2_000)],
+            )
+            .unwrap();
+
+        // Record onto v8 (promotes it), simulating a real take with history.
+        let recorded = storage
+            .activate_take_for_open_file(Some(&project_id), Some(&als("v8")))
+            .unwrap();
+        let recorded_id = recorded.session_id.unwrap();
+
+        // The producer renamed v8 -> "v8 final"; move the recorded history onto it.
+        // The scanned placeholder for "v8 final" should be absorbed (no duplicate).
+        storage.relink_take(&recorded_id, &als("v8 final")).unwrap();
+
+        let captures = storage.list_projects(false).unwrap().remove(0).captures;
+        let final_takes: Vec<_> = captures
+            .iter()
+            .filter(|take| take.als_path.as_deref() == Some(als("v8 final").as_str()))
+            .collect();
+        assert_eq!(final_takes.len(), 1, "placeholder should be absorbed, not duplicated");
+        assert_eq!(final_takes[0].id, recorded_id);
+        assert_eq!(final_takes[0].take_origin, "recorded");
+
+        // Relinking onto a file a *recorded* take already owns is refused.
+        storage
+            .activate_take_for_open_file(Some(&project_id), Some(&als("v8")))
+            .unwrap();
+        let blocked = storage.relink_take(&recorded_id, &als("v8"));
+        assert!(blocked.is_err());
 
         cleanup(&path);
     }

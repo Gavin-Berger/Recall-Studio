@@ -2413,6 +2413,97 @@
   text-overflow: ellipsis;
 }
 
+/* Relink dialog — pick which .als version a take's history belongs to. */
+.relink-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(6, 8, 14, 0.6);
+  backdrop-filter: blur(2px);
+}
+
+.relink-dialog {
+  width: min(440px, calc(100vw - 48px));
+  max-height: min(70vh, 560px);
+  display: flex;
+  flex-direction: column;
+  background: #14161f;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 12px;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5);
+  overflow: hidden;
+}
+
+.relink-dialog__head {
+  padding: 16px 18px 10px;
+}
+
+.relink-dialog__head strong {
+  font-size: 0.95rem;
+  color: #e6e9f5;
+}
+
+.relink-dialog__head p {
+  margin: 4px 0 0;
+  font-size: 0.78rem;
+  color: var(--faint);
+}
+
+.relink-dialog__list {
+  overflow-y: auto;
+  padding: 4px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.relink-dialog__file {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 9px 12px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: #c7cce0;
+  font-size: 0.82rem;
+  text-align: left;
+  cursor: pointer;
+}
+
+.relink-dialog__file:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.relink-dialog__file.is-current {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.relink-dialog__current {
+  font-size: 0.62rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--faint);
+}
+
+.relink-dialog__empty {
+  padding: 18px;
+  font-size: 0.8rem;
+  color: var(--faint);
+}
+
+.relink-dialog__foot {
+  padding: 10px 14px 14px;
+  display: flex;
+  justify-content: flex-end;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+
 /* "Found" badge on a scanned take — a version that exists on disk but has no
    recorded moves yet. Subdued so it reads as informational, not a live status. */
 .px-take__found {

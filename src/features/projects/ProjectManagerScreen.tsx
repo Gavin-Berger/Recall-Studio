@@ -30,7 +30,11 @@ type ProjectManagerScreenProps = {
   onRenameCapture: (sessionId: string, captureName: string) => Promise<void>;
   onMoveCapture: (sessionId: string, projectId: string | null) => Promise<void>;
   onDeleteCapture: (sessionId: string) => Promise<void>;
+  onListProjectAlsFiles: (projectId: string) => Promise<AlsFileChoice[]>;
+  onRelinkTake: (sessionId: string, alsPath: string) => Promise<void>;
 };
+
+export type AlsFileChoice = { name: string; path: string };
 
 type SortKey = "name" | "takes" | "updated";
 type SortDir = "asc" | "desc";
@@ -61,6 +65,8 @@ export function ProjectManagerScreen({
   onRenameCapture,
   onMoveCapture,
   onDeleteCapture,
+  onListProjectAlsFiles,
+  onRelinkTake,
 }: ProjectManagerScreenProps) {
   const [busyLabel, setBusyLabel] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -307,6 +313,8 @@ export function ProjectManagerScreen({
                 onRenameCapture={onRenameCapture}
                 onMoveCapture={onMoveCapture}
                 onDeleteCapture={onDeleteCapture}
+                onListProjectAlsFiles={onListProjectAlsFiles}
+                onRelinkTake={onRelinkTake}
                 runAction={runAction}
               />
             ))}
@@ -349,6 +357,8 @@ export function ProjectManagerScreen({
                   onRenameCapture={onRenameCapture}
                   onMoveCapture={onMoveCapture}
                   onDeleteCapture={onDeleteCapture}
+                  onListProjectAlsFiles={onListProjectAlsFiles}
+                  onRelinkTake={onRelinkTake}
                   runAction={runAction}
                 />
               ))}
@@ -460,6 +470,8 @@ function ProjectRow({
   onRenameCapture,
   onMoveCapture,
   onDeleteCapture,
+  onListProjectAlsFiles,
+  onRelinkTake,
   runAction,
 }: {
   project: SavedProject;
@@ -480,6 +492,8 @@ function ProjectRow({
   onRenameCapture: (sessionId: string, captureName: string) => Promise<void>;
   onMoveCapture: (sessionId: string, projectId: string | null) => Promise<void>;
   onDeleteCapture: (sessionId: string) => Promise<void>;
+  onListProjectAlsFiles: (projectId: string) => Promise<AlsFileChoice[]>;
+  onRelinkTake: (sessionId: string, alsPath: string) => Promise<void>;
   runAction: (label: string, action: () => Promise<void>) => Promise<void>;
 }) {
   const [editing, setEditing] = useState(false);
@@ -671,6 +685,8 @@ function ProjectRow({
                 onRenameCapture={onRenameCapture}
                 onMoveCapture={onMoveCapture}
                 onDeleteCapture={onDeleteCapture}
+                onListProjectAlsFiles={onListProjectAlsFiles}
+                onRelinkTake={onRelinkTake}
                 runAction={runAction}
               />
             ))
@@ -694,6 +710,8 @@ function TakeRow({
   onRenameCapture,
   onMoveCapture,
   onDeleteCapture,
+  onListProjectAlsFiles,
+  onRelinkTake,
   runAction,
 }: {
   session: SavedSessionMetadata;
@@ -706,9 +724,12 @@ function TakeRow({
   onRenameCapture: (sessionId: string, captureName: string) => Promise<void>;
   onMoveCapture: (sessionId: string, projectId: string | null) => Promise<void>;
   onDeleteCapture: (sessionId: string) => Promise<void>;
+  onListProjectAlsFiles: (projectId: string) => Promise<AlsFileChoice[]>;
+  onRelinkTake: (sessionId: string, alsPath: string) => Promise<void>;
   runAction: (label: string, action: () => Promise<void>) => Promise<void>;
 }) {
   const [editing, setEditing] = useState(false);
+  const [relinkOpen, setRelinkOpen] = useState(false);
   const isSelected = session.id === selectedSessionId;
   // A scanned take is a version found on disk with no recorded moves yet — it must
   // not read as a live recording even though it shares the take row.
@@ -778,6 +799,18 @@ function TakeRow({
               >
                 Rename
               </button>
+              {session.project_id && (
+                <button
+                  type="button"
+                  className="row-menu__item"
+                  onClick={() => {
+                    setRelinkOpen(true);
+                    close();
+                  }}
+                >
+                  Relink to file…
+                </button>
+              )}
               <div className="row-menu__sep" />
               <div className="row-menu__label">Move to</div>
               <button
@@ -820,6 +853,106 @@ function TakeRow({
           )}
         </RowMenu>
       </span>
+
+      {relinkOpen && session.project_id && (
+        <RelinkDialog
+          projectId={session.project_id}
+          currentAlsPath={session.als_path}
+          busy={busy}
+          onList={onListProjectAlsFiles}
+          onChoose={(alsPath) =>
+            runAction("Relinking take...", () => onRelinkTake(session.id, alsPath))
+          }
+          onClose={() => setRelinkOpen(false)}
+        />
+      )}
+    </div>
+  );
+}
+
+// Picks which `.als` version a take's history should belong to. Used to move a
+// take onto a renamed file, or fix a wrong auto-link.
+function RelinkDialog({
+  projectId,
+  currentAlsPath,
+  busy,
+  onList,
+  onChoose,
+  onClose,
+}: {
+  projectId: string;
+  currentAlsPath: string | null;
+  busy: boolean;
+  onList: (projectId: string) => Promise<AlsFileChoice[]>;
+  onChoose: (alsPath: string) => Promise<void>;
+  onClose: () => void;
+}) {
+  const [files, setFiles] = useState<AlsFileChoice[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let mounted = true;
+    onList(projectId)
+      .then((result) => {
+        if (mounted) setFiles(result);
+      })
+      .catch((listError) => {
+        if (mounted) setError(String(listError));
+      });
+    return () => {
+      mounted = false;
+    };
+  }, [projectId, onList]);
+
+  useEffect(() => {
+    function onKey(event: KeyboardEvent) {
+      if (event.key === "Escape") onClose();
+    }
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  return (
+    <div className="relink-overlay" role="dialog" aria-modal="true" onClick={onClose}>
+      <div className="relink-dialog" onClick={(event) => event.stopPropagation()}>
+        <div className="relink-dialog__head">
+          <strong>Relink this take to a file</strong>
+          <p>Choose the version this take's history belongs to.</p>
+        </div>
+        {error ? (
+          <p className="relink-dialog__empty">{error}</p>
+        ) : files === null ? (
+          <p className="relink-dialog__empty">Reading folder…</p>
+        ) : files.length === 0 ? (
+          <p className="relink-dialog__empty">No .als files found in this project's folder.</p>
+        ) : (
+          <div className="relink-dialog__list">
+            {files.map((file) => {
+              const current = file.path === currentAlsPath;
+              return (
+                <button
+                  key={file.path}
+                  type="button"
+                  className={`relink-dialog__file ${current ? "is-current" : ""}`}
+                  disabled={busy || current}
+                  onClick={async () => {
+                    await onChoose(file.path);
+                    onClose();
+                  }}
+                >
+                  <span className="relink-dialog__file-name">{file.name}</span>
+                  {current && <span className="relink-dialog__current">current</span>}
+                </button>
+              );
+            })}
+          </div>
+        )}
+        <div className="relink-dialog__foot">
+          <button type="button" className="px-btn" onClick={onClose}>
+            Cancel
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

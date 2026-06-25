@@ -249,6 +249,19 @@ function App() {
     await reloadLibrary();
   }
 
+  // List the `.als` versions in a project's folder, for the relink picker.
+  function handleListProjectAlsFiles(projectId: string) {
+    return invoke<{ name: string; path: string }[]>("list_project_als_files", {
+      projectId,
+    });
+  }
+
+  // Move a take's history onto a different `.als` version (after a rename).
+  async function handleRelinkTake(sessionId: string, alsPath: string) {
+    await invoke("relink_take", { sessionId, alsPath });
+    await reloadLibrary();
+  }
+
   async function handleMoveCapture(sessionId: string, projectId: string | null) {
     await invoke(BACKEND_ASSIGN_SESSION_TO_PROJECT_COMMAND, {
       sessionId,
@@ -314,6 +327,8 @@ function App() {
           onRenameCapture={handleRenameCapture}
           onMoveCapture={handleMoveCapture}
           onDeleteCapture={handleDeleteCapture}
+          onListProjectAlsFiles={handleListProjectAlsFiles}
+          onRelinkTake={handleRelinkTake}
         />
       }
       recap={

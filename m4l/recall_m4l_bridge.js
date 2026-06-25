@@ -43,7 +43,7 @@ outlets = 2;
 var PROTOCOL = "recall.v2";
 var SOURCE = "max_for_live";
 var DEVICE_ID = "recall-m4l-bridge-dev";
-var BRIDGE_VERSION = "0.15.0";
+var BRIDGE_VERSION = "0.16.1";
 
 // Canonical v2 flat fields. emit() lifts any of these from its `fields` arg up
 // to the TOP LEVEL of the packet, because the Rust normalizer reads canonical
@@ -85,13 +85,15 @@ var lastProjectContextFingerprint = null;
 // tiny heartbeat + lifecycle events.
 var captureTransport = true;
 var captureFocus = true;
-// Live knob/fader moves on the SELECTED track. Piggybacks on the focus scan's
-// existing (already-hardened) parameter read, adding only a value diff per
-// parameter - no observers, no extra traversal. The focus cadence is the
-// rate-limit (the protocol's debounce, realized by polling): a continuous knob
-// ride collapses to at most one settled event per scan, never per-frame. Gated
-// separately so [capture_parameter_moves 0] disables only this, not the whole
-// focus scan.
+// Live knob/fader move capture, owned by the DEDICATED parameter poller (see the
+// "Focused-device parameter poller" section). Unlike the old approach this no
+// longer piggybacks on the 4s focus scan — it polls ONLY the device the producer
+// currently has open (Live's selected_device) at a fast cadence, value-only, so a
+// heavy plugin (Serum 2 has 1000+ parameters, far past the focus scan's 128 cap)
+// can be tracked across its WHOLE parameter set without missing a tweak and
+// without the per-tick cost of scanning every device on the track. Each knob ride
+// is coalesced into one settled event. Gated so [capture_parameter_moves 0]
+// disables only this, not the whole focus scan.
 var captureParameterMoves = true;
 // Shallow round-robin scan across ALL tracks so device/sample/clip additions on
 // non-selected tracks are caught too. Cheap by design: it reuses the same bounded
@@ -116,6 +118,27 @@ var MAX_FOCUS_PARAMETERS_PER_DEVICE = 128;
 // representation noise never fires a move. Any real knob/fader change clears it.
 var PARAMETER_VALUE_EPSILON = 1e-6;
 var MAX_FOCUS_CLIP_SLOTS = 16;
+
+// ── Focused-device parameter poller limits ──────────────────────────────────
+// The poller scans ONLY the currently open device, so it can afford a fast
+// cadence and a high parameter ceiling that the all-device focus scan cannot.
+// How often the focused device's parameter values are sampled. Fast enough that a
+// deliberate knob tweak is always seen, slow enough to stay off the audio thread's
+// back. This is the real "rate of scan" for parameter capture.
+var PARAMETER_POLL_INTERVAL_MS = 300;
+// Per tick we read at most this many parameter VALUES (one cheap read each), then
+// advance a round-robin cursor. A 1000+ param plugin is therefore swept over a few
+// ticks instead of in one heavy tick — bounding per-tick cost regardless of how
+// huge the plugin is. Full-set coverage latency = ceil(paramCount / chunk) * interval.
+var PARAMETER_POLL_CHUNK = 256;
+// Absolute ceiling on parameters considered for one device (pathological guard).
+var MAX_POLL_PARAMETERS_PER_DEVICE = 4096;
+// A knob ride is emitted as ONE settled event once its value has stopped changing
+// for this long. Decoupled from the poll/round-robin cadence (wall-clock based) so
+// chunking never splits a gesture. ~one comfortable pause after letting go.
+var PARAMETER_SETTLE_MS = 450;
+// How many devices we scan to map the selected device's id back to its chain index.
+var MAX_DEVICE_LOOKUP = 64;
 // How many tracks the lightweight lifecycle roster scan covers each transport
 // tick. Only cheap props are read per track (name/mute/solo/arm), so this can be
 // generous; tracks beyond it won't get create/rename/mute/solo/arm detection.
@@ -182,6 +205,7 @@ var BASELINE_SNAPSHOT_DELAY_MS = 1500;
 var heartbeatTask = new Task(heartbeat_tick, this);
 var transportTask = new Task(transport_tick, this);
 var focusTask = new Task(focus_tick, this);
+var parameterTask = new Task(parameter_tick, this);
 var structureTask = new Task(structure_tick, this);
 var liveSetTask = new Task(live_set_tick, this);
 var initialContextTask = new Task(initial_context_tick, this);
@@ -258,6 +282,7 @@ function start_bridge() {
     heartbeatTask.cancel();
     transportTask.cancel();
     focusTask.cancel();
+    parameterTask.cancel();
     structureTask.cancel();
     liveSetTask.cancel();
     initialContextTask.cancel();
@@ -267,6 +292,9 @@ function start_bridge() {
     heartbeatTask.schedule(HEARTBEAT_INTERVAL_MS);
     transportTask.schedule(TRANSPORT_INTERVAL_MS);
     focusTask.schedule(FOCUS_INTERVAL_MS);
+    // The dedicated parameter poller runs independently of (and faster than) the
+    // focus scan, so a tweak on the open device is caught even mid-playback.
+    parameterTask.schedule(PARAMETER_POLL_INTERVAL_MS);
     // Offset the structure scan from the focus scan so they don't fire on the
     // same tick and stack their LiveAPI work.
     structureTask.schedule(STRUCTURE_INTERVAL_MS + 2000);
@@ -369,11 +397,23 @@ function stop_bridge() {
         }
     }
 
+    // Flush any in-progress knob ride so a tweak made right before stopping isn't
+    // lost waiting for its settle window. Done while bridgeRunning is still true so
+    // emit() works.
+    if (captureParameterMoves) {
+        try {
+            flush_all_param_gestures();
+        } catch (error) {
+            debug("final parameter flush failed: " + error);
+        }
+    }
+
     bridgeRunning = false;
 
     heartbeatTask.cancel();
     transportTask.cancel();
     focusTask.cancel();
+    parameterTask.cancel();
     structureTask.cancel();
     liveSetTask.cancel();
     initialContextTask.cancel();
@@ -1650,11 +1690,10 @@ function detect_focus_changes(snapshot) {
 // Cache of paramId -> had_automation per track.
 var automationCacheByTrack = {};
 
-// Cache of paramId -> last settled value per track, for live knob/fader move
-// detection (parameter_changed). Mirrors automationCacheByTrack's seed-then-diff
-// lifecycle so pre-existing values never fire as moves on track select.
-var parameterValueCacheByTrack = {};
-
+// Detect automation being WRITTEN on a parameter (the automation lane appearing),
+// confined to the selected track. Live knob/fader MOVES are no longer detected
+// here — the dedicated focused-device parameter poller owns parameter_changed, so
+// this function reads only automation_state and stays cheap.
 function detect_automation_created(snapshot, trackKey, trackName) {
     if (!snapshot || !snapshot.available || snapshot.index === null || snapshot.index === undefined) {
         return;
@@ -1664,8 +1703,6 @@ function detect_automation_created(snapshot, trackKey, trackName) {
     var deviceCount = Math.min(snapshot.device_count || 0, MAX_FOCUS_DEVICES);
     var oldCache = automationCacheByTrack[trackKey] || {};
     var newCache = {};
-    var oldValues = parameterValueCacheByTrack[trackKey] || {};
-    var newValues = {};
     var isFirstScan = !automationCacheByTrack.hasOwnProperty(trackKey);
 
     for (var d = 0; d < deviceCount; d++) {
@@ -1680,9 +1717,8 @@ function detect_automation_created(snapshot, trackKey, trackName) {
             if (!param) { continue; }
 
             var paramId = value_to_string(normalize_id(param.id)) || (d + "_" + p);
-            var hasAutomation = value_to_bool(get_prop(param, "automation_state", 0));
-            // automation_state: 0=none, 1=playing, 2=overridden, 3=recording
-            // has_automation is more reliable for "was automation ever written"
+            // automation_state: 0=none, 1=playing, 2=overridden, 3=recording.
+            // Any non-zero state means automation has been written on this param.
             var automationState = value_to_number(get_prop(param, "automation_state", 0), 0);
             var hasWrittenAutomation = automationState > 0;
 
@@ -1720,84 +1756,340 @@ function detect_automation_created(snapshot, trackKey, trackName) {
                     }
                 );
             }
-
-            // Live knob/fader move: emit the settled value whenever it differs
-            // from the previous scan. Poll cadence is the rate-limit (the
-            // protocol's debounce, realized by polling) - never per-frame. Seeded
-            // silently on the first scan and for newly appearing params, so
-            // pre-existing values don't fire. Reuses paramId to stay aligned with
-            // the automation cache above.
-            if (captureParameterMoves) {
-                var currentValue = value_to_number(get_prop(param, "value", null), null);
-                var minValue = value_to_number(get_prop(param, "min", null), null);
-                var maxValue = value_to_number(get_prop(param, "max", null), null);
-
-                if (currentValue !== null) {
-                    newValues[paramId] = currentValue;
-                    var previousValue = oldValues[paramId];
-
-                    if (!isFirstScan &&
-                        previousValue !== undefined &&
-                        Math.abs(currentValue - previousValue) > PARAMETER_VALUE_EPSILON) {
-                        var movedParamName =
-                            value_to_string(get_prop(param, "name", null)) || ("Param " + p);
-                        var currentPercent = parameter_value_percent(currentValue, minValue, maxValue);
-                        var previousPercent = parameter_value_percent(previousValue, minValue, maxValue);
-                        var sweptMin = Math.min(previousValue, currentValue);
-                        var sweptMax = Math.max(previousValue, currentValue);
-
-                        // Live-formatted display so the app shows the mode name
-                        // ("Sinefold") or unit-bearing value ("440 Hz"), not a
-                        // raw float. is_quantized tells the frontend whether this
-                        // is a categorical mode or a continuous value.
-                        var isQuantized = value_to_bool(get_prop(param, "is_quantized", 0));
-                        var currentDisplay = parameter_display(param, currentValue, isQuantized);
-                        var previousDisplay = parameter_display(param, previousValue, isQuantized);
-
-                        // emit(type, title, description, payload, fields):
-                        // the 5th arg holds the canonical keys lifted to top level.
-                        emit(
-                            "parameter_changed",
-                            "Parameter Changed",
-                            movedParamName + " moved on " + deviceName + ".",
-                            {
-                                track_name: trackName,
-                                device_name: deviceName,
-                                parameter_name: movedParamName,
-                                parameter_value: currentValue,
-                                previous_parameter_value: previousValue,
-                                previous_value: previousValue,
-                                parameter_value_percent: currentPercent,
-                                previous_parameter_value_percent: previousPercent,
-                                parameter_value_min: sweptMin,
-                                parameter_value_max: sweptMax,
-                                parameter_display_value: currentDisplay,
-                                previous_parameter_display_value: previousDisplay,
-                                parameter_is_quantized: isQuantized
-                            },
-                            {
-                                track_name: trackName,
-                                device_name: deviceName,
-                                parameter_name: movedParamName,
-                                parameter_value: currentValue,
-                                previous_parameter_value: previousValue,
-                                parameter_value_percent: currentPercent,
-                                previous_parameter_value_percent: previousPercent,
-                                parameter_value_min: sweptMin,
-                                parameter_value_max: sweptMax,
-                                parameter_display_value: currentDisplay,
-                                previous_parameter_display_value: previousDisplay,
-                                parameter_is_quantized: isQuantized
-                            }
-                        );
-                    }
-                }
-            }
         }
     }
 
     automationCacheByTrack[trackKey] = newCache;
-    parameterValueCacheByTrack[trackKey] = newValues;
+}
+
+// ------------------------------------------------------------
+// Focused-device parameter poller
+// ------------------------------------------------------------
+//
+// Captures live knob/fader moves on the device the producer currently has open.
+// Why a dedicated poller instead of the 4s focus scan: heavy plugins like Serum 2
+// expose 1000+ parameters, far past the focus scan's 128 cap, and the focus scan
+// throttles to every 12s while playing — so most tweaks made during sound design
+// were silently missed. By scoping to the single SELECTED device we can poll fast,
+// sweep the whole parameter set (round-robin), and never miss a tweak, while
+// keeping per-tick cost bounded regardless of plugin size.
+//
+// State keyed by device id so it survives chain reorders and track switches.
+var paramGestureByDevice = {};      // deviceKey -> { paramId: gesture }
+var paramPollContextByKey = {};     // deviceKey -> { devicePath, deviceName, trackName }
+var paramPollCursorByKey = {};      // deviceKey -> round-robin cursor
+var lastPolledDeviceKey = null;
+
+function parameter_tick() {
+    if (!bridgeRunning) {
+        return;
+    }
+
+    if (captureParameterMoves) {
+        try {
+            poll_focused_device_parameters();
+        } catch (error) {
+            debug("parameter poll failed: " + error);
+        }
+    }
+
+    parameterTask.schedule(PARAMETER_POLL_INTERVAL_MS);
+}
+
+// Resolve the device the producer currently has open: the selected track's
+// view.selected_device. Falls back to the first device so an open instrument is
+// still tracked even when no device is explicitly appointed.
+function collect_focused_device_location() {
+    var trackId = get_selected_track_id();
+    if (!trackId) {
+        return null;
+    }
+
+    var trackIndex = find_track_index_by_id(trackId);
+    if (trackIndex < 0) {
+        return null;
+    }
+
+    var trackPath = "live_set tracks " + trackIndex;
+    var track = safe_path(trackPath);
+    if (!track) {
+        return null;
+    }
+
+    var deviceCount = get_count(track, "devices", 0);
+    if (deviceCount <= 0) {
+        return null;
+    }
+
+    var view = safe_path(trackPath + " view");
+    var selectedDeviceId = view ? normalize_id(get_prop(view, "selected_device", null)) : null;
+
+    var deviceIndex = -1;
+    if (selectedDeviceId) {
+        var lookupLimit = Math.min(deviceCount, MAX_DEVICE_LOOKUP);
+        for (var i = 0; i < lookupLimit; i++) {
+            var candidate = safe_path(trackPath + " devices " + i);
+            if (candidate && normalize_id(candidate.id) === selectedDeviceId) {
+                deviceIndex = i;
+                break;
+            }
+        }
+    }
+
+    if (deviceIndex < 0) {
+        deviceIndex = 0;
+    }
+
+    var devicePath = trackPath + " devices " + deviceIndex;
+    var device = safe_path(devicePath);
+    if (!device) {
+        return null;
+    }
+
+    var deviceId = normalize_id(device.id);
+
+    return {
+        trackIndex: trackIndex,
+        trackName: value_to_string(get_prop(track, "name", null)),
+        deviceIndex: deviceIndex,
+        deviceName: value_to_string(get_prop(device, "name", null)) || ("Device " + deviceIndex),
+        devicePath: devicePath,
+        deviceKey: value_to_string(deviceId) || (trackIndex + ":" + deviceIndex),
+        paramCount: get_count(device, "parameters", 0)
+    };
+}
+
+// Sample a chunk of the focused device's parameter VALUES (one cheap read each),
+// advancing a round-robin cursor so a huge plugin is swept over several ticks
+// without any single tick getting heavy. Per parameter we run a tiny gesture
+// state machine: the first time we see it we seed silently (no event); when its
+// value starts changing we open a gesture and track the swept range; once it has
+// been still for PARAMETER_SETTLE_MS we emit ONE parameter_changed for the whole
+// ride. Expensive reads (name/min/max/display) happen only at that settle point.
+function poll_focused_device_parameters() {
+    var loc = collect_focused_device_location();
+
+    if (!loc) {
+        // Nothing focused (or the track/device vanished): flush any open gesture
+        // from the device we were last on so it isn't left hanging.
+        if (lastPolledDeviceKey) {
+            flush_pending_param_gestures(lastPolledDeviceKey);
+            lastPolledDeviceKey = null;
+        }
+        return;
+    }
+
+    var deviceKey = loc.deviceKey;
+
+    // Focus moved to a different device: settle the outgoing device's open gesture
+    // before we start sampling the new one.
+    if (lastPolledDeviceKey && lastPolledDeviceKey !== deviceKey) {
+        flush_pending_param_gestures(lastPolledDeviceKey);
+    }
+    lastPolledDeviceKey = deviceKey;
+
+    paramPollContextByKey[deviceKey] = {
+        devicePath: loc.devicePath,
+        deviceName: loc.deviceName,
+        trackName: loc.trackName
+    };
+
+    var gestures = paramGestureByDevice[deviceKey];
+    if (gestures === undefined) {
+        gestures = {};
+        paramGestureByDevice[deviceKey] = gestures;
+    }
+
+    var total = Math.min(loc.paramCount, MAX_POLL_PARAMETERS_PER_DEVICE);
+    if (total <= 0) {
+        return;
+    }
+
+    var cursor = paramPollCursorByKey[deviceKey] || 0;
+    var now = (new Date()).getTime();
+    var scanned = 0;
+
+    while (scanned < PARAMETER_POLL_CHUNK && scanned < total) {
+        if (cursor >= total) {
+            cursor = 0;
+        }
+
+        var p = cursor;
+        cursor++;
+        scanned++;
+
+        var param = safe_path(loc.devicePath + " parameters " + p);
+        if (!param) {
+            continue;
+        }
+
+        var value = value_to_number(get_prop(param, "value", null), null);
+        if (value === null) {
+            continue;
+        }
+
+        var paramId = value_to_string(normalize_id(param.id)) || ("i" + p);
+        var gesture = gestures[paramId];
+
+        if (gesture === undefined) {
+            // First sighting: seed silently so a pre-existing value never fires.
+            gestures[paramId] = {
+                index: p,
+                last: value,
+                baseline: value,
+                sweptMin: value,
+                sweptMax: value,
+                active: false,
+                lastChange: now
+            };
+            continue;
+        }
+
+        // Track the chain index live — it can shift if the device chain reorders.
+        gesture.index = p;
+
+        if (Math.abs(value - gesture.last) > PARAMETER_VALUE_EPSILON) {
+            if (!gesture.active) {
+                gesture.active = true;
+                gesture.baseline = gesture.last;
+                gesture.sweptMin = gesture.last;
+                gesture.sweptMax = gesture.last;
+            }
+            if (value < gesture.sweptMin) { gesture.sweptMin = value; }
+            if (value > gesture.sweptMax) { gesture.sweptMax = value; }
+            gesture.last = value;
+            gesture.lastChange = now;
+        } else if (gesture.active && (now - gesture.lastChange) >= PARAMETER_SETTLE_MS) {
+            emit_parameter_move(
+                paramPollContextByKey[deviceKey],
+                gesture.index,
+                gesture.baseline,
+                gesture.last,
+                gesture.sweptMin,
+                gesture.sweptMax
+            );
+            gesture.active = false;
+            gesture.baseline = gesture.last;
+        }
+    }
+
+    paramPollCursorByKey[deviceKey] = cursor;
+}
+
+// Emit one settled knob/fader move. Mirrors the canonical parameter_changed shape
+// the Rust normalizer + timeline already consume (see docs/recall-protocol-v2.md):
+// `parameter_value`/`previous_parameter_value` are after/before; the *_percent
+// pair is positioned within the param's full range; parameter_value_min/max carry
+// the swept extent of the ride; the *_display pair is Live's own formatted string.
+function emit_parameter_move(ctx, paramIndex, baseline, settled, sweptMin, sweptMax) {
+    if (!ctx) {
+        return;
+    }
+
+    var param = safe_path(ctx.devicePath + " parameters " + paramIndex);
+    if (!param) {
+        return;
+    }
+
+    var paramName = value_to_string(get_prop(param, "name", null)) || ("Param " + paramIndex);
+    var minValue = value_to_number(get_prop(param, "min", null), null);
+    var maxValue = value_to_number(get_prop(param, "max", null), null);
+    var isQuantized = value_to_bool(get_prop(param, "is_quantized", 0));
+
+    var afterPercent = parameter_value_percent(settled, minValue, maxValue);
+    var beforePercent = parameter_value_percent(baseline, minValue, maxValue);
+    var afterDisplay = parameter_display(param, settled, isQuantized);
+    var beforeDisplay = parameter_display(param, baseline, isQuantized);
+
+    // For a quantized (mode-selector) param the display LABEL is the meaningful
+    // value. If the raw value crossed the epsilon but still maps to the same label
+    // (e.g. "No Warp Type" -> "No Warp Type"), nothing the producer cares about
+    // changed — suppress it so the timeline isn't cluttered with phantom mode flips.
+    if (isQuantized && afterDisplay !== null && afterDisplay === beforeDisplay) {
+        return;
+    }
+
+    emit(
+        "parameter_changed",
+        "Parameter Changed",
+        paramName + " moved on " + ctx.deviceName + ".",
+        {
+            track_name: ctx.trackName,
+            device_name: ctx.deviceName,
+            parameter_name: paramName,
+            parameter_value: settled,
+            previous_parameter_value: baseline,
+            previous_value: baseline,
+            parameter_value_percent: afterPercent,
+            previous_parameter_value_percent: beforePercent,
+            parameter_value_min: sweptMin,
+            parameter_value_max: sweptMax,
+            parameter_display_value: afterDisplay,
+            previous_parameter_display_value: beforeDisplay,
+            parameter_is_quantized: isQuantized
+        },
+        {
+            track_name: ctx.trackName,
+            device_name: ctx.deviceName,
+            parameter_name: paramName,
+            parameter_value: settled,
+            previous_parameter_value: baseline,
+            parameter_value_percent: afterPercent,
+            previous_parameter_value_percent: beforePercent,
+            parameter_value_min: sweptMin,
+            parameter_value_max: sweptMax,
+            parameter_display_value: afterDisplay,
+            previous_parameter_display_value: beforeDisplay,
+            parameter_is_quantized: isQuantized
+        }
+    );
+}
+
+// Emit any open (un-settled) gesture on a device immediately. Used when focus
+// leaves a device or the bridge stops, so a tweak made right before the switch
+// isn't lost waiting for its settle window.
+function flush_pending_param_gestures(deviceKey) {
+    if (!deviceKey) {
+        return;
+    }
+
+    var gestures = paramGestureByDevice[deviceKey];
+    var ctx = paramPollContextByKey[deviceKey];
+    if (!gestures || !ctx) {
+        return;
+    }
+
+    for (var paramId in gestures) {
+        if (!gestures.hasOwnProperty(paramId)) {
+            continue;
+        }
+
+        var gesture = gestures[paramId];
+        if (gesture && gesture.active) {
+            try {
+                emit_parameter_move(
+                    ctx,
+                    gesture.index,
+                    gesture.baseline,
+                    gesture.last,
+                    gesture.sweptMin,
+                    gesture.sweptMax
+                );
+            } catch (error) {
+                debug("param flush emit failed: " + error);
+            }
+            gesture.active = false;
+            gesture.baseline = gesture.last;
+        }
+    }
+}
+
+function flush_all_param_gestures() {
+    for (var deviceKey in paramGestureByDevice) {
+        if (paramGestureByDevice.hasOwnProperty(deviceKey)) {
+            flush_pending_param_gestures(deviceKey);
+        }
+    }
 }
 
 function build_id_name_map(items, idKey, nameKey) {
@@ -2325,6 +2617,16 @@ function capture_structure(value) {
 function capture_parameter_moves(value) {
     captureParameterMoves = Number(value) === 1;
     debug("capture_parameter_moves = " + captureParameterMoves);
+}
+
+// Live-tune the focused-device poll rate (ms) without redeploying. Floored so a
+// fat-fingered tiny value can't spin the scheduler. Takes effect on the next tick.
+function parameter_poll_interval(value) {
+    var ms = Number(value);
+    if (!isNaN(ms) && ms >= 50) {
+        PARAMETER_POLL_INTERVAL_MS = ms;
+    }
+    debug("parameter_poll_interval = " + PARAMETER_POLL_INTERVAL_MS);
 }
 
 function deep_snapshot() {

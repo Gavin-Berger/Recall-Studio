@@ -716,6 +716,138 @@ impl StorageState {
             .map_err(|error| format!("Failed to find active take: {}", error))
     }
 
+    /// Resolve which take to make active when a producer opens a project, given the
+    /// `.als` Ableton currently has open. Resumes the take anchored to that file
+    /// (promoting a scanned version into a recorded take on first touch); a never-seen
+    /// open file gets a fresh recorded take; with no open file it falls back to the
+    /// project's active or most-recent take, creating one only if the project is empty.
+    /// The returned take is marked active in the DB so reloads agree with memory.
+    pub fn activate_take_for_open_file(
+        &self,
+        project_id: Option<&str>,
+        open_als: Option<&str>,
+    ) -> Result<SessionStatus, String> {
+        let connection = self.open_connection()?;
+        let now = now_ms();
+
+        // Mark a take active and (on first recording of a scanned version) restart its
+        // clock so the timeline measures from when recording actually began.
+        let resume = |id: String, started_at_ms: i64, origin: String| -> Result<SessionStatus, String> {
+            let started = if origin == "scanned" { now as i64 } else { started_at_ms };
+            connection
+                .execute(
+                    "
+                    UPDATE sessions
+                    SET take_origin = 'recorded',
+                        capture_status = 'active',
+                        ended_at_ms = NULL,
+                        started_at_ms = ?2
+                    WHERE id = ?1
+                    ",
+                    params![id, started],
+                )
+                .map_err(|error| format!("Failed to resume take: {}", error))?;
+            Ok(SessionStatus {
+                active: true,
+                session_id: Some(id),
+                started_at_ms: Some(started as u64),
+                ended_at_ms: None,
+            })
+        };
+
+        // 1. A take already anchored to the open file → resume it.
+        if let Some(als) = open_als {
+            let existing: Option<(String, i64, String)> = connection
+                .query_row(
+                    "
+                    SELECT id, started_at_ms, COALESCE(take_origin, 'recorded')
+                    FROM sessions
+                    WHERE als_path = ?1 AND project_id IS ?2
+                    ORDER BY started_at_ms DESC
+                    LIMIT 1
+                    ",
+                    params![als, project_id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .optional()
+                .map_err(|error| format!("Failed to find take for open file: {}", error))?;
+
+            if let Some((id, started, origin)) = existing {
+                return resume(id, started, origin);
+            }
+
+            // 2. Open file we've never seen → a fresh recorded take anchored to it.
+            let id = format!("session-{}", now);
+            let name = std::path::Path::new(als)
+                .file_stem()
+                .and_then(|value| value.to_str())
+                .unwrap_or("Take")
+                .to_string();
+            connection
+                .execute(
+                    "
+                    INSERT INTO sessions (
+                        id, project_id, capture_name, capture_status,
+                        project_path, als_path, take_origin,
+                        started_at_ms, ended_at_ms, created_at_ms
+                    )
+                    VALUES (?1, ?2, ?3, 'active', ?4, ?4, 'recorded', ?5, NULL, ?5)
+                    ",
+                    params![id, project_id, name, als, now as i64],
+                )
+                .map_err(|error| format!("Failed to create take for open file: {}", error))?;
+            return Ok(SessionStatus {
+                active: true,
+                session_id: Some(id),
+                started_at_ms: Some(now),
+                ended_at_ms: None,
+            });
+        }
+
+        // 3. No open file: resume the active take, else the most-recent take.
+        if let Some(active) = self.active_session_for_project(project_id)? {
+            return Ok(active);
+        }
+        let recent: Option<(String, i64, String)> = connection
+            .query_row(
+                "
+                SELECT id, started_at_ms, COALESCE(take_origin, 'recorded')
+                FROM sessions
+                WHERE project_id IS ?1
+                ORDER BY started_at_ms DESC
+                LIMIT 1
+                ",
+                params![project_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()
+            .map_err(|error| format!("Failed to find recent take: {}", error))?;
+        if let Some((id, started, origin)) = recent {
+            return resume(id, started, origin);
+        }
+
+        // 4. Empty project → a fresh, unanchored recorded take.
+        let id = format!("session-{}", now);
+        connection
+            .execute(
+                "
+                INSERT INTO sessions (
+                    id, project_id, capture_status, take_origin,
+                    started_at_ms, ended_at_ms, created_at_ms
+                )
+                VALUES (?1, ?2, 'active', 'recorded', ?3, NULL, ?3)
+                ",
+                params![id, project_id, now as i64],
+            )
+            .map_err(|error| format!("Failed to create take: {}", error))?;
+        Ok(SessionStatus {
+            active: true,
+            session_id: Some(id),
+            started_at_ms: Some(now),
+            ended_at_ms: None,
+        })
+    }
+
     /// The Ableton folder a project is connected to, if any.
     pub fn project_ableton_path(&self, project_id: &str) -> Result<Option<String>, String> {
         let connection = self.open_connection()?;
@@ -3230,6 +3362,66 @@ mod tests {
             .unwrap();
         assert_eq!(after_save, 1);
         assert_eq!(storage.list_projects(false).unwrap().remove(0).captures.len(), 4);
+
+        cleanup(&path);
+    }
+
+    #[test]
+    fn opening_a_project_resumes_the_take_for_the_open_als() {
+        let (storage, path) = temp_storage();
+        let project_id = storage
+            .create_project("Idols Perseus", None, Some("/Projects/Idols Perseus Project"))
+            .unwrap();
+        let als = |name: &str| format!("/Projects/Idols Perseus Project/{name}.als");
+
+        storage
+            .rescan_project_takes(
+                &project_id,
+                &[
+                    ("v7".into(), als("v7"), 1_000),
+                    ("v8".into(), als("v8"), 2_000),
+                ],
+            )
+            .unwrap();
+
+        let scanned_v8 = storage
+            .list_projects(false)
+            .unwrap()
+            .remove(0)
+            .captures
+            .into_iter()
+            .find(|take| take.als_path.as_deref() == Some(als("v8").as_str()))
+            .unwrap();
+        assert_eq!(scanned_v8.take_origin, "scanned");
+
+        // Opening with v8 open resumes that exact take and promotes it to recorded.
+        let opened = storage
+            .activate_take_for_open_file(Some(&project_id), Some(&als("v8")))
+            .unwrap();
+        assert_eq!(opened.session_id.as_deref(), Some(scanned_v8.id.as_str()));
+        assert!(opened.active);
+        assert!(opened.ended_at_ms.is_none());
+
+        let v8_after = storage
+            .load_session(&scanned_v8.id)
+            .unwrap();
+        assert_eq!(v8_after.take_origin, "recorded");
+        assert_eq!(v8_after.als_path.as_deref(), Some(als("v8").as_str()));
+
+        // Re-opening the same file returns the same take (continue on, no duplicate).
+        let reopened = storage
+            .activate_take_for_open_file(Some(&project_id), Some(&als("v8")))
+            .unwrap();
+        assert_eq!(reopened.session_id.as_deref(), Some(scanned_v8.id.as_str()));
+
+        // A never-seen open file gets a brand-new take anchored to it.
+        let fresh = storage
+            .activate_take_for_open_file(Some(&project_id), Some(&als("v9")))
+            .unwrap();
+        assert_ne!(fresh.session_id.as_deref(), Some(scanned_v8.id.as_str()));
+        let fresh_take = storage.load_session(fresh.session_id.as_deref().unwrap()).unwrap();
+        assert_eq!(fresh_take.als_path.as_deref(), Some(als("v9").as_str()));
+        assert_eq!(fresh_take.take_origin, "recorded");
 
         cleanup(&path);
     }

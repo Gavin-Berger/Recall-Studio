@@ -20,6 +20,7 @@ type ProjectManagerScreenProps = {
   onCreateProject: (displayName: string) => Promise<void>;
   onConnectFolder: (projectId?: string | null) => Promise<number>;
   onRescanFolder: (projectId: string) => Promise<number>;
+  onOpenProject: (projectId: string) => Promise<void>;
   onStartCapture: (projectId?: string | null) => Promise<void>;
   onNewTake: (projectId?: string | null) => Promise<void>;
   onOpenTimeline: (sessionId: string) => void;
@@ -50,6 +51,7 @@ export function ProjectManagerScreen({
   onCreateProject,
   onConnectFolder,
   onRescanFolder,
+  onOpenProject,
   onStartCapture,
   onNewTake,
   onOpenTimeline,
@@ -296,7 +298,7 @@ export function ProjectManagerScreen({
                 onToggle={() => toggleExpand(project.id)}
                 onConnectFolder={onConnectFolder}
                 onRescanFolder={onRescanFolder}
-                onStartCapture={onStartCapture}
+                onOpenProject={onOpenProject}
                 onNewTake={onNewTake}
                 onOpenTimeline={onOpenTimeline}
                 onOpenRecap={onOpenRecap}
@@ -449,7 +451,7 @@ function ProjectRow({
   onToggle,
   onConnectFolder,
   onRescanFolder,
-  onStartCapture,
+  onOpenProject,
   onNewTake,
   onOpenTimeline,
   onOpenRecap,
@@ -469,7 +471,7 @@ function ProjectRow({
   onToggle: () => void;
   onConnectFolder: (projectId?: string | null) => Promise<number>;
   onRescanFolder: (projectId: string) => Promise<number>;
-  onStartCapture: (projectId?: string | null) => Promise<void>;
+  onOpenProject: (projectId: string) => Promise<void>;
   onNewTake: (projectId?: string | null) => Promise<void>;
   onOpenTimeline: (sessionId: string) => void;
   onOpenRecap: (sessionId: string) => void;
@@ -483,10 +485,6 @@ function ProjectRow({
   const [editing, setEditing] = useState(false);
   const hasTakes = project.captures.length > 0;
   const recording = project.active_capture_count > 0;
-  const activeCapture =
-    project.captures.find((session) => session.id === activeSessionId) ??
-    project.captures.find((session) => session.ended_at_ms === null) ??
-    null;
 
   const takes = useMemo(
     () => [...project.captures].sort((a, b) => b.started_at_ms - a.started_at_ms),
@@ -507,9 +505,19 @@ function ProjectRow({
     onToggle();
   }
 
+  // Double-click opens the project — resumes the take for the version open in
+  // Ableton (or the most recent) and jumps into its timeline.
+  function handleRowDoubleClick(event: React.MouseEvent) {
+    if ((event.target as HTMLElement).closest("button, input, .row-menu")) return;
+    void runAction("Opening project...", () => onOpenProject(project.id));
+  }
+
   function handleRowKey(event: React.KeyboardEvent) {
-    if (!hasTakes) return;
-    if (event.key === "Enter" || event.key === " ") {
+    if ((event.target as HTMLElement).closest("button, input, .row-menu")) return;
+    if (event.key === "Enter") {
+      event.preventDefault();
+      void runAction("Opening project...", () => onOpenProject(project.id));
+    } else if (event.key === " " && hasTakes) {
       event.preventDefault();
       onToggle();
     }
@@ -518,11 +526,12 @@ function ProjectRow({
   return (
     <div className={`px-group ${recording ? "is-recording" : ""}`}>
       <div
-        className={`px-row px-row--project ${expanded ? "is-open" : ""} ${hasTakes ? "is-clickable" : ""}`}
-        role={hasTakes ? "button" : undefined}
-        tabIndex={hasTakes ? 0 : undefined}
+        className={`px-row px-row--project ${expanded ? "is-open" : ""} is-clickable`}
+        role="button"
+        tabIndex={0}
         aria-expanded={hasTakes ? expanded : undefined}
         onClick={handleRowClick}
+        onDoubleClick={handleRowDoubleClick}
         onKeyDown={handleRowKey}
       >
         <span className="px-cell px-cell--chev">{hasTakes && <Chevron open={expanded} />}</span>
@@ -568,26 +577,20 @@ function ProjectRow({
         </span>
 
         <span className="px-cell px-actions">
-          {recording && activeCapture ? (
-            <button
-              type="button"
-              className="px-btn px-btn--primary"
-              disabled={busy}
-              onClick={() => onOpenTimeline(activeCapture.id)}
-            >
-              Open
-            </button>
-          ) : (
-            <button
-              type="button"
-              className="px-btn px-btn--primary"
-              disabled={busy}
-              onClick={() => void runAction("Starting capture...", () => onStartCapture(project.id))}
-            >
-              <PlayIcon />
-              Capture
-            </button>
-          )}
+          <button
+            type="button"
+            className="px-btn px-btn--primary"
+            disabled={busy}
+            onClick={() => void runAction("Opening project...", () => onOpenProject(project.id))}
+            title="Open the version you have open in Ableton (or the most recent take)"
+          >
+            {recording ? "Open" : (
+              <>
+                <PlayIcon />
+                Open
+              </>
+            )}
+          </button>
           <RowMenu ariaLabel="Project actions" disabled={busy}>
             {(close) => (
               <>

@@ -606,6 +606,60 @@ fn start_capture_for_project(
     Ok(status)
 }
 
+/// Open a project for work: resume the take for the `.als` Ableton currently has
+/// open (so today's moves append to that version's memory), falling back to the
+/// most-recent take when Ableton isn't live. This is what double-clicking a project
+/// calls — the "take me to v8" behavior.
+#[tauri::command]
+fn open_take_for_open_file(
+    state: State<'_, AppState>,
+    project_id: Option<String>,
+) -> Result<SessionStatus, String> {
+    ensure_project_exists(&state, project_id.as_deref())?;
+
+    let open_als = {
+        let connection = state.connection.lock().expect("Connection state lock failed");
+        connection.open_als_path.clone()
+    };
+
+    // Stop whatever take was active so events stop tagging to it, then persist it.
+    let previous_status = {
+        let mut session = state.session.lock().expect("Session state lock failed");
+        session.stop()
+    };
+
+    let status = {
+        let storage = state.storage.lock().expect("Storage state lock failed");
+        if previous_status.session_id.is_some() {
+            storage.save_session_stopped(&previous_status)?;
+        }
+        storage.activate_take_for_open_file(project_id.as_deref(), open_als.as_deref())?
+    };
+
+    // Fresh live buffer so the previous take's events don't bleed into this one.
+    {
+        let mut recent_events = state
+            .recent_events
+            .lock()
+            .expect("Recent events lock failed");
+        recent_events.clear();
+    }
+
+    // Mirror into the in-memory session so incoming events tag to this take.
+    if let (Some(session_id), Some(started_at_ms)) =
+        (status.session_id.clone(), status.started_at_ms)
+    {
+        let mut session = state.session.lock().expect("Session state lock failed");
+        session.restore_active(session_id, started_at_ms);
+    }
+
+    println!(
+        "COMMAND open_take_for_open_file -> take {:?} (project {:?}, open_als {:?})",
+        status.session_id, project_id, open_als
+    );
+    Ok(status)
+}
+
 /// Intentionally start a fresh take, even if the project already has an active one.
 #[tauri::command]
 fn new_take_for_project(
@@ -812,6 +866,7 @@ pub fn run() {
         last_heartbeat_ms: None,
         last_message: None,
         bridge_version: None,
+        open_als_path: None,
     }));
 
     let recent_events = Arc::new(Mutex::new(Vec::<RecallEvent>::new()));
@@ -925,6 +980,7 @@ pub fn run() {
             assign_session_to_project,
             rename_capture,
             start_capture_for_project,
+            open_take_for_open_file,
             new_take_for_project,
             update_session_project_name,
             set_event_curation,

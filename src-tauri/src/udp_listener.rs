@@ -50,6 +50,10 @@ pub struct ConnectionState {
     // app show which bridge build is actually connected, so a producer can verify
     // they loaded the newest device instead of squinting at the Max Console.
     pub bridge_version: Option<String>,
+    // The `.als` Ableton currently has open, learned from the project_path that
+    // rides on incoming events. This is how "open a project" knows which version's
+    // take to resume — see open_take_for_open_file.
+    pub open_als_path: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -507,6 +511,27 @@ fn update_connection_if_heartbeat(normalized_json: &Value, state: &Arc<Mutex<Con
     }
 }
 
+// Remember which `.als` Ableton has open, read from the project_path that rides on
+// a normalized event. Only `.als` paths count (the bridge also reports folder paths
+// for un-saved sets). Lets "open a project" resume the take for the live version.
+fn update_open_file(normalized_json: &Value, state: &Arc<Mutex<ConnectionState>>) {
+    let path = normalized_json
+        .get("project_path")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let Some(path) = path else {
+        return;
+    };
+    if !path.to_lowercase().ends_with(".als") {
+        return;
+    }
+
+    let mut connection = state.lock().expect("Connection state lock failed");
+    if connection.open_als_path.as_deref() != Some(path.as_str()) {
+        connection.open_als_path = Some(path);
+    }
+}
+
 fn push_event(events: &Arc<Mutex<Vec<RecallEvent>>>, event: RecallEvent) {
     let mut recent_events = events.lock().expect("Recent events lock failed");
 
@@ -728,6 +753,10 @@ pub fn start_udp_listener(
                     // Heartbeats are health-only: update connection state and
                     // stop here. They are never queued, persisted, or emitted.
                     update_connection_if_heartbeat(&normalized_json, &state);
+                    // Track the open `.als` so opening a project can resume the take
+                    // for the live version. The bridge stamps project_path on every
+                    // heartbeat, so do this before heartbeats are dropped below.
+                    update_open_file(&normalized_json, &state);
                     let is_heartbeat = normalized_json.get("event_type").and_then(Value::as_str)
                         == Some("heartbeat");
                     if is_heartbeat {

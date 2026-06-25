@@ -157,6 +157,24 @@ function App() {
     setSurface("recap");
   }
 
+  // Open a project: resume the take for the version open in Ableton (or the most
+  // recent), then jump into its timeline. The "double-click takes me to v8" path.
+  async function handleOpenProject(projectId: string) {
+    try {
+      const status = await invoke<SessionStatus>("open_take_for_open_file", {
+        projectId,
+      });
+      await reloadLibrary();
+      if (status.session_id) {
+        setSelectedSessionId(status.session_id);
+        setSurface("timeline");
+      }
+    } catch (error) {
+      console.error("Failed to open project take:", error);
+      throw error;
+    }
+  }
+
   async function handleStartCapture(projectId?: string | null) {
     try {
       const status = await invoke<SessionStatus>(BACKEND_START_CAPTURE_FOR_PROJECT_COMMAND, {
@@ -286,6 +304,7 @@ function App() {
           onCreateProject={handleCreateProject}
           onConnectFolder={handleConnectFolder}
           onRescanFolder={handleRescanFolder}
+          onOpenProject={handleOpenProject}
           onStartCapture={handleStartCapture}
           onNewTake={handleNewTake}
           onOpenTimeline={handleOpenTimeline}

@@ -206,6 +206,14 @@ function App() {
     return count;
   }
 
+  // Re-scan a project's connected folder for new `.als` versions, surfacing each as
+  // a take. Returns how many were added so the UI can report it.
+  async function handleRescanFolder(projectId: string): Promise<number> {
+    const added = await invoke<number>("rescan_project_folder", { projectId });
+    await reloadProjects();
+    return added;
+  }
+
   async function handleRenameProject(projectId: string, displayName: string) {
     await invoke(BACKEND_RENAME_PROJECT_COMMAND, { projectId, displayName });
     await reloadProjects();
@@ -277,6 +285,7 @@ function App() {
           loading={!libraryReady}
           onCreateProject={handleCreateProject}
           onConnectFolder={handleConnectFolder}
+          onRescanFolder={handleRescanFolder}
           onStartCapture={handleStartCapture}
           onNewTake={handleNewTake}
           onOpenTimeline={handleOpenTimeline}

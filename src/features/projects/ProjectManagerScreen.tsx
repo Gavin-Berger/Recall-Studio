@@ -19,6 +19,7 @@ type ProjectManagerScreenProps = {
   loading?: boolean;
   onCreateProject: (displayName: string) => Promise<void>;
   onConnectFolder: (projectId?: string | null) => Promise<number>;
+  onRescanFolder: (projectId: string) => Promise<number>;
   onStartCapture: (projectId?: string | null) => Promise<void>;
   onNewTake: (projectId?: string | null) => Promise<void>;
   onOpenTimeline: (sessionId: string) => void;
@@ -48,6 +49,7 @@ export function ProjectManagerScreen({
   loading = false,
   onCreateProject,
   onConnectFolder,
+  onRescanFolder,
   onStartCapture,
   onNewTake,
   onOpenTimeline,
@@ -293,6 +295,7 @@ export function ProjectManagerScreen({
                 expanded={isExpanded(project.id)}
                 onToggle={() => toggleExpand(project.id)}
                 onConnectFolder={onConnectFolder}
+                onRescanFolder={onRescanFolder}
                 onStartCapture={onStartCapture}
                 onNewTake={onNewTake}
                 onOpenTimeline={onOpenTimeline}
@@ -445,6 +448,7 @@ function ProjectRow({
   expanded,
   onToggle,
   onConnectFolder,
+  onRescanFolder,
   onStartCapture,
   onNewTake,
   onOpenTimeline,
@@ -464,6 +468,7 @@ function ProjectRow({
   expanded: boolean;
   onToggle: () => void;
   onConnectFolder: (projectId?: string | null) => Promise<number>;
+  onRescanFolder: (projectId: string) => Promise<number>;
   onStartCapture: (projectId?: string | null) => Promise<void>;
   onNewTake: (projectId?: string | null) => Promise<void>;
   onOpenTimeline: (sessionId: string) => void;
@@ -606,6 +611,18 @@ function ProjectRow({
                 >
                   {project.ableton_name || project.ableton_path ? "Replace Ableton folder…" : "Connect Ableton folder…"}
                 </button>
+                {project.ableton_path && (
+                  <button
+                    type="button"
+                    className="row-menu__item"
+                    onClick={() => {
+                      void runAction("Rescanning folder...", () => onRescanFolder(project.id).then(() => undefined));
+                      close();
+                    }}
+                  >
+                    Rescan folder for new versions
+                  </button>
+                )}
                 {recording && (
                   <button
                     type="button"
@@ -690,7 +707,10 @@ function TakeRow({
 }) {
   const [editing, setEditing] = useState(false);
   const isSelected = session.id === selectedSessionId;
-  const isActive = session.id === activeSessionId || session.ended_at_ms === null;
+  // A scanned take is a version found on disk with no recorded moves yet — it must
+  // not read as a live recording even though it shares the take row.
+  const isScanned = session.take_origin === "scanned";
+  const isActive = !isScanned && (session.id === activeSessionId || session.ended_at_ms === null);
   const name = captureName(session);
 
   function handleDelete() {
@@ -716,16 +736,23 @@ function TakeRow({
         ) : (
           <span className="px-take__name" title={name} onDoubleClick={() => setEditing(true)}>
             {name}
+            {isScanned && <span className="px-take__found">Found</span>}
           </span>
         )}
-        <span className="px-take__meta">
-          {formatSessionDate(session.started_at_ms)}
-          {" · "}
-          {formatSessionDuration(session)}
-          {" · "}
-          {session.creative_event_count} {countLabel(session.creative_event_count, "moment")}
-          {isActive ? " · live" : ""}
-        </span>
+        {isScanned ? (
+          <span className="px-take__meta">
+            Version on disk · not recorded yet
+          </span>
+        ) : (
+          <span className="px-take__meta">
+            {formatSessionDate(session.started_at_ms)}
+            {" · "}
+            {formatSessionDuration(session)}
+            {" · "}
+            {session.creative_event_count} {countLabel(session.creative_event_count, "moment")}
+            {isActive ? " · live" : ""}
+          </span>
+        )}
       </span>
 
       <span className="px-take__actions">

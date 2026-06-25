@@ -19,6 +19,11 @@ pub struct SavedSessionMetadata {
     pub capture_status: String,
     pub project_name: Option<String>,
     pub project_path: Option<String>,
+    // The specific `.als` file this take is anchored to (its durable identity for
+    // resume/relink), and whether the take was `recorded` (has live telemetry) or
+    // `scanned` (a version found on disk by a folder scan, no events yet).
+    pub als_path: Option<String>,
+    pub take_origin: String,
     pub display_name: Option<String>,
     pub started_at_ms: u64,
     pub ended_at_ms: Option<u64>,
@@ -37,6 +42,8 @@ pub struct SavedSession {
     pub capture_status: String,
     pub project_name: Option<String>,
     pub project_path: Option<String>,
+    pub als_path: Option<String>,
+    pub take_origin: String,
     pub display_name: Option<String>,
     pub started_at_ms: u64,
     pub ended_at_ms: Option<u64>,

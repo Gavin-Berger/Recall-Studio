@@ -2413,6 +2413,22 @@
   text-overflow: ellipsis;
 }
 
+/* "Found" badge on a scanned take — a version that exists on disk but has no
+   recorded moves yet. Subdued so it reads as informational, not a live status. */
+.px-take__found {
+  margin-left: 8px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 0.6rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--faint);
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  vertical-align: middle;
+}
+
 .px-take__meta {
   color: var(--faint);
   font-size: 0.7rem;

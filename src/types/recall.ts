@@ -20,6 +20,10 @@ export type SavedSessionMetadata = {
   capture_status: string;
   project_name: string | null;
   project_path: string | null;
+  // The `.als` version this take is anchored to, and how it originated:
+  // "recorded" (captured live) or "scanned" (a version found on disk, no moves yet).
+  als_path: string | null;
+  take_origin: string;
   display_name: string | null;
   started_at_ms: number;
   ended_at_ms: number | null;

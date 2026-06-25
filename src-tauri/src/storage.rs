@@ -208,6 +208,8 @@ impl StorageState {
                     ) AS capture_status,
                     COALESCE(sessions.project_name, projects.ableton_name) AS project_name,
                     COALESCE(sessions.project_path, projects.ableton_path) AS project_path,
+                    sessions.als_path,
+                    COALESCE(sessions.take_origin, 'recorded') AS take_origin,
                     sessions.display_name,
                     sessions.started_at_ms,
                     sessions.ended_at_ms,
@@ -219,7 +221,8 @@ impl StorageState {
                 LEFT JOIN events ON events.session_id = sessions.id
                 LEFT JOIN projects ON projects.id = sessions.project_id
                 GROUP BY sessions.id, sessions.project_id, sessions.capture_name, sessions.capture_status,
-                         sessions.project_name, sessions.project_path, projects.ableton_name, projects.ableton_path,
+                         sessions.project_name, sessions.project_path, sessions.als_path, sessions.take_origin,
+                         projects.ableton_name, projects.ableton_path,
                          sessions.display_name,
                          sessions.started_at_ms, sessions.ended_at_ms, sessions.created_at_ms
                 ORDER BY last_updated_at_ms DESC
@@ -235,13 +238,15 @@ impl StorageState {
                 let capture_status = row.get::<_, String>(3)?;
                 let project_name = row.get::<_, Option<String>>(4)?;
                 let project_path = row.get::<_, Option<String>>(5)?;
-                let display_name = row.get::<_, Option<String>>(6)?;
-                let started_at_ms = row.get::<_, i64>(7)? as u64;
-                let ended_at_ms = row.get::<_, Option<i64>>(8)?.map(|value| value as u64);
-                let last_updated_at_ms = row.get::<_, i64>(9)? as u64;
-                let event_count = row.get::<_, i64>(10)? as usize;
-                let creative_event_count = row.get::<_, Option<i64>>(11)?.unwrap_or(0) as usize;
-                let heartbeat_count = row.get::<_, Option<i64>>(12)?.unwrap_or(0) as usize;
+                let als_path = row.get::<_, Option<String>>(6)?;
+                let take_origin = row.get::<_, String>(7)?;
+                let display_name = row.get::<_, Option<String>>(8)?;
+                let started_at_ms = row.get::<_, i64>(9)? as u64;
+                let ended_at_ms = row.get::<_, Option<i64>>(10)?.map(|value| value as u64);
+                let last_updated_at_ms = row.get::<_, i64>(11)? as u64;
+                let event_count = row.get::<_, i64>(12)? as usize;
+                let creative_event_count = row.get::<_, Option<i64>>(13)?.unwrap_or(0) as usize;
+                let heartbeat_count = row.get::<_, Option<i64>>(14)?.unwrap_or(0) as usize;
                 let name = capture_name
                     .as_deref()
                     .filter(|name| !name.trim().is_empty())
@@ -255,6 +260,8 @@ impl StorageState {
                     capture_status,
                     project_name,
                     project_path,
+                    als_path,
+                    take_origin,
                     display_name,
                     id,
                     started_at_ms,
@@ -450,6 +457,8 @@ impl StorageState {
             capture_status: metadata.capture_status,
             project_name: metadata.project_name,
             project_path: metadata.project_path,
+            als_path: metadata.als_path,
+            take_origin: metadata.take_origin,
             display_name: metadata.display_name,
             started_at_ms: metadata.started_at_ms,
             ended_at_ms: metadata.ended_at_ms,
@@ -705,6 +714,74 @@ impl StorageState {
         result
             .optional()
             .map_err(|error| format!("Failed to find active take: {}", error))
+    }
+
+    /// The Ableton folder a project is connected to, if any.
+    pub fn project_ableton_path(&self, project_id: &str) -> Result<Option<String>, String> {
+        let connection = self.open_connection()?;
+        connection
+            .query_row(
+                "SELECT ableton_path FROM projects WHERE id = ?1",
+                params![project_id],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .optional()
+            .map_err(|error| format!("Failed to read project folder: {}", error))?
+            .ok_or_else(|| format!("Project not found: {}", project_id))
+    }
+
+    /// Insert a `scanned` take for each `.als` (id, full path, modified_ms) that the
+    /// project doesn't already have a take anchored to. Idempotent: files already
+    /// represented by a take are skipped, so re-running only adds newly-saved
+    /// versions. Returns how many takes were added.
+    pub fn rescan_project_takes(
+        &self,
+        project_id: &str,
+        files: &[(String, String, u64)],
+    ) -> Result<usize, String> {
+        let connection = self.open_connection()?;
+
+        let mut existing: std::collections::HashSet<String> = std::collections::HashSet::new();
+        {
+            let mut statement = connection
+                .prepare("SELECT als_path FROM sessions WHERE project_id = ?1 AND als_path IS NOT NULL")
+                .map_err(|error| format!("Failed to prepare anchored-takes query: {}", error))?;
+            let rows = statement
+                .query_map(params![project_id], |row| row.get::<_, String>(0))
+                .map_err(|error| format!("Failed to read anchored takes: {}", error))?;
+            for path in rows {
+                existing.insert(path.map_err(|error| format!("Failed to collect take path: {}", error))?);
+            }
+        }
+
+        let now = now_ms();
+        let mut added = 0usize;
+        for (index, (name, path, modified_ms)) in files.iter().enumerate() {
+            if existing.contains(path) {
+                continue;
+            }
+            // A scanned take has no live telemetry, so it is born already "complete"
+            // (ended_at_ms set) — it must never look like an active recording. Its
+            // started time is the file's modified time so versions sort chronologically.
+            let stamp = if *modified_ms > 0 { *modified_ms } else { now };
+            let take_id = format!("take-{}-{}", now, index);
+            connection
+                .execute(
+                    "
+                    INSERT INTO sessions (
+                        id, project_id, capture_name, capture_status,
+                        als_path, take_origin, started_at_ms, ended_at_ms, created_at_ms
+                    )
+                    VALUES (?1, ?2, ?3, 'scanned', ?4, 'scanned', ?5, ?5, ?6)
+                    ",
+                    params![take_id, project_id, name, path, stamp as i64, now as i64],
+                )
+                .map_err(|error| format!("Failed to add scanned take: {}", error))?;
+            existing.insert(path.clone());
+            added += 1;
+        }
+
+        Ok(added)
     }
 
     pub fn create_project(
@@ -2691,6 +2768,10 @@ fn migrate_session_columns(connection: &Connection) -> rusqlite::Result<()> {
         ("project_name", "TEXT"),
         ("project_path", "TEXT"),
         ("display_name", "TEXT"),
+        // The `.als` file a take is anchored to, and how the take originated
+        // (`recorded` = has live telemetry, `scanned` = found on disk by a scan).
+        ("als_path", "TEXT"),
+        ("take_origin", "TEXT NOT NULL DEFAULT 'recorded'"),
     ];
 
     for (name, sql_type) in COLUMNS {
@@ -2699,6 +2780,20 @@ fn migrate_session_columns(connection: &Connection) -> rusqlite::Result<()> {
                 "ALTER TABLE sessions ADD COLUMN {name} {sql_type};"
             ))?;
         }
+    }
+
+    // Backfill als_path for existing takes from the open set they saw, so takes
+    // created before file-anchoring still resolve to a `.als`.
+    if !existing.contains("als_path") {
+        connection.execute_batch(
+            "
+            UPDATE sessions
+            SET als_path = project_path
+            WHERE als_path IS NULL
+              AND project_path IS NOT NULL
+              AND project_path LIKE '%.als';
+            ",
+        )?;
     }
 
     Ok(())
@@ -3083,6 +3178,58 @@ mod tests {
             .unwrap();
         let renamed_project = storage.list_projects(false).unwrap().remove(0);
         assert_eq!(renamed_project.display_name, "Drum Practice - Verse Ideas");
+
+        cleanup(&path);
+    }
+
+    #[test]
+    fn rescan_adds_a_take_per_als_version_and_is_idempotent() {
+        let (storage, path) = temp_storage();
+        let project_id = storage
+            .create_project("Idols Perseus", None, Some("/Projects/Idols Perseus Project"))
+            .unwrap();
+
+        let files = |names: &[&str]| -> Vec<(String, String, u64)> {
+            names
+                .iter()
+                .enumerate()
+                .map(|(i, name)| {
+                    (
+                        (*name).to_string(),
+                        format!("/Projects/Idols Perseus Project/{name}.als"),
+                        1_000 + i as u64,
+                    )
+                })
+                .collect()
+        };
+
+        // First scan picks up all three versions as scanned takes.
+        let added = storage
+            .rescan_project_takes(&project_id, &files(&["v7", "v8", "v9"]))
+            .unwrap();
+        assert_eq!(added, 3);
+
+        let project = storage.list_projects(false).unwrap().remove(0);
+        assert_eq!(project.captures.len(), 3);
+        for take in &project.captures {
+            assert_eq!(take.take_origin, "scanned");
+            assert!(take.als_path.is_some());
+            // Scanned takes must never look like an active recording.
+            assert!(take.ended_at_ms.is_some());
+        }
+
+        // Re-scanning the same files adds nothing.
+        let again = storage
+            .rescan_project_takes(&project_id, &files(&["v7", "v8", "v9"]))
+            .unwrap();
+        assert_eq!(again, 0);
+
+        // A newly-saved version is the only thing a later scan adds.
+        let after_save = storage
+            .rescan_project_takes(&project_id, &files(&["v7", "v8", "v9", "v10"]))
+            .unwrap();
+        assert_eq!(after_save, 1);
+        assert_eq!(storage.list_projects(false).unwrap().remove(0).captures.len(), 4);
 
         cleanup(&path);
     }

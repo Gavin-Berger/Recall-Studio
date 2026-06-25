@@ -347,6 +347,54 @@ fn folder_contains_als(dir: &std::path::Path) -> bool {
         .unwrap_or(false)
 }
 
+/// An `.als` file found inside a project folder: its display name (file stem), its
+/// full path, and its last-modified time in ms (0 if unreadable). The modified time
+/// orders scanned takes so versions line up chronologically.
+struct AlsFile {
+    name: String,
+    path: String,
+    modified_ms: u64,
+}
+
+/// List the `.als` files directly inside a folder, sorted by name. Top-level only —
+/// Ableton's `Backup/` auto-saves are skipped so a scan surfaces the versions the
+/// producer named, not the editor's churn.
+fn list_als_files(dir: &std::path::Path) -> Vec<AlsFile> {
+    let mut files = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let is_als = path
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .map(|ext| ext.eq_ignore_ascii_case("als"))
+                .unwrap_or(false);
+            if !path.is_file() || !is_als {
+                continue;
+            }
+            let name = path
+                .file_stem()
+                .and_then(|value| value.to_str())
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            let modified_ms = std::fs::metadata(&path)
+                .and_then(|meta| meta.modified())
+                .ok()
+                .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|delta| delta.as_millis() as u64)
+                .unwrap_or(0);
+            files.push(AlsFile {
+                name,
+                path: path.to_string_lossy().to_string(),
+                modified_ms,
+            });
+        }
+    }
+    files.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    files
+}
+
 /// Discover Ableton projects to import. If the chosen folder is itself a project
 /// (holds a `.als`), that's the single result; otherwise each immediate subfolder
 /// holding a `.als` becomes a project. Returns (display name, folder path).
@@ -399,6 +447,8 @@ fn connect_project_folder(
         let name = display_name_from_path(clean_path);
         let storage = state.storage.lock().expect("Storage state lock failed");
         storage.set_project_source(&id, &name, clean_path)?;
+        // Surface the folder's `.als` versions as takes right away.
+        rescan_project(&storage, &id)?;
         return Ok(1);
     }
 
@@ -407,7 +457,44 @@ fn connect_project_folder(
         return Err("No Ableton projects (.als) found in that folder.".to_string());
     }
     let storage = state.storage.lock().expect("Storage state lock failed");
-    storage.import_projects(&discovered)
+    let added = storage.import_projects(&discovered)?;
+
+    // Scan every project that maps to a discovered folder so its versions appear as
+    // takes immediately — covers both freshly-imported and already-known projects.
+    let discovered_folders: std::collections::HashSet<&str> =
+        discovered.iter().map(|(_, folder)| folder.as_str()).collect();
+    for project in storage.list_projects(false)? {
+        if project
+            .ableton_path
+            .as_deref()
+            .map(|folder| discovered_folders.contains(folder))
+            .unwrap_or(false)
+        {
+            rescan_project(&storage, &project.id)?;
+        }
+    }
+
+    Ok(added)
+}
+
+/// Scan a project's connected folder and add a take for any `.als` version it
+/// doesn't already have. No-op if the project has no folder. Returns takes added.
+fn rescan_project(storage: &StorageState, project_id: &str) -> Result<usize, String> {
+    let Some(folder) = storage.project_ableton_path(project_id)? else {
+        return Ok(0);
+    };
+    let files: Vec<(String, String, u64)> = list_als_files(std::path::Path::new(&folder))
+        .into_iter()
+        .map(|file| (file.name, file.path, file.modified_ms))
+        .collect();
+    storage.rescan_project_takes(project_id, &files)
+}
+
+/// Re-scan a project's folder for new `.als` versions. The "Rescan" button.
+#[tauri::command]
+fn rescan_project_folder(state: State<'_, AppState>, project_id: String) -> Result<usize, String> {
+    let storage = state.storage.lock().expect("Storage state lock failed");
+    rescan_project(&storage, &project_id)
 }
 
 #[tauri::command]
@@ -832,6 +919,7 @@ pub fn run() {
             list_projects,
             create_project,
             connect_project_folder,
+            rescan_project_folder,
             rename_project,
             archive_project,
             assign_session_to_project,

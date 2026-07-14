@@ -213,7 +213,17 @@ impl StorageState {
                     sessions.display_name,
                     sessions.started_at_ms,
                     sessions.ended_at_ms,
-                    COALESCE(MAX(events.created_at_ms), sessions.created_at_ms) AS last_updated_at_ms,
+                    -- \"Last updated\" must mean the take's real recency, not when the
+                    -- row was inserted. A scanned version found on disk carries its
+                    -- file's modified time in started/ended (see rescan_project_takes),
+                    -- so a freshly connected folder shows Explorer's dates — not
+                    -- \"everything updated today\" because the scan ran today.
+                    COALESCE(
+                        MAX(events.created_at_ms),
+                        sessions.ended_at_ms,
+                        sessions.started_at_ms,
+                        sessions.created_at_ms
+                    ) AS last_updated_at_ms,
                     COUNT(events.id) AS event_count,
                     SUM(CASE WHEN events.id IS NOT NULL AND events.event_type != 'heartbeat' THEN 1 ELSE 0 END) AS creative_event_count,
                     SUM(CASE WHEN events.id IS NOT NULL AND events.event_type = 'heartbeat' THEN 1 ELSE 0 END) AS heartbeat_count
@@ -3431,6 +3441,39 @@ mod tests {
             .unwrap();
         assert_eq!(after_save, 1);
         assert_eq!(storage.list_projects(false).unwrap().remove(0).captures.len(), 4);
+
+        cleanup(&path);
+    }
+
+    #[test]
+    fn scanned_takes_report_their_file_date_not_the_scan_date() {
+        let (storage, path) = temp_storage();
+        let project_id = storage
+            .create_project("Idols Perseus", None, Some("/Projects/Idols Perseus Project"))
+            .unwrap();
+
+        // A version last saved long ago (mtime well in the past). Connecting a
+        // folder today must surface it with the file's real date, exactly like
+        // Explorer's "Date modified" — never "updated today" because the scan
+        // ran today.
+        let old_mtime = 1_700_000_000_000u64;
+        storage
+            .rescan_project_takes(
+                &project_id,
+                &[(
+                    "v7".to_string(),
+                    "/Projects/Idols Perseus Project/v7.als".to_string(),
+                    old_mtime,
+                )],
+            )
+            .unwrap();
+
+        let project = storage.list_projects(false).unwrap().remove(0);
+        let take = &project.captures[0];
+        assert_eq!(take.started_at_ms, old_mtime);
+        assert_eq!(take.last_updated_at_ms, old_mtime);
+        // The project's own recency inherits the newest file's date too.
+        assert_eq!(project.last_updated_at_ms, old_mtime);
 
         cleanup(&path);
     }

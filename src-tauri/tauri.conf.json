@@ -25,7 +25,7 @@
     "active": true,
     "targets": "all",
     "resources": {
-      "../m4l/recall-studio.amxd": "bridge/recall-studio.amxd",
+      "../m4l/RECALL.amxd": "bridge/RECALL.amxd",
       "../m4l/recall_m4l_bridge.js": "bridge/recall_m4l_bridge.js"
     },
     "icon": [

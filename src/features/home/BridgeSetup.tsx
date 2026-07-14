@@ -20,6 +20,7 @@ type BridgeSetupProps = {
 
 export function BridgeSetup({ connection }: BridgeSetupProps) {
   const [path, setPath] = useState("");
+  const [candidates, setCandidates] = useState<InstallTarget[]>([]);
   const [shippedVersion, setShippedVersion] = useState<string | null>(null);
   const [detected, setDetected] = useState(false);
   const [installing, setInstalling] = useState(false);
@@ -32,6 +33,7 @@ export function BridgeSetup({ connection }: BridgeSetupProps) {
       .then((detection) => {
         if (cancelled) return;
         if (detection.recommended) setPath(detection.recommended);
+        setCandidates(detection.candidates.filter((candidate) => candidate.exists));
         setShippedVersion(detection.bridge_version);
         setDetected(true);
       })
@@ -110,6 +112,21 @@ export function BridgeSetup({ connection }: BridgeSetupProps) {
               spellCheck={false}
             />
           </label>
+          {candidates.length > 1 && (
+            <div className="bridge-setup__candidates" role="group" aria-label="Detected User Libraries">
+              {candidates.map((candidate) => (
+                <button
+                  key={candidate.path}
+                  type="button"
+                  className={`bridge-setup__candidate ${candidate.path === path ? "is-on" : ""}`}
+                  onClick={() => setPath(candidate.path)}
+                  title={candidate.path}
+                >
+                  {candidate.path}
+                </button>
+              ))}
+            </div>
+          )}
           <button
             type="button"
             className="bridge-setup__btn"
@@ -120,11 +137,17 @@ export function BridgeSetup({ connection }: BridgeSetupProps) {
           </button>
 
           {result && (
-            <p className="bridge-setup__ok">
-              Installed{result.bridge_version ? ` v${result.bridge_version}` : ""}{" "}
-              to <code>{result.installed_dir}</code>. Rescan Live's browser if it
-              doesn't appear yet.
-            </p>
+            <div className="bridge-setup__ok">
+              <p>
+                Installed{result.bridge_version ? ` v${result.bridge_version}` : ""} to{" "}
+                <code>{result.installed_dir}</code>.
+              </p>
+              <p>
+                In Live: User Library → Presets → Audio Effects → Max Audio Effect →
+                drag <strong>RECALL</strong> onto your master track (or any audio track).
+                The connection light above turns green when it's talking to Recall.
+              </p>
+            </div>
           )}
           {error && <p className="bridge-setup__err">{error}</p>}
         </div>

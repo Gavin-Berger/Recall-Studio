@@ -4,15 +4,15 @@ use tauri::{AppHandle, Manager};
 
 // The device files Recall Studio ships and drops into Ableton. Both must land in
 // the same folder: the .amxd references the .js by filename and Max resolves it
-// from alongside the device.
-const DEVICE_FILE: &str = "recall-studio.amxd";
+// from alongside the device. RECALL.amxd is a Max *Audio Effect* (amxd type
+// "aaaa") so it can sit on any audio track or the master.
+const DEVICE_FILE: &str = "RECALL.amxd";
 const BRIDGE_SCRIPT_FILE: &str = "recall_m4l_bridge.js";
 
-// Where inside the User Library a Max MIDI Effect must live to show up in Live's
-// browser. NOTE: this is the MIDI-Effect location. If the device is ever rebuilt
-// as a Max Audio Effect (so it can sit on the master/audio tracks), change this
-// to "Presets/Audio Effects/Max Audio Effect".
-const DEVICE_SUBFOLDER: &[&str] = &["Presets", "MIDI Effects", "Max MIDI Effect"];
+// Where inside the User Library a Max Audio Effect must live to show up in
+// Live's browser. This must stay in sync with the device type in DEVICE_FILE —
+// a MIDI-effect .amxd would need Presets/MIDI Effects/Max MIDI Effect instead.
+const DEVICE_SUBFOLDER: &[&str] = &["Presets", "Audio Effects", "Max Audio Effect"];
 
 #[derive(Serialize)]
 pub struct InstallTarget {
@@ -38,9 +38,9 @@ pub struct InstallResult {
     pub bridge_version: Option<String>,
 }
 
-// Candidate Ableton "User Library" roots by platform default. The real location
-// is user-configurable in Live's preferences and has no API, so these are best
-// guesses; the UI lets the user correct the path before installing.
+// Candidate Ableton "User Library" roots. The real location is user-configurable
+// in Live's preferences and has no API, so these are best guesses; the UI lets
+// the user correct the path before installing.
 fn user_library_candidates(app: &AppHandle) -> Vec<PathBuf> {
     let mut out = Vec::new();
 
@@ -49,6 +49,20 @@ fn user_library_candidates(app: &AppHandle) -> Vec<PathBuf> {
         out.push(home.join("Documents").join("Ableton").join("User Library"));
         // macOS default.
         out.push(home.join("Music").join("Ableton").join("User Library"));
+    }
+
+    // Producers often move the library off the system drive ("M:\Ableton
+    // Library\User Library"). Probe every drive root for the common layouts so
+    // detection finds a relocated library instead of guessing Documents.
+    #[cfg(target_os = "windows")]
+    for letter in b'A'..=b'Z' {
+        let root = PathBuf::from(format!("{}:\\", letter as char));
+        for layout in ["Ableton Library", "Ableton"] {
+            let candidate = root.join(layout).join("User Library");
+            if candidate.exists() {
+                out.push(candidate);
+            }
+        }
     }
 
     out
@@ -91,6 +105,15 @@ fn parse_bridge_version(script_path: &Path) -> Option<String> {
     Some(line[start..end].to_string())
 }
 
+// The device's home inside a User Library root.
+fn device_install_dir(library_root: &Path) -> PathBuf {
+    let mut dir = library_root.to_path_buf();
+    for part in DEVICE_SUBFOLDER {
+        dir.push(part);
+    }
+    dir
+}
+
 #[tauri::command]
 pub fn detect_bridge_install_targets(app: AppHandle) -> InstallDetection {
     let candidates_paths = user_library_candidates(&app);
@@ -103,10 +126,20 @@ pub fn detect_bridge_install_targets(app: AppHandle) -> InstallDetection {
         })
         .collect();
 
-    let recommended = candidates
+    // Prefer the library that already holds the bridge (the upgrade case — a
+    // producer with a relocated library should update in place, not get a second
+    // copy under Documents), then any library that exists, then the platform
+    // default so first-time install can create it.
+    let recommended = candidates_paths
         .iter()
-        .find(|c| c.exists)
-        .map(|c| c.path.clone())
+        .find(|p| device_install_dir(p).join(DEVICE_FILE).exists())
+        .map(|p| p.to_string_lossy().to_string())
+        .or_else(|| {
+            candidates
+                .iter()
+                .find(|c| c.exists)
+                .map(|c| c.path.clone())
+        })
         .or_else(|| {
             candidates
                 .get(platform_default_index())
@@ -141,10 +174,7 @@ pub fn install_bridge(app: AppHandle, target_root: String) -> Result<InstallResu
         ));
     }
 
-    let mut install_dir = PathBuf::from(target_root);
-    for part in DEVICE_SUBFOLDER {
-        install_dir.push(part);
-    }
+    let install_dir = device_install_dir(Path::new(target_root));
 
     std::fs::create_dir_all(&install_dir)
         .map_err(|e| format!("Could not create install folder {:?}: {e}", install_dir))?;

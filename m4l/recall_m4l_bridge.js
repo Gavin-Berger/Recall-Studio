@@ -43,7 +43,7 @@ outlets = 2;
 var PROTOCOL = "recall.v2";
 var SOURCE = "max_for_live";
 var DEVICE_ID = "recall-m4l-bridge-dev";
-var BRIDGE_VERSION = "0.16.1";
+var BRIDGE_VERSION = "0.17.0";
 
 // Canonical v2 flat fields. emit() lifts any of these from its `fields` arg up
 // to the TOP LEVEL of the packet, because the Rust normalizer reads canonical
@@ -122,22 +122,39 @@ var MAX_FOCUS_CLIP_SLOTS = 16;
 // ── Focused-device parameter poller limits ──────────────────────────────────
 // The poller scans ONLY the currently open device, so it can afford a fast
 // cadence and a high parameter ceiling that the all-device focus scan cannot.
-// How often the focused device's parameter values are sampled. Fast enough that a
-// deliberate knob tweak is always seen, slow enough to stay off the audio thread's
-// back. This is the real "rate of scan" for parameter capture.
-var PARAMETER_POLL_INTERVAL_MS = 300;
+//
+// The cadence is ADAPTIVE. While something on the focused device is actually
+// moving (or a freshly-focused device is still being seeded) the poller runs
+// HOT, so a knob ride is sampled with good resolution. Once everything has been
+// still past the hold window it drops to the IDLE cadence — which is where a
+// session spends the vast majority of its time. Dormant polling is the largest
+// recurring cost the bridge imposes on Live, so idling hard matters more than
+// polling fast.
+var PARAMETER_POLL_HOT_MS = 200;
+var PARAMETER_POLL_IDLE_MS = 1200;
+// Keep polling HOT for this long after the last observed change, so multi-part
+// gestures (grab, listen, grab again) stay at full resolution end to end.
+var PARAMETER_HOT_HOLD_MS = 4000;
 // Per tick we read at most this many parameter VALUES (one cheap read each), then
 // advance a round-robin cursor. A 1000+ param plugin is therefore swept over a few
 // ticks instead of in one heavy tick — bounding per-tick cost regardless of how
-// huge the plugin is. Full-set coverage latency = ceil(paramCount / chunk) * interval.
+// huge the plugin is.
 var PARAMETER_POLL_CHUNK = 256;
+// ...AND the tick stops early once it has spent this long reading, whichever
+// comes first. A count bound assumes every read is cheap; some VST wrappers are
+// not. The time budget turns "256 reads" into "at most a few ms", so a plugin
+// with slow parameter reads takes smaller bites instead of spiking the tick —
+// tick spikes on Max's scheduler thread are exactly what makes Live feel sticky.
+var PARAMETER_POLL_BUDGET_MS = 3;
 // Absolute ceiling on parameters considered for one device (pathological guard).
 var MAX_POLL_PARAMETERS_PER_DEVICE = 4096;
 // A knob ride is emitted as ONE settled event once its value has stopped changing
 // for this long. Decoupled from the poll/round-robin cadence (wall-clock based) so
 // chunking never splits a gesture. ~one comfortable pause after letting go.
 var PARAMETER_SETTLE_MS = 450;
-// How many devices we scan to map the selected device's id back to its chain index.
+// How many devices we scan to map the selected device's id back to its chain
+// index. Only paid when focus actually moves — the resolved location (and every
+// LiveAPI object it holds) is cached across ticks.
 var MAX_DEVICE_LOOKUP = 64;
 // How many tracks the lightweight lifecycle roster scan covers each transport
 // tick. Only cheap props are read per track (name/mute/solo/arm), so this can be
@@ -1780,6 +1797,34 @@ var paramPollContextByKey = {};     // deviceKey -> { devicePath, deviceName, tr
 var paramPollCursorByKey = {};      // deviceKey -> round-robin cursor
 var lastPolledDeviceKey = null;
 
+// ── Poller LiveAPI cache ─────────────────────────────────────────────────────
+// Constructing a LiveAPI object resolves a path through Live's object model and
+// is BY FAR the dominant cost of the poller — it used to rebuild every object on
+// every tick (hundreds of native constructions per second, sustained). These
+// caches persist across ticks and are torn down when focus moves to a different
+// device, the chain shape changes, or an object goes zombie (id 0). Only the
+// CURRENTLY focused device's parameters are cached, so the native object count
+// stays bounded by one device.
+var paramLiveSetViewApi = null;   // "live_set view" — stable for the whole session
+var paramFocusCache = null;       // { selectedTrackId, selectedDeviceId, loc }
+var paramApiByIndex = [];         // param index -> LiveAPI (lazily built, focused device only)
+var paramApiCachedCount = -1;     // paramCount the cache was built for (shape-change detector)
+var paramVisitedCount = 0;        // distinct param indices visited since the cache reset
+// Param indices with an OPEN gesture. Sampled every tick ahead of the
+// round-robin, so an active ride keeps full sample resolution no matter how
+// many dormant parameters the plugin has.
+var paramHotIndices = {};         // index -> true
+// Poll HOT until this wall-clock time; bumped by any observed change, a focus
+// move, or an unfinished first sweep of a new device.
+var paramPollHotUntil = 0;
+
+function reset_param_api_cache(paramCount) {
+    paramApiByIndex = [];
+    paramHotIndices = {};
+    paramVisitedCount = 0;
+    paramApiCachedCount = paramCount;
+}
+
 function parameter_tick() {
     if (!bridgeRunning) {
         return;
@@ -1793,19 +1838,76 @@ function parameter_tick() {
         }
     }
 
-    parameterTask.schedule(PARAMETER_POLL_INTERVAL_MS);
+    // Adaptive cadence: HOT while hands are (recently) on, IDLE once everything
+    // is still. The gesture state machine is identical either way — only the
+    // sample rate changes, so the emitted events stay one-settled-move-per-ride.
+    var now = (new Date()).getTime();
+    parameterTask.schedule(now < paramPollHotUntil ? PARAMETER_POLL_HOT_MS : PARAMETER_POLL_IDLE_MS);
 }
 
-// Resolve the device the producer currently has open: the selected track's
-// view.selected_device. Falls back to the first device so an open instrument is
-// still tracked even when no device is explicitly appointed.
-function collect_focused_device_location() {
-    var trackId = get_selected_track_id();
-    if (!trackId) {
+// The cached "live_set view" object — rebuilt only if it goes zombie.
+function param_live_set_view() {
+    if (paramLiveSetViewApi && Number(paramLiveSetViewApi.id) !== 0) {
+        return paramLiveSetViewApi;
+    }
+    paramLiveSetViewApi = safe_path("live_set view");
+    return paramLiveSetViewApi;
+}
+
+// Resolve the device the producer currently has open, reusing the cached
+// resolution while selection is unchanged. Steady-state cost (focus not moving,
+// which is nearly every tick): a handful of cheap .get calls on cached objects
+// and ZERO LiveAPI constructions. The full path walk — including the device-id
+// → chain-index lookup loop — only runs when focus actually moves or a cached
+// object dies.
+function resolve_focused_device_location() {
+    var view = param_live_set_view();
+    if (!view) {
+        paramFocusCache = null;
         return null;
     }
 
-    var trackIndex = find_track_index_by_id(trackId);
+    var selectedTrackId = normalize_id(get_prop(view, "selected_track", null));
+    if (!selectedTrackId) {
+        paramFocusCache = null;
+        return null;
+    }
+
+    var cache = paramFocusCache;
+    if (cache && cache.selectedTrackId === selectedTrackId && cache.loc) {
+        var loc = cache.loc;
+        var trackView = loc.trackViewApi;
+        var deviceApi = loc.deviceApi;
+        if (
+            trackView && Number(trackView.id) !== 0 &&
+            deviceApi && Number(deviceApi.id) !== 0
+        ) {
+            var selectedDeviceId = normalize_id(get_prop(trackView, "selected_device", null));
+            if (selectedDeviceId === cache.selectedDeviceId) {
+                // Focus unchanged and the device is alive. Refresh the volatile
+                // bits: param count (a VST "Configure" can grow it) and names
+                // (renames must never leave a settled event with a stale label).
+                loc.paramCount = get_count(deviceApi, "parameters", loc.paramCount);
+                loc.trackName = value_to_string(get_prop(loc.trackApi, "name", null)) || loc.trackName;
+                loc.deviceName = value_to_string(get_prop(deviceApi, "name", null)) || loc.deviceName;
+                return loc;
+            }
+        }
+    }
+
+    var built = build_focused_device_location(selectedTrackId);
+    paramFocusCache = built
+        ? { selectedTrackId: selectedTrackId, selectedDeviceId: built.selectedDeviceId, loc: built }
+        : null;
+    return built;
+}
+
+// Full (construction-heavy) resolution of the focused device: the selected
+// track's view.selected_device, falling back to the first device so an open
+// instrument is still tracked even when no device is explicitly appointed.
+// Only called on focus change — the result (with its live objects) is cached.
+function build_focused_device_location(selectedTrackId) {
+    var trackIndex = find_track_index_by_id(selectedTrackId);
     if (trackIndex < 0) {
         return null;
     }
@@ -1855,36 +1957,131 @@ function collect_focused_device_location() {
         deviceName: value_to_string(get_prop(device, "name", null)) || ("Device " + deviceIndex),
         devicePath: devicePath,
         deviceKey: value_to_string(deviceId) || (trackIndex + ":" + deviceIndex),
-        paramCount: get_count(device, "parameters", 0)
+        paramCount: get_count(device, "parameters", 0),
+        selectedDeviceId: selectedDeviceId,
+        trackApi: track,
+        trackViewApi: view,
+        deviceApi: device
     };
 }
 
-// Sample a chunk of the focused device's parameter VALUES (one cheap read each),
-// advancing a round-robin cursor so a huge plugin is swept over several ticks
-// without any single tick getting heavy. Per parameter we run a tiny gesture
-// state machine: the first time we see it we seed silently (no event); when its
-// value starts changing we open a gesture and track the swept range; once it has
-// been still for PARAMETER_SETTLE_MS we emit ONE parameter_changed for the whole
-// ride. Expensive reads (name/min/max/display) happen only at that settle point.
+// The cached LiveAPI object for one of the focused device's parameters, built
+// lazily the first time the sweep touches that index and reused every tick
+// after. A dead object (id 0 — param vanished under us) is rebuilt once.
+function focused_param_api(loc, index) {
+    var api = paramApiByIndex[index];
+    if (api && Number(api.id) !== 0) {
+        return api;
+    }
+    if (paramApiByIndex[index] === undefined) {
+        paramVisitedCount++;
+    }
+    api = safe_path(loc.devicePath + " parameters " + index);
+    paramApiByIndex[index] = api || null;
+    return api;
+}
+
+// One parameter through the gesture state machine: seed silently on first
+// sighting; open a gesture (and mark the index hot) when the value starts
+// moving; emit ONE settled parameter_changed for the whole ride once it has
+// been still for PARAMETER_SETTLE_MS. Expensive reads (name/min/max/display)
+// happen only at that settle point, inside emit_parameter_move.
+function sample_focused_param(loc, gestures, index, now) {
+    var param = focused_param_api(loc, index);
+    if (!param) {
+        return;
+    }
+
+    var value = value_to_number(get_prop(param, "value", null), null);
+    if (value === null) {
+        return;
+    }
+
+    var paramId = value_to_string(normalize_id(param.id)) || ("i" + index);
+    var gesture = gestures[paramId];
+
+    if (gesture === undefined) {
+        // First sighting: seed silently so a pre-existing value never fires.
+        gestures[paramId] = {
+            index: index,
+            last: value,
+            baseline: value,
+            sweptMin: value,
+            sweptMax: value,
+            active: false,
+            lastChange: now
+        };
+        return;
+    }
+
+    // Track the chain index live — it can shift if the device chain reorders.
+    gesture.index = index;
+
+    if (Math.abs(value - gesture.last) > PARAMETER_VALUE_EPSILON) {
+        if (!gesture.active) {
+            gesture.active = true;
+            gesture.baseline = gesture.last;
+            gesture.sweptMin = gesture.last;
+            gesture.sweptMax = gesture.last;
+            // A ride is in progress: sample this param every tick from now on.
+            paramHotIndices[index] = true;
+        }
+        if (value < gesture.sweptMin) { gesture.sweptMin = value; }
+        if (value > gesture.sweptMax) { gesture.sweptMax = value; }
+        gesture.last = value;
+        gesture.lastChange = now;
+        // Something is moving — stay at the hot cadence.
+        paramPollHotUntil = now + PARAMETER_HOT_HOLD_MS;
+    } else if (gesture.active && (now - gesture.lastChange) >= PARAMETER_SETTLE_MS) {
+        emit_parameter_move(
+            paramPollContextByKey[loc.deviceKey],
+            gesture.index,
+            gesture.baseline,
+            gesture.last,
+            gesture.sweptMin,
+            gesture.sweptMax
+        );
+        gesture.active = false;
+        gesture.baseline = gesture.last;
+        delete paramHotIndices[index];
+    }
+}
+
+// Sample the focused device's parameter values. Active rides are sampled every
+// tick (full resolution no matter the plugin size); the rest of the device is
+// swept round-robin, bounded by BOTH a count chunk and a wall-clock budget so a
+// plugin with slow parameter reads can never spike the scheduler tick.
 function poll_focused_device_parameters() {
-    var loc = collect_focused_device_location();
+    var loc = resolve_focused_device_location();
 
     if (!loc) {
         // Nothing focused (or the track/device vanished): flush any open gesture
-        // from the device we were last on so it isn't left hanging.
+        // from the device we were last on so it isn't left hanging, and drop the
+        // dead device's cached objects.
         if (lastPolledDeviceKey) {
             flush_pending_param_gestures(lastPolledDeviceKey);
             lastPolledDeviceKey = null;
+            reset_param_api_cache(-1);
         }
         return;
     }
 
     var deviceKey = loc.deviceKey;
+    var now = (new Date()).getTime();
 
-    // Focus moved to a different device: settle the outgoing device's open gesture
-    // before we start sampling the new one.
-    if (lastPolledDeviceKey && lastPolledDeviceKey !== deviceKey) {
-        flush_pending_param_gestures(lastPolledDeviceKey);
+    if (lastPolledDeviceKey !== deviceKey) {
+        // Focus moved to a different device: settle the outgoing device's open
+        // gestures, drop its cached param objects, and go hot so the new device
+        // seeds in a burst instead of trickling at the idle cadence.
+        if (lastPolledDeviceKey) {
+            flush_pending_param_gestures(lastPolledDeviceKey);
+        }
+        reset_param_api_cache(loc.paramCount);
+        paramPollHotUntil = now + PARAMETER_HOT_HOLD_MS;
+    } else if (paramApiCachedCount !== loc.paramCount) {
+        // Same device but the chain shape changed underneath us (e.g. a VST
+        // "Configure" exposed more params): indices are no longer trustworthy.
+        reset_param_api_cache(loc.paramCount);
     }
     lastPolledDeviceKey = deviceKey;
 
@@ -1905,11 +2102,30 @@ function poll_focused_device_parameters() {
         return;
     }
 
-    var cursor = paramPollCursorByKey[deviceKey] || 0;
-    var now = (new Date()).getTime();
+    var started = now;
     var scanned = 0;
 
+    // 1) Rides in progress first, every tick, regardless of budget — there are
+    // at most a handful and they are the whole point of the poller.
+    for (var hotKey in paramHotIndices) {
+        if (!paramHotIndices.hasOwnProperty(hotKey)) {
+            continue;
+        }
+        var hotIndex = Number(hotKey);
+        if (hotIndex >= total) {
+            delete paramHotIndices[hotKey];
+            continue;
+        }
+        sample_focused_param(loc, gestures, hotIndex, now);
+        scanned++;
+    }
+
+    // 2) Round-robin the dormant remainder within the count AND time budget.
+    var cursor = paramPollCursorByKey[deviceKey] || 0;
     while (scanned < PARAMETER_POLL_CHUNK && scanned < total) {
+        if ((new Date()).getTime() - started >= PARAMETER_POLL_BUDGET_MS) {
+            break;
+        }
         if (cursor >= total) {
             cursor = 0;
         }
@@ -1918,62 +2134,19 @@ function poll_focused_device_parameters() {
         cursor++;
         scanned++;
 
-        var param = safe_path(loc.devicePath + " parameters " + p);
-        if (!param) {
-            continue;
+        if (paramHotIndices[p]) {
+            continue; // already sampled at full rate above
         }
 
-        var value = value_to_number(get_prop(param, "value", null), null);
-        if (value === null) {
-            continue;
-        }
-
-        var paramId = value_to_string(normalize_id(param.id)) || ("i" + p);
-        var gesture = gestures[paramId];
-
-        if (gesture === undefined) {
-            // First sighting: seed silently so a pre-existing value never fires.
-            gestures[paramId] = {
-                index: p,
-                last: value,
-                baseline: value,
-                sweptMin: value,
-                sweptMax: value,
-                active: false,
-                lastChange: now
-            };
-            continue;
-        }
-
-        // Track the chain index live — it can shift if the device chain reorders.
-        gesture.index = p;
-
-        if (Math.abs(value - gesture.last) > PARAMETER_VALUE_EPSILON) {
-            if (!gesture.active) {
-                gesture.active = true;
-                gesture.baseline = gesture.last;
-                gesture.sweptMin = gesture.last;
-                gesture.sweptMax = gesture.last;
-            }
-            if (value < gesture.sweptMin) { gesture.sweptMin = value; }
-            if (value > gesture.sweptMax) { gesture.sweptMax = value; }
-            gesture.last = value;
-            gesture.lastChange = now;
-        } else if (gesture.active && (now - gesture.lastChange) >= PARAMETER_SETTLE_MS) {
-            emit_parameter_move(
-                paramPollContextByKey[deviceKey],
-                gesture.index,
-                gesture.baseline,
-                gesture.last,
-                gesture.sweptMin,
-                gesture.sweptMax
-            );
-            gesture.active = false;
-            gesture.baseline = gesture.last;
-        }
+        sample_focused_param(loc, gestures, p, now);
     }
-
     paramPollCursorByKey[deviceKey] = cursor;
+
+    // Until the first full sweep of a freshly-focused device has visited every
+    // parameter, keep the cadence hot so seeding takes ~a second, not minutes.
+    if (paramVisitedCount < total && paramPollHotUntil < now + PARAMETER_POLL_HOT_MS * 2) {
+        paramPollHotUntil = now + PARAMETER_POLL_HOT_MS * 2;
+    }
 }
 
 // Emit one settled knob/fader move. Mirrors the canonical parameter_changed shape

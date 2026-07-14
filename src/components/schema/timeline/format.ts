@@ -36,6 +36,44 @@ export function formatTakeTitle(
   return schemaName ?? "Take";
 }
 
+// A set left open overnight is not 39 hours of work. Wall-clock span (start → now)
+// misrepresents idle takes, so the header reports *active* time instead: recorded
+// activity timestamps cluster into blocks split on silences longer than the idle
+// gap, and each block counts first→last plus a small pad (so one isolated move
+// still registers as a minute, not zero). While recording, "now" only extends the
+// current block if the producer moved something recently — an idle take stops
+// accruing time the moment they stop.
+export const ACTIVE_IDLE_GAP_MS = 10 * 60 * 1000;
+const ACTIVE_BLOCK_PAD_MS = 60 * 1000;
+
+export function activeDurationMs(timestamps: number[], nowMs: number | null = null): number {
+  const sorted = timestamps
+    .filter((stamp) => Number.isFinite(stamp) && stamp > 0)
+    .sort((a, b) => a - b);
+  if (
+    nowMs !== null &&
+    sorted.length > 0 &&
+    nowMs - sorted[sorted.length - 1] > 0 &&
+    nowMs - sorted[sorted.length - 1] <= ACTIVE_IDLE_GAP_MS
+  ) {
+    sorted.push(nowMs);
+  }
+  if (sorted.length === 0) return 0;
+
+  let total = 0;
+  let blockStart = sorted[0];
+  let previous = sorted[0];
+  for (const stamp of sorted.slice(1)) {
+    if (stamp - previous > ACTIVE_IDLE_GAP_MS) {
+      total += previous - blockStart + ACTIVE_BLOCK_PAD_MS;
+      blockStart = stamp;
+    }
+    previous = stamp;
+  }
+  total += previous - blockStart + ACTIVE_BLOCK_PAD_MS;
+  return total;
+}
+
 // Compact human duration for the header ("26 min", "1 hr 12 min", "48 sec").
 export function formatDuration(ms: number): string {
   const totalSeconds = Math.max(0, Math.round(ms / 1000));

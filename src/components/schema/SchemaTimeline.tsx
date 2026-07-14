@@ -20,6 +20,7 @@ import {
   type SavedSessionMetadata,
 } from "../../types";
 import {
+  activeDurationMs,
   ActivitySpark,
   buildLookups,
   buildShareData,
@@ -545,6 +546,16 @@ export function SchemaTimeline({
     return { moveCount, decisionCount, keeperCount, tracksTouched, times, momentum };
   }, [changes, moments, bounds.recording]);
 
+  // Hands-on time, not wall-clock. A set left open overnight must never read as
+  // "39 hr" of work — only stretches with recorded activity count.
+  const activeMs = useMemo(() => {
+    const stamps = [
+      ...changes.map((change) => change.changed_at_ms),
+      ...moments.map((moment) => moment.timeline_start_ms ?? moment.created_at_ms),
+    ];
+    return activeDurationMs(stamps, bounds.recording ? Date.now() : null);
+  }, [changes, moments, bounds.recording]);
+
   // An auto-written recap of the take — prose that ties the numbers together so
   // the session reads like a memory you can skim, not a table you decode.
   const sessionStory = useMemo<string[] | null>(() => {
@@ -582,13 +593,10 @@ export function SchemaTimeline({
       (m) => m.confidence === "keeper" || m.confidence === "final" || m.tags.includes("keeper"),
     ).length;
 
-    const durationMs = session?.started_at_ms
-      ? (session.ended_at_ms ?? Date.now()) - session.started_at_ms
-      : null;
     const project = session?.display_name ?? session?.project_name ?? null;
 
     sentences.push(
-      `${durationMs ? formatDuration(durationMs) : "A take"}${project ? ` on ${project}` : ""}.`,
+      `${activeMs > 0 ? `${formatDuration(activeMs)} of hands-on work` : "A take"}${project ? ` on ${project}` : ""}.`,
     );
     if (topTrack) {
       sentences.push(
@@ -614,7 +622,7 @@ export function SchemaTimeline({
     }
 
     return sentences;
-  }, [changes, moments, session]);
+  }, [changes, moments, session, activeMs]);
 
   function toggleGroup(key: string) {
     setExpandedGroups((prev) => {
@@ -629,12 +637,9 @@ export function SchemaTimeline({
   const takeTitle = formatTakeTitle(session, schema?.name ?? null);
   const rawTakeId = session?.name ?? session?.id ?? sessionId;
   const projectContext = session?.display_name ?? session?.project_name ?? null;
-  // Human duration for the header: start → end (or "now" while recording).
-  const durationLabel = session?.started_at_ms
-    ? formatDuration(
-        (session.ended_at_ms ?? Date.now()) - session.started_at_ms,
-      )
-    : null;
+  // Header duration: hands-on time only. No recorded moves yet → no number at
+  // all, rather than a wall-clock timer that keeps climbing while the set idles.
+  const durationLabel = activeMs > 0 ? `${formatDuration(activeMs)} active` : null;
 
   async function handleAddNote() {
     if (!sessionId || !selectedTrack) return;
@@ -741,8 +746,14 @@ export function SchemaTimeline({
           <span className="tl-bar__sub">
             {[
               projectContext,
+              session?.started_at_ms
+                ? new Date(session.started_at_ms).toLocaleDateString(undefined, {
+                    month: "short",
+                    day: "numeric",
+                    year: "numeric",
+                  })
+                : null,
               durationLabel,
-              "tracks down · time across",
             ]
               .filter(Boolean)
               .join(" · ")}

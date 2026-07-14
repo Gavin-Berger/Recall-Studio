@@ -1,13 +1,18 @@
 /* Schema timeline — the schema-driven experience: entity tree, change/moment
    stream, and a detail panel. Dark theme to match the rest of Recall Studio. */
 
-/* Full-height host for the timeline surface inside the app shell content cell. */
+/* Full-height host for the timeline surface inside the app shell content cell.
+   Scrolls vertically so tall sets (many track lanes + Track Memory) stay reachable
+   instead of being clipped at the viewport edge. */
 .schema-surface {
   height: calc(100vh - 28px);
   min-height: 0;
   display: flex;
   flex-direction: column;
   padding: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-bottom: 24px;
 }
 
 .schema-surface > .schema-timeline {

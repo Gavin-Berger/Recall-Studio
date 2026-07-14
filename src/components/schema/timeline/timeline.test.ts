@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { CreativeMoment, ParameterChange } from "../../../types";
 import {
+  activeDurationMs,
   buildLookups,
   buildShareData,
   buildShareDocument,
@@ -55,6 +56,39 @@ describe("formatDuration", () => {
     expect(formatDuration(90_000)).toBe("1 min");
     expect(formatDuration(3_600_000)).toBe("1 hr");
     expect(formatDuration(4_500_000)).toBe("1 hr 15 min");
+  });
+});
+
+describe("activeDurationMs", () => {
+  const MIN = 60_000;
+
+  it("returns 0 with no activity — an idle take accrues nothing", () => {
+    expect(activeDurationMs([])).toBe(0);
+    expect(activeDurationMs([], Date.now())).toBe(0);
+  });
+
+  it("counts one burst as its span plus the pad", () => {
+    // Moves at 0, 2, 5 minutes → 5 min span + 1 min pad.
+    expect(activeDurationMs([0 * MIN, 2 * MIN, 5 * MIN].map((t) => t + MIN))).toBe(6 * MIN);
+  });
+
+  it("splits on idle gaps instead of counting them", () => {
+    // Two bursts an hour apart: 3 min + pad and 0 min + pad — never 63 min.
+    const stamps = [MIN, 2 * MIN, 4 * MIN, 64 * MIN];
+    expect(activeDurationMs(stamps)).toBe(3 * MIN + MIN + MIN);
+  });
+
+  it("extends the live block to now only when recently active", () => {
+    const last = 10 * MIN;
+    const recentNow = last + 5 * MIN;
+    const staleNow = last + 60 * MIN;
+    // Recently active: block runs to "now". Idle: now is ignored.
+    expect(activeDurationMs([MIN, last], recentNow)).toBe(14 * MIN + MIN);
+    expect(activeDurationMs([MIN, last], staleNow)).toBe(9 * MIN + MIN);
+  });
+
+  it("counts an isolated move as the pad, not zero and not the wall clock", () => {
+    expect(activeDurationMs([5 * MIN])).toBe(MIN);
   });
 });
 

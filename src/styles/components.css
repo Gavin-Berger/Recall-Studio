@@ -1197,6 +1197,45 @@
   border-color: var(--brass);
 }
 
+/* Detected User Library roots — one click to pick the right one when a producer
+   keeps their library off the system drive. */
+.bridge-setup__candidates {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: -4px 0 10px;
+}
+
+.bridge-setup__candidate {
+  padding: 6px 10px;
+  border: 1px solid var(--line-soft, rgba(255, 255, 255, 0.08));
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+
+.bridge-setup__candidate:hover {
+  color: var(--paper);
+  border-color: rgba(255, 255, 255, 0.16);
+}
+
+.bridge-setup__candidate.is-on {
+  color: var(--paper-strong);
+  border-color: rgba(99, 130, 255, 0.55);
+  background: rgba(99, 130, 255, 0.12);
+}
+
+.bridge-setup__ok p {
+  margin: 0 0 6px;
+}
+
 .bridge-setup__btn {
   align-self: flex-start;
   padding: 10px 18px;
@@ -2692,3 +2731,899 @@
   100% { background-position: -120% 0; }
 }
 
+
+/* ── Versions surface — a project's version memory ──────────────────────────
+   The hero view for one song: a chronological rail of .als versions on the
+   left, and a "what changed / recorded activity / this version" detail pane
+   on the right. Dense and calm; badges over prose. */
+
+.versions {
+  width: 100%;
+  max-width: 1360px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-height: calc(100vh - 96px);
+}
+
+.versions__bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 14px 18px;
+  border: 1px solid rgba(255, 255, 255, 0.085);
+  border-radius: 8px;
+  background:
+    linear-gradient(135deg, rgba(99, 130, 255, 0.1), transparent 38%),
+    rgba(15, 18, 29, 0.92);
+}
+
+.versions__crumb {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-width: 0;
+}
+
+.versions__title {
+  min-width: 0;
+}
+
+.versions__title h1 {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 1.2rem;
+  color: var(--paper-strong);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.versions__subtitle {
+  display: block;
+  font-size: 0.72rem;
+  color: var(--faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.versions__folder {
+  font-family: var(--font-mono);
+}
+
+.versions__tools {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.versions__notice {
+  padding: 8px 14px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(20, 22, 31, 0.9);
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
+.versions__notice--error {
+  border-color: rgba(220, 90, 106, 0.4);
+  color: #e8a2ac;
+}
+
+.versions__empty {
+  padding: 48px 24px;
+  border: 1px dashed rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  text-align: center;
+  color: var(--muted);
+}
+
+.versions__empty strong {
+  display: block;
+  margin-bottom: 6px;
+  color: #c7cce0;
+  font-size: 0.95rem;
+}
+
+.versions__empty p {
+  margin: 0 auto 14px;
+  max-width: 420px;
+  font-size: 0.8rem;
+}
+
+.versions__body {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 300px minmax(0, 1fr);
+  gap: 14px;
+  align-items: start;
+  min-height: 0;
+}
+
+/* Version rail — newest at the top, a thin timeline spine through the nodes. */
+.version-rail {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  padding: 8px 6px;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 8px;
+  background: rgba(15, 18, 29, 0.85);
+  max-height: calc(100vh - 210px);
+  overflow-y: auto;
+}
+
+.version-rail::before {
+  content: "";
+  position: absolute;
+  top: 20px;
+  bottom: 20px;
+  left: 21px;
+  width: 1px;
+  background: rgba(255, 255, 255, 0.09);
+}
+
+.vr-item {
+  position: relative;
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr);
+  align-items: center;
+  gap: 2px;
+  padding: 8px 10px 8px 6px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background 120ms ease;
+}
+
+.vr-item:hover {
+  background: rgba(99, 130, 255, 0.06);
+}
+
+.vr-item.is-selected {
+  background: linear-gradient(90deg, rgba(99, 130, 255, 0.14), rgba(99, 130, 255, 0.03));
+  box-shadow: inset 2px 0 0 rgba(99, 130, 255, 0.7);
+}
+
+.vr-item__node {
+  position: relative;
+  justify-self: center;
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: var(--panel-3);
+  border: 1px solid rgba(255, 255, 255, 0.28);
+}
+
+.vr-item.is-selected .vr-item__node {
+  background: var(--brass);
+  border-color: var(--brass);
+  box-shadow: 0 0 8px rgba(99, 130, 255, 0.6);
+}
+
+.vr-item.is-live .vr-item__node {
+  background: var(--sage);
+  border-color: var(--sage);
+}
+
+.vr-item__body {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.vr-item__top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+
+.vr-item__name {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: #c7cce0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.vr-item.is-selected .vr-item__name {
+  color: var(--paper-strong);
+}
+
+.vr-item__meta {
+  font-size: 0.68rem;
+  font-family: var(--font-mono);
+  color: var(--faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.vr-item__latest {
+  color: var(--brass);
+}
+
+/* Status badges — Live / Recorded / On disk. */
+.v-badge {
+  flex-shrink: 0;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 0.6rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  color: var(--faint);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.v-badge--live {
+  color: #9fd8c8;
+  border-color: rgba(90, 180, 160, 0.4);
+  background: rgba(90, 180, 160, 0.12);
+}
+
+.v-badge--recorded {
+  color: #aebcf5;
+  border-color: rgba(99, 130, 255, 0.35);
+  background: rgba(99, 130, 255, 0.1);
+}
+
+/* Version detail — the story of the selected take. */
+.version-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+.vd-head {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 2px 4px 0;
+}
+
+.vd-head__id {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.vd-head__id h2 {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 1.25rem;
+  color: var(--paper-strong);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.vd-head__meta {
+  font-size: 0.74rem;
+  font-family: var(--font-mono);
+  color: var(--faint);
+}
+
+.vd-card {
+  padding: 14px 16px;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 8px;
+  background: rgba(15, 18, 29, 0.85);
+}
+
+.vd-card h3 {
+  margin: 0 0 10px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.vd-card--compare {
+  border-color: rgba(99, 130, 255, 0.22);
+  background:
+    linear-gradient(135deg, rgba(99, 130, 255, 0.06), transparent 45%),
+    rgba(15, 18, 29, 0.85);
+}
+
+.vd-card__vs {
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: 500;
+  color: var(--faint);
+}
+
+.vd-card__quiet {
+  margin: 0;
+  font-size: 0.8rem;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.vd-card__hint {
+  margin: 10px 0 0;
+  font-size: 0.72rem;
+  color: var(--faint);
+}
+
+.vd-card__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+/* What-changed diff list. */
+.vd-diff {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.vd-diff__item {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 0.82rem;
+  color: #c7cce0;
+}
+
+.vd-diff__item strong {
+  color: var(--paper-strong);
+  font-weight: 600;
+}
+
+.vd-diff__sign {
+  flex-shrink: 0;
+  width: 16px;
+  text-align: center;
+  font-family: var(--font-mono);
+  font-weight: 700;
+  border-radius: 4px;
+  font-size: 0.78rem;
+}
+
+.vd-diff__item--add .vd-diff__sign {
+  color: #9fd8c8;
+  background: rgba(90, 180, 160, 0.12);
+}
+
+.vd-diff__item--del .vd-diff__sign {
+  color: #e8a2ac;
+  background: rgba(220, 90, 106, 0.12);
+}
+
+/* Snapshot-missing state: which side of the compare lacks structure. */
+.vd-compare-missing__list {
+  margin: 10px 0 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.vd-compare-missing__list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.03);
+  font-size: 0.76rem;
+}
+
+.vd-compare-missing__name {
+  color: #c7cce0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.vd-compare-missing__state {
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  color: var(--faint);
+}
+
+.vd-compare-missing__list li.is-ok .vd-compare-missing__state {
+  color: #9fd8c8;
+}
+
+/* Recorded-activity stat row. */
+.vd-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 26px;
+}
+
+.vd-stat {
+  display: flex;
+  flex-direction: column;
+}
+
+.vd-stat strong {
+  font-family: var(--font-display);
+  font-size: 1.15rem;
+  color: var(--paper-strong);
+  line-height: 1.2;
+}
+
+.vd-stat span {
+  font-size: 0.68rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+
+/* File / take info. */
+.vd-file {
+  margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 32px;
+}
+
+.vd-file > div {
+  min-width: 0;
+}
+
+.vd-file dt {
+  font-size: 0.64rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--faint);
+  margin-bottom: 2px;
+}
+
+.vd-file dd {
+  margin: 0;
+  font-size: 0.8rem;
+  color: #c7cce0;
+}
+
+.vd-file__full {
+  flex-basis: 100%;
+}
+
+.vd-file__path {
+  font-family: var(--font-mono);
+  font-size: 0.76rem;
+}
+
+.vd-file__path--full {
+  display: block;
+  color: var(--faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Danger variant for the compact button set. */
+.px-btn--danger {
+  border-color: rgba(220, 90, 106, 0.3);
+  color: #e8a2ac;
+}
+
+.px-btn--danger:hover {
+  border-color: rgba(220, 90, 106, 0.55);
+  background: rgba(220, 90, 106, 0.1);
+}
+
+/* Chevron-as-button in the project row: same footprint as the old icon. */
+.px-chev-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.px-chev-btn:hover {
+  background: rgba(255, 255, 255, 0.07);
+  color: var(--paper);
+}
+
+/* ── Notes surface — the producer notebook ──────────────────────────────────
+   A list of note documents on the left, a calm document-style writing page on
+   the right. Everything autosaves as you type. */
+
+.notes {
+  width: 100%;
+  max-width: 1360px;
+  display: grid;
+  grid-template-columns: 264px minmax(0, 1fr);
+  gap: 14px;
+  align-items: start;
+  min-height: calc(100vh - 96px);
+}
+
+.notes__list {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 8px;
+  background: rgba(15, 18, 29, 0.85);
+  max-height: calc(100vh - 96px);
+  overflow: hidden;
+}
+
+.notes__list-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 12px 12px 10px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.notes__list-empty {
+  margin: 0;
+  padding: 16px 14px;
+  font-size: 0.78rem;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+.notes__items {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px;
+  overflow-y: auto;
+}
+
+.notes__item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 10px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background 120ms ease;
+}
+
+.notes__item:hover {
+  background: rgba(99, 130, 255, 0.06);
+}
+
+.notes__item.is-selected {
+  background: linear-gradient(90deg, rgba(99, 130, 255, 0.14), rgba(99, 130, 255, 0.03));
+  box-shadow: inset 2px 0 0 rgba(99, 130, 255, 0.7);
+}
+
+.notes__item-title {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: #c7cce0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.notes__item.is-selected .notes__item-title {
+  color: var(--paper-strong);
+}
+
+.notes__item-meta {
+  font-size: 0.68rem;
+  font-family: var(--font-mono);
+  color: var(--faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.notes__page {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+.notes__page-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 0 4px;
+}
+
+.notes__page-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.notes__save {
+  font-size: 0.68rem;
+  font-family: var(--font-mono);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+
+.notes__save.is-saved {
+  color: #9fd8c8;
+}
+
+.notes__error {
+  margin: 0;
+  padding: 8px 14px;
+  border: 1px solid rgba(220, 90, 106, 0.4);
+  border-radius: 8px;
+  background: rgba(20, 22, 31, 0.9);
+  font-size: 0.78rem;
+  color: #e8a2ac;
+}
+
+/* The writing sheet itself: one calm page, comfortable measure, no chrome. */
+.notes__sheet {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  max-width: 860px;
+  min-height: calc(100vh - 190px);
+  padding: 34px 44px 20px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.028), transparent 140px),
+    rgba(17, 20, 32, 0.92);
+  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.28);
+}
+
+.notes__title {
+  width: 100%;
+  padding: 0 0 12px;
+  border: none;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+  background: transparent;
+  color: var(--paper-strong);
+  font-family: var(--font-display);
+  font-size: 1.5rem;
+  font-weight: 700;
+}
+
+.notes__title:focus {
+  outline: none;
+  border-bottom-color: rgba(99, 130, 255, 0.5);
+}
+
+.notes__title::placeholder {
+  color: var(--faint);
+}
+
+.notes__body {
+  flex: 1;
+  width: 100%;
+  min-height: 40vh;
+  margin-top: 16px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--paper);
+  font-family: var(--font-body);
+  font-size: 0.95rem;
+  line-height: 1.75;
+  resize: none;
+}
+
+.notes__body:focus {
+  outline: none;
+}
+
+.notes__body::placeholder {
+  color: var(--faint);
+}
+
+.notes__foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 14px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(255, 255, 255, 0.05);
+  font-size: 0.68rem;
+  font-family: var(--font-mono);
+  color: var(--faint);
+}
+
+.notes__page--empty {
+  align-items: center;
+  justify-content: center;
+  min-height: calc(100vh - 190px);
+  border: 1px dashed rgba(255, 255, 255, 0.12);
+  border-radius: 10px;
+}
+
+.notes__blank {
+  text-align: center;
+  color: var(--muted);
+  padding: 24px;
+}
+
+.notes__blank strong {
+  display: block;
+  margin-bottom: 6px;
+  color: #c7cce0;
+  font-size: 0.95rem;
+}
+
+.notes__blank p {
+  margin: 0 auto 14px;
+  max-width: 380px;
+  font-size: 0.8rem;
+  line-height: 1.5;
+}
+
+/* ── Window sizing — keep every surface usable as the window opens, closes,
+   and resizes. Wide fixed grids stack or shed columns instead of overflowing. */
+
+/* Versions + notes: rail column tracks the window instead of a hard 300px. */
+.versions__body {
+  grid-template-columns: clamp(240px, 24vw, 300px) minmax(0, 1fr);
+}
+
+.notes {
+  grid-template-columns: clamp(220px, 22vw, 264px) minmax(0, 1fr);
+}
+
+.versions__bar,
+.project-explorer__bar {
+  flex-wrap: wrap;
+}
+
+@media (max-width: 1100px) {
+  .versions__body {
+    grid-template-columns: 1fr;
+  }
+
+  .version-rail {
+    max-height: 240px;
+  }
+
+  .versions {
+    min-height: auto;
+  }
+
+  .notes {
+    grid-template-columns: 1fr;
+    min-height: auto;
+  }
+
+  .notes__list {
+    max-height: 260px;
+  }
+
+  .notes__sheet {
+    max-width: none;
+    min-height: 55vh;
+    padding: 24px 26px 16px;
+  }
+}
+
+/* Project table: drop the Ableton column, then the Updated column, before the
+   name column gets crushed. */
+@media (max-width: 1020px) {
+  .project-explorer__head,
+  .px-row {
+    grid-template-columns: 34px minmax(0, 1fr) 70px 116px 124px;
+  }
+
+  .project-explorer__head .px-set,
+  .px-row .px-set {
+    display: none;
+  }
+}
+
+@media (max-width: 780px) {
+  .project-explorer__head,
+  .px-row {
+    grid-template-columns: 34px minmax(0, 1fr) 70px 124px;
+  }
+
+  .project-explorer__head .px-when,
+  .px-row .px-when {
+    display: none;
+  }
+
+  .project-manager__summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+/* Small windows: the sidebar becomes a top strip so content keeps full width. */
+@media (max-width: 860px) {
+  .recall-frame {
+    grid-template-columns: 1fr;
+  }
+
+  .recall-sidebar {
+    position: static;
+    height: auto;
+    flex-direction: row;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 12px;
+  }
+
+  .recall-sidebar::before {
+    display: none;
+  }
+
+  .recall-sidebar__brand {
+    padding: 0 10px 0 2px;
+    border-bottom: none;
+    border-right: 1px solid var(--line-soft, rgba(255, 255, 255, 0.08));
+  }
+
+  .recall-sidebar__nav {
+    flex-direction: row;
+    gap: 2px;
+    overflow-x: auto;
+  }
+
+  .recall-sidebar__item {
+    width: auto;
+    padding: 7px 10px;
+    white-space: nowrap;
+  }
+
+  .recall-sidebar__item.is-active::after {
+    display: none;
+  }
+
+  .recall-sidebar__item-hint {
+    display: none;
+  }
+
+  .recall-sidebar__status {
+    flex-shrink: 0;
+  }
+
+  .home-surface {
+    padding: 18px 12px;
+    min-height: 0;
+  }
+
+  .versions__bar {
+    align-items: flex-start;
+  }
+
+  .versions__tools {
+    flex-wrap: wrap;
+  }
+}

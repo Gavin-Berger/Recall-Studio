@@ -1,9 +1,11 @@
 import type { ReactNode } from "react";
 import { RecallMark } from "./RecallMark";
 
-// The milestone surfaces: project management, a recap for the selected capture,
-// the timeline workspace, and the producer reference.
-export type AppSurface = "projects" | "recap" | "timeline" | "glossary";
+// The milestone surfaces: project management, a project's version memory, a recap
+// for the selected capture, the timeline workspace, the producer notebook, and
+// the producer reference. "versions" is a drill-in under Projects, so it shares
+// the Projects nav item.
+export type AppSurface = "projects" | "versions" | "recap" | "timeline" | "notes" | "glossary";
 
 type NavItem = {
   id: AppSurface;
@@ -15,6 +17,7 @@ const NAV_ITEMS: NavItem[] = [
   { id: "projects", label: "Projects", hint: "Songs & versions" },
   { id: "recap", label: "Recap", hint: "Session summary" },
   { id: "timeline", label: "Timeline", hint: "Workspace" },
+  { id: "notes", label: "Notes", hint: "Producer notebook" },
   { id: "glossary", label: "Reference", hint: "Sound terms" },
 ];
 
@@ -23,8 +26,10 @@ type AppShellProps = {
   onChangeSurface: (surface: AppSurface) => void;
   connected: boolean;
   projects: ReactNode;
+  versions: ReactNode;
   recap: ReactNode;
   timeline: ReactNode;
+  notes: ReactNode;
   glossary: ReactNode;
 };
 
@@ -33,8 +38,10 @@ export function AppShell({
   onChangeSurface,
   connected,
   projects,
+  versions,
   recap,
   timeline,
+  notes,
   glossary,
 }: AppShellProps) {
   return (
@@ -56,19 +63,21 @@ export function AppShell({
           </div>
 
           <div className="recall-sidebar__nav">
-            {NAV_ITEMS.map((item) => (
-              <button
-                key={item.id}
-                type="button"
-                className={`recall-sidebar__item ${
-                  surface === item.id ? "is-active" : ""
-                }`}
-                onClick={() => onChangeSurface(item.id)}
-              >
-                <span className="recall-sidebar__item-label">{item.label}</span>
-                <span className="recall-sidebar__item-hint">{item.hint}</span>
-              </button>
-            ))}
+            {NAV_ITEMS.map((item) => {
+              const active =
+                surface === item.id || (item.id === "projects" && surface === "versions");
+              return (
+                <button
+                  key={item.id}
+                  type="button"
+                  className={`recall-sidebar__item ${active ? "is-active" : ""}`}
+                  onClick={() => onChangeSurface(item.id)}
+                >
+                  <span className="recall-sidebar__item-label">{item.label}</span>
+                  <span className="recall-sidebar__item-hint">{item.hint}</span>
+                </button>
+              );
+            })}
           </div>
 
           <div
@@ -84,8 +93,12 @@ export function AppShell({
         <div className="recall-frame__content">
           {surface === "projects" ? (
             <div className="home-surface">{projects}</div>
+          ) : surface === "versions" ? (
+            <div className="home-surface">{versions}</div>
           ) : surface === "recap" ? (
             <div className="home-surface">{recap}</div>
+          ) : surface === "notes" ? (
+            <div className="home-surface">{notes}</div>
           ) : surface === "glossary" ? (
             <div className="document-surface">{glossary}</div>
           ) : (

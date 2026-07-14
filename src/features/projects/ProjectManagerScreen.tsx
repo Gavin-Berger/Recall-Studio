@@ -8,6 +8,7 @@ import {
 import { RecallMark } from "../../components/RecallMark";
 import { BridgeSetup } from "../home/BridgeSetup";
 import { formatSessionDate, formatSessionDuration } from "../sessionFormat";
+import { RelinkDialog, type AlsFileChoice } from "./RelinkDialog";
 import type { ConnectionStatus, SavedProject, SavedSessionMetadata } from "../../types/recall";
 
 type ProjectManagerScreenProps = {
@@ -20,7 +21,7 @@ type ProjectManagerScreenProps = {
   onCreateProject: (displayName: string) => Promise<void>;
   onConnectFolder: (projectId?: string | null) => Promise<number>;
   onRescanFolder: (projectId: string) => Promise<number>;
-  onOpenProject: (projectId: string) => Promise<void>;
+  onOpenVersions: (projectId: string) => void;
   onStartCapture: (projectId?: string | null) => Promise<void>;
   onNewTake: (projectId?: string | null) => Promise<void>;
   onOpenTimeline: (sessionId: string) => void;
@@ -33,8 +34,6 @@ type ProjectManagerScreenProps = {
   onListProjectAlsFiles: (projectId: string) => Promise<AlsFileChoice[]>;
   onRelinkTake: (sessionId: string, alsPath: string) => Promise<void>;
 };
-
-export type AlsFileChoice = { name: string; path: string };
 
 type SortKey = "name" | "takes" | "updated";
 type SortDir = "asc" | "desc";
@@ -55,7 +54,7 @@ export function ProjectManagerScreen({
   onCreateProject,
   onConnectFolder,
   onRescanFolder,
-  onOpenProject,
+  onOpenVersions,
   onStartCapture,
   onNewTake,
   onOpenTimeline,
@@ -304,7 +303,7 @@ export function ProjectManagerScreen({
                 onToggle={() => toggleExpand(project.id)}
                 onConnectFolder={onConnectFolder}
                 onRescanFolder={onRescanFolder}
-                onOpenProject={onOpenProject}
+                onOpenVersions={onOpenVersions}
                 onNewTake={onNewTake}
                 onOpenTimeline={onOpenTimeline}
                 onOpenRecap={onOpenRecap}
@@ -461,7 +460,7 @@ function ProjectRow({
   onToggle,
   onConnectFolder,
   onRescanFolder,
-  onOpenProject,
+  onOpenVersions,
   onNewTake,
   onOpenTimeline,
   onOpenRecap,
@@ -483,7 +482,7 @@ function ProjectRow({
   onToggle: () => void;
   onConnectFolder: (projectId?: string | null) => Promise<number>;
   onRescanFolder: (projectId: string) => Promise<number>;
-  onOpenProject: (projectId: string) => Promise<void>;
+  onOpenVersions: (projectId: string) => void;
   onNewTake: (projectId?: string | null) => Promise<void>;
   onOpenTimeline: (sessionId: string) => void;
   onOpenRecap: (sessionId: string) => void;
@@ -513,24 +512,18 @@ function ProjectRow({
     void runAction("Archiving project...", () => onArchiveProject(project.id));
   }
 
+  // Clicking a project leads to its versions view — the version rail is the hero
+  // surface. Quick inline peeking at takes stays on the chevron / Space key.
   function handleRowClick(event: React.MouseEvent) {
-    if (!hasTakes) return;
     if ((event.target as HTMLElement).closest("button, input, .row-menu")) return;
-    onToggle();
-  }
-
-  // Double-click opens the project — resumes the take for the version open in
-  // Ableton (or the most recent) and jumps into its timeline.
-  function handleRowDoubleClick(event: React.MouseEvent) {
-    if ((event.target as HTMLElement).closest("button, input, .row-menu")) return;
-    void runAction("Opening project...", () => onOpenProject(project.id));
+    onOpenVersions(project.id);
   }
 
   function handleRowKey(event: React.KeyboardEvent) {
     if ((event.target as HTMLElement).closest("button, input, .row-menu")) return;
     if (event.key === "Enter") {
       event.preventDefault();
-      void runAction("Opening project...", () => onOpenProject(project.id));
+      onOpenVersions(project.id);
     } else if (event.key === " " && hasTakes) {
       event.preventDefault();
       onToggle();
@@ -545,10 +538,23 @@ function ProjectRow({
         tabIndex={0}
         aria-expanded={hasTakes ? expanded : undefined}
         onClick={handleRowClick}
-        onDoubleClick={handleRowDoubleClick}
         onKeyDown={handleRowKey}
       >
-        <span className="px-cell px-cell--chev">{hasTakes && <Chevron open={expanded} />}</span>
+        <span className="px-cell px-cell--chev">
+          {hasTakes && (
+            <button
+              type="button"
+              className="px-chev-btn"
+              aria-label={expanded ? "Collapse takes" : "Expand takes"}
+              onClick={(event) => {
+                event.stopPropagation();
+                onToggle();
+              }}
+            >
+              <Chevron open={expanded} />
+            </button>
+          )}
+        </span>
 
         <span className="px-cell px-name">
           <FolderIcon open={expanded && hasTakes} />
@@ -595,8 +601,8 @@ function ProjectRow({
             type="button"
             className="px-btn px-btn--primary"
             disabled={busy}
-            onClick={() => void runAction("Opening project...", () => onOpenProject(project.id))}
-            title="Open the version you have open in Ableton (or the most recent take)"
+            onClick={() => onOpenVersions(project.id)}
+            title="See this song's versions and what changed"
           >
             {recording ? "Open" : (
               <>
@@ -765,7 +771,9 @@ function TakeRow({
         )}
         {isScanned ? (
           <span className="px-take__meta">
-            Version on disk · not recorded yet
+            {formatSessionDate(session.started_at_ms)}
+            {" · "}
+            version on disk · not recorded yet
           </span>
         ) : (
           <span className="px-take__meta">
@@ -866,93 +874,6 @@ function TakeRow({
           onClose={() => setRelinkOpen(false)}
         />
       )}
-    </div>
-  );
-}
-
-// Picks which `.als` version a take's history should belong to. Used to move a
-// take onto a renamed file, or fix a wrong auto-link.
-function RelinkDialog({
-  projectId,
-  currentAlsPath,
-  busy,
-  onList,
-  onChoose,
-  onClose,
-}: {
-  projectId: string;
-  currentAlsPath: string | null;
-  busy: boolean;
-  onList: (projectId: string) => Promise<AlsFileChoice[]>;
-  onChoose: (alsPath: string) => Promise<void>;
-  onClose: () => void;
-}) {
-  const [files, setFiles] = useState<AlsFileChoice[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    let mounted = true;
-    onList(projectId)
-      .then((result) => {
-        if (mounted) setFiles(result);
-      })
-      .catch((listError) => {
-        if (mounted) setError(String(listError));
-      });
-    return () => {
-      mounted = false;
-    };
-  }, [projectId, onList]);
-
-  useEffect(() => {
-    function onKey(event: KeyboardEvent) {
-      if (event.key === "Escape") onClose();
-    }
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, [onClose]);
-
-  return (
-    <div className="relink-overlay" role="dialog" aria-modal="true" onClick={onClose}>
-      <div className="relink-dialog" onClick={(event) => event.stopPropagation()}>
-        <div className="relink-dialog__head">
-          <strong>Relink this take to a file</strong>
-          <p>Choose the version this take's history belongs to.</p>
-        </div>
-        {error ? (
-          <p className="relink-dialog__empty">{error}</p>
-        ) : files === null ? (
-          <p className="relink-dialog__empty">Reading folder…</p>
-        ) : files.length === 0 ? (
-          <p className="relink-dialog__empty">No .als files found in this project's folder.</p>
-        ) : (
-          <div className="relink-dialog__list">
-            {files.map((file) => {
-              const current = file.path === currentAlsPath;
-              return (
-                <button
-                  key={file.path}
-                  type="button"
-                  className={`relink-dialog__file ${current ? "is-current" : ""}`}
-                  disabled={busy || current}
-                  onClick={async () => {
-                    await onChoose(file.path);
-                    onClose();
-                  }}
-                >
-                  <span className="relink-dialog__file-name">{file.name}</span>
-                  {current && <span className="relink-dialog__current">current</span>}
-                </button>
-              );
-            })}
-          </div>
-        )}
-        <div className="relink-dialog__foot">
-          <button type="button" className="px-btn" onClick={onClose}>
-            Cancel
-          </button>
-        </div>
-      </div>
     </div>
   );
 }

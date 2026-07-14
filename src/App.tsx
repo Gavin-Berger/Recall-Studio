@@ -7,7 +7,13 @@ import { AppShell } from "./components/AppShell";
 import type { AppSurface } from "./components/AppShell";
 import { ProductionCheatSheet } from "./components/ProductionCheatSheet";
 import { SchemaTimeline } from "./components/schema/SchemaTimeline";
-import { ProjectManagerScreen, SessionRecapScreen, StartupScreen } from "./features";
+import {
+  NotesScreen,
+  ProjectManagerScreen,
+  ProjectVersionsScreen,
+  SessionRecapScreen,
+  StartupScreen,
+} from "./features";
 import type { ConnectionStatus, SavedProject, SavedSessionMetadata, SessionStatus } from "./types";
 
 const BACKEND_CONNECTION_COMMAND = "get_connection_status";
@@ -52,6 +58,9 @@ function App() {
   const [savedSessions, setSavedSessions] = useState<SavedSessionMetadata[]>([]);
   const [savedProjects, setSavedProjects] = useState<SavedProject[]>([]);
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
+  // Which project the versions surface is showing. The library poll keeps the
+  // project object itself fresh, so new .als versions appear while you look.
+  const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
   const [libraryReady, setLibraryReady] = useState(false);
   const [enteredStudio, setEnteredStudio] = useState(false);
   const [producerName, setProducerName] = useState(loadProducerName);
@@ -69,6 +78,10 @@ function App() {
   const unassignedSessions = useMemo(
     () => savedSessions.filter((session) => !session.project_id),
     [savedSessions],
+  );
+  const selectedProject = useMemo(
+    () => savedProjects.find((project) => project.id === selectedProjectId) ?? null,
+    [savedProjects, selectedProjectId],
   );
   const totalMoments = useMemo(
     () => savedSessions.reduce((total, session) => total + session.creative_event_count, 0),
@@ -157,8 +170,14 @@ function App() {
     setSurface("recap");
   }
 
-  // Open a project: resume the take for the version open in Ableton (or the most
-  // recent), then jump into its timeline. The "double-click takes me to v8" path.
+  // Drill into a project's version memory — the hero surface for a song.
+  function handleOpenVersions(projectId: string) {
+    setSelectedProjectId(projectId);
+    setSurface("versions");
+  }
+
+  // Open a project for work: resume the take for the version open in Ableton (or
+  // the most recent), then jump into its timeline. The "take me to v8" path.
   async function handleOpenProject(projectId: string) {
     try {
       const status = await invoke<SessionStatus>("open_take_for_open_file", {
@@ -317,7 +336,7 @@ function App() {
           onCreateProject={handleCreateProject}
           onConnectFolder={handleConnectFolder}
           onRescanFolder={handleRescanFolder}
-          onOpenProject={handleOpenProject}
+          onOpenVersions={handleOpenVersions}
           onStartCapture={handleStartCapture}
           onNewTake={handleNewTake}
           onOpenTimeline={handleOpenTimeline}
@@ -326,6 +345,21 @@ function App() {
           onArchiveProject={handleArchiveProject}
           onRenameCapture={handleRenameCapture}
           onMoveCapture={handleMoveCapture}
+          onDeleteCapture={handleDeleteCapture}
+          onListProjectAlsFiles={handleListProjectAlsFiles}
+          onRelinkTake={handleRelinkTake}
+        />
+      }
+      versions={
+        <ProjectVersionsScreen
+          project={selectedProject}
+          connection={connection}
+          onBack={() => setSurface("projects")}
+          onOpenProject={handleOpenProject}
+          onRescanFolder={handleRescanFolder}
+          onConnectFolder={handleConnectFolder}
+          onOpenTimeline={handleOpenTimeline}
+          onOpenRecap={handleOpenRecap}
           onDeleteCapture={handleDeleteCapture}
           onListProjectAlsFiles={handleListProjectAlsFiles}
           onRelinkTake={handleRelinkTake}
@@ -340,6 +374,7 @@ function App() {
         />
       }
       timeline={<SchemaTimeline sessionId={effectiveSessionId} session={currentSession} />}
+      notes={<NotesScreen />}
       glossary={<ProductionCheatSheet />}
     />
   );

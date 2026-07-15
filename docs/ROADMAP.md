@@ -196,17 +196,53 @@ genuinely useful."
 
 In order — items 1–4 exist to make item 5 and the beta *legible*:
 
-- [ ] 1. File logging via `tauri-plugin-log`; convert `eprintln!`s (~½ day)
-- [ ] 2. Diagnostics panel rendering `get_bridge_metrics` (~½ day)
-- [ ] 3. `parking_lot::Mutex` in `lib.rs` + startup error screen for DB failure (~½ day)
-- [ ] 4. React error boundary in `AppShell.tsx` (~1 hr)
-- [ ] 5. Deploy bridge 0.17.0 live; real-project test with instruments on, then a marathon session alongside `stress-sender.mjs`
-- [ ] 6. Fix what #5 surfaces; measure timeline render, window only if slow
-- [ ] 7. Two-week dogfood while standing up GitHub Actions + version bump discipline
-- [ ] 8. Build Sound Story (SPEC §F4) during the dogfood window; validate it on 2+ of your own tracks
-- [ ] 9. First-run scan flow (PRD §7.3) — the cold-start answer; reuses `rescan_project_takes`
-- [ ] 10. Land the DESIGN.md scales in `tokens.css`; retire `--faint` from small text (~1 hr)
-- [ ] 11. Clean-machine installer test → quickstart → Notes → SQLite → invite first two friends
+**Reordered 2026-07-15 by `/plan-eng-review`, against measured evidence.** The old order
+built the diagnostics panel (item 2) *before* loss detection existed — the panel renders
+`get_bridge_metrics`, which counts only userspace drops and would have displayed
+**"0 dropped" during 80% packet loss**. Fix the sensor before building the dial.
+
+**The measurement that reordered this** (real app, corrected harness, rows counted in SQLite):
+2,000 `Critical` events, OS confirmed 2,000/2,000 sends both runs — **burst ~80k/s → 407
+persisted (80% lost); paced ~500/s → 2,000 persisted (0% lost)**. Same packets, same code;
+rate is the only variable. The queue is 4,096 and only 2,000 were sent, so it never filled
+and `enqueue_event` never blocked: the loss is **upstream of the queue, at the kernel socket
+buffer**, because the recv thread does a JSON parse per packet inline. Ableton never emits at
+burst rate — **the deep snapshot on load (SPEC §F1) is the only real burst**, which is why
+item 9 exists.
+
+- [ ] 1. Corrected stress harness: count in the send callback, drain before close, assert
+      `sent == persisted` and zero sequence gaps, exit non-zero on loss (~½ day)
+      *(the old one counted enqueues, closed mid-flush, and never sent `clip_created` — which
+      is how 29% loss hid inside the test PRD §8 cites as proof)*
+- [ ] 2. `socket2` + `SO_RCVBUF` sized for the snapshot burst, verified with `getsockopt`
+      (Windows silently clamps); lean recv loop (parse off the recv thread); remove the
+      blocking `sender.send` — drop-and-count instead (~1 day)
+- [ ] 3. Sequence-gap detection **per `device_id`** → metrics. The only loss measurement that
+      cannot lie. The bridge already stamps it and the app ignores it (~½ day)
+- [ ] 4. SQLite: stop opening a connection per batch; make `synchronous = NORMAL` actually
+      apply (it's per-connection and currently resets to `FULL` — an fsync per batch); add
+      `busy_timeout` (~2 hrs)
+- [ ] 5. Count or fix the `session_id.is_none()` silent discard — currently uncounted, and
+      gap detection would blame the transport for it (~2 hrs)
+- [ ] 6. File logging via `tauri-plugin-log`; convert `eprintln!`s (~½ day)
+- [ ] 7. Diagnostics panel rendering `get_bridge_metrics` **+ real gap counts** (~½ day)
+- [ ] 8. Crash-proofing: `parking_lot::Mutex` in `lib.rs` (51 sites, not ~40) + startup error
+      screen; recv-thread `catch_unwind` + supervisor + counted errors for the 14 hot-path
+      unwraps (`parking_lot` does **not** cover those); handle bind failure instead of
+      `.expect` on `UdpSocket::bind` (~1 day)
+- [ ] 9. React error boundary in `AppShell.tsx` (~1 hr)
+- [ ] 10. Deploy bridge **0.17.0 alone**; real-project test with instruments on, then a
+      marathon session alongside the harness. **Validate it by itself before pacing lands** —
+      otherwise two unvalidated bridge changes ship together and a glitch can't be attributed
+- [ ] 11. Bridge-side snapshot pacing (reuse the 0.17.0 time-budgeted `Task` pattern), then its
+      own live-validation cycle. Blocked by #10
+- [ ] 12. Fix what #10/#11 surface; measure timeline render, window only if slow
+- [ ] 13. Two-week dogfood while standing up GitHub Actions + version bump discipline
+      (wire the harness from #1 into CI — it's what keeps #2–#5 from regressing)
+- [ ] 14. Build Sound Story (SPEC §F4) during the dogfood window; validate it on 2+ of your own tracks
+- [ ] 15. First-run scan flow (PRD §7.3) — the cold-start answer; reuses `rescan_project_takes`
+- [ ] 16. Land the DESIGN.md scales in `tokens.css`; retire `--faint` from small text (~1 hr)
+- [ ] 17. Clean-machine installer test → quickstart → Notes → SQLite → invite first two friends
 
 ---
 

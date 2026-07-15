@@ -11,6 +11,7 @@ use socket2::{Domain, Protocol, Socket, Type};
 use std::{
     collections::HashMap,
     net::{SocketAddr, UdpSocket},
+    panic::{catch_unwind, AssertUnwindSafe},
     sync::{
         mpsc::{sync_channel, SyncSender, TrySendError},
         Arc, Mutex,
@@ -913,91 +914,164 @@ pub fn start_udp_listener(
             match socket.recv_from(&mut buffer) {
                 Ok((size, addr)) => {
                     metrics.incr_packets_received();
-                    let bytes = &buffer[..size];
 
-                    if VERBOSE_UDP_LOGGING {
-                        println!("================ UDP PACKET RECEIVED ================");
-                        println!("UDP from: {}", addr);
-                        println!("UDP bytes length: {}", size);
-                    }
+                    // Isolate every packet. A panic in here — a poisoned lock, a
+                    // shape we never anticipated from some plugin — would
+                    // otherwise kill this thread, and a dead receive thread is
+                    // the worst failure this app has: the window stays open, the
+                    // UI stays responsive, and capture is silently over until
+                    // restart. The producer finishes a four-hour session and
+                    // finds nothing recorded, with no error anywhere.
+                    //
+                    // AssertUnwindSafe is honest here rather than a workaround:
+                    // the shared state behind these Arcs is either atomic
+                    // (metrics) or Mutex-guarded, and a panic mid-packet can at
+                    // worst poison a lock — which is the thing we are catching.
+                    // Losing one packet's worth of work beats losing the session.
+                    let outcome = catch_unwind(AssertUnwindSafe(|| {
+                        process_packet(
+                            &buffer[..size],
+                            addr,
+                            &mut sequence_tracker,
+                            &state,
+                            &session,
+                            &sender,
+                            &metrics,
+                        )
+                    }));
 
-                    let message = match extract_json_object(bytes) {
-                        Ok(message) => message,
-                        Err(error) => {
-                            metrics.incr_malformed();
-                            metrics.set_last_error(error.clone());
-                            eprintln!("FAILED TO EXTRACT JSON FROM UDP MESSAGE -> {}", error);
-                            continue;
-                        }
-                    };
-
-                    let raw_json = match serde_json::from_str::<Value>(&message) {
-                        Ok(value) => value,
-                        Err(error) => {
-                            metrics.incr_malformed();
-                            metrics.set_last_error(format!("json parse: {}", error));
-                            eprintln!("FAILED TO PARSE UDP MESSAGE AS JSON -> {}", error);
-                            continue;
-                        }
-                    };
-
-                    // Sequence-gap check runs on the RAW json, before
-                    // normalize_udp_json flattens `payload` into a JSON string —
-                    // after that, payload._bridge is unreachable without
-                    // re-parsing. Runs on every packet that carries a sequence,
-                    // heartbeats included (the bridge stamps them through the
-                    // same emit path), and before any early `continue` below.
-                    sequence_tracker.observe(&raw_json, &metrics);
-
-                    let normalized_json = match normalize_udp_json(raw_json) {
-                        Ok(value) => value,
-                        Err(error) => {
-                            metrics.incr_malformed();
-                            metrics.set_last_error(error.clone());
-                            eprintln!("FAILED TO NORMALIZE UDP JSON -> {}", error);
-                            continue;
-                        }
-                    };
-                    log_events(&normalized_json);
-                    // Heartbeats are health-only: update connection state and
-                    // stop here. They are never queued, persisted, or emitted.
-                    update_connection_if_heartbeat(&normalized_json, &state);
-                    // Track the open `.als` so opening a project can resume the take
-                    // for the live version. The bridge stamps project_path on every
-                    // heartbeat, so do this before heartbeats are dropped below.
-                    update_open_file(&normalized_json, &state);
-                    let is_heartbeat = normalized_json.get("event_type").and_then(Value::as_str)
-                        == Some("heartbeat");
-                    if is_heartbeat {
-                        continue;
-                    }
-
-                    match serde_json::from_value::<RecallEvent>(normalized_json) {
-                        Ok(mut event) => {
-                            // No active session means storage will discard this
-                            // row anyway — counted above, so don't spend queue
-                            // slots and a batch insert on an event that cannot
-                            // land. storage.rs keeps its own guard as a backstop.
-                            if assign_session_if_active(&mut event, &session, &metrics) {
-                                enqueue_event(&sender, event, &metrics);
-                            }
-                        }
-                        Err(error) => {
-                            metrics.incr_malformed();
-                            eprintln!(
-                                "FAILED TO PARSE NORMALIZED JSON AS RecallEvent -> {}",
-                                error
-                            );
-                        }
+                    if outcome.is_err() {
+                        metrics.incr_panics_recovered();
+                        metrics.set_last_error(
+                            "panicked while processing a packet — skipped it and kept capturing",
+                        );
+                        eprintln!(
+                            "Recall Studio: PANIC while processing a UDP packet. Skipped it; \
+                             capture continues. This should never happen — please report it."
+                        );
                     }
                 }
                 Err(error) => {
-                    metrics.set_last_error(format!("recv: {}", error));
-                    eprintln!("UDP listener error: {}", error);
+                    // WSAEMSGSIZE (Windows 10040) / EMSGSIZE: the datagram was
+                    // bigger than RECV_BUFFER_BYTES.
+                    //
+                    // Windows does NOT truncate — it rejects the whole datagram
+                    // and returns an error, so this lands here rather than in the
+                    // Ok branch. That matters, because until now this branch
+                    // counted NOTHING: incr_packets_received lives in the Ok arm,
+                    // incr_malformed never fired, and set_last_error is a single
+                    // overwritten slot. An oversized packet vanished from every
+                    // counter in the app.
+                    //
+                    // In practice the bridge caps events at MAX_EVENT_BYTES
+                    // (8192) and drops anything larger itself, so a legal packet
+                    // never reaches this path. It is here for the day that cap
+                    // fails — and on that day the loss should be visible, not
+                    // silent.
+                    let oversized = error.raw_os_error() == Some(10040) // WSAEMSGSIZE
+                        || error.kind() == std::io::ErrorKind::InvalidInput;
+
+                    if oversized {
+                        metrics.incr_oversized();
+                        metrics.set_last_error(format!(
+                            "a packet exceeded the {}-byte receive buffer and was rejected whole by the OS ({}). The bridge should have capped it at 8192 bytes.",
+                            RECV_BUFFER_BYTES, error
+                        ));
+                        eprintln!(
+                            "Recall Studio: OVERSIZED packet rejected (> {} bytes) -> {}",
+                            RECV_BUFFER_BYTES, error
+                        );
+                    } else {
+                        metrics.set_last_error(format!("recv: {}", error));
+                        eprintln!("UDP listener error: {}", error);
+                    }
                 }
             }
         }
     });
+}
+
+// Everything done with one datagram. Split out of the receive loop so it can be
+// wrapped in catch_unwind — a panic here costs one packet, not the session.
+fn process_packet(
+    bytes: &[u8],
+    addr: SocketAddr,
+    sequence_tracker: &mut SequenceTracker,
+    state: &Arc<Mutex<ConnectionState>>,
+    session: &Arc<Mutex<SessionState>>,
+    sender: &SyncSender<RecallEvent>,
+    metrics: &Arc<BridgeMetrics>,
+) {
+    if VERBOSE_UDP_LOGGING {
+        println!("================ UDP PACKET RECEIVED ================");
+        println!("UDP from: {}", addr);
+        println!("UDP bytes length: {}", bytes.len());
+    }
+
+    let message = match extract_json_object(bytes) {
+        Ok(message) => message,
+        Err(error) => {
+            metrics.incr_malformed();
+            metrics.set_last_error(error.clone());
+            eprintln!("FAILED TO EXTRACT JSON FROM UDP MESSAGE -> {}", error);
+            return;
+        }
+    };
+
+    let raw_json = match serde_json::from_str::<Value>(&message) {
+        Ok(value) => value,
+        Err(error) => {
+            metrics.incr_malformed();
+            metrics.set_last_error(format!("json parse: {}", error));
+            eprintln!("FAILED TO PARSE UDP MESSAGE AS JSON -> {}", error);
+            return;
+        }
+    };
+
+    // Sequence-gap check runs on the RAW json, before normalize_udp_json flattens
+    // `payload` into a JSON string — after that, payload._bridge is unreachable
+    // without re-parsing. Runs on every packet that carries a sequence,
+    // heartbeats included (the bridge stamps them through the same emit path),
+    // and before any early return below.
+    sequence_tracker.observe(&raw_json, metrics);
+
+    let normalized_json = match normalize_udp_json(raw_json) {
+        Ok(value) => value,
+        Err(error) => {
+            metrics.incr_malformed();
+            metrics.set_last_error(error.clone());
+            eprintln!("FAILED TO NORMALIZE UDP JSON -> {}", error);
+            return;
+        }
+    };
+    log_events(&normalized_json);
+    // Heartbeats are health-only: update connection state and stop here. They are
+    // never queued, persisted, or emitted.
+    update_connection_if_heartbeat(&normalized_json, state);
+    // Track the open `.als` so opening a project can resume the take for the live
+    // version. The bridge stamps project_path on every heartbeat, so do this
+    // before heartbeats are dropped below.
+    update_open_file(&normalized_json, state);
+    let is_heartbeat =
+        normalized_json.get("event_type").and_then(Value::as_str) == Some("heartbeat");
+    if is_heartbeat {
+        return;
+    }
+
+    match serde_json::from_value::<RecallEvent>(normalized_json) {
+        Ok(mut event) => {
+            // No active session means storage will discard this row anyway —
+            // counted inside, so don't spend queue slots and a batch insert on an
+            // event that cannot land. storage.rs keeps its own guard as a backstop.
+            if assign_session_if_active(&mut event, session, metrics) {
+                enqueue_event(sender, event, metrics);
+            }
+        }
+        Err(error) => {
+            metrics.incr_malformed();
+            eprintln!("FAILED TO PARSE NORMALIZED JSON AS RecallEvent -> {}", error);
+        }
+    }
 }
 
 pub fn get_status(state: Arc<Mutex<ConnectionState>>) -> ConnectionStatus {

@@ -49,6 +49,17 @@ pub struct BridgeMetrics {
     // persisted. Counted now so gap detection doesn't blame the transport for
     // something the session lifecycle did.
     pub session_discarded: AtomicU64,
+
+    // Packets whose processing panicked and was caught. Should always be 0; if it
+    // ever isn't, capture survived something it should never have met, and the
+    // packet that did it is worth chasing.
+    pub panics_recovered: AtomicU64,
+
+    // Datagrams larger than the receive buffer. Windows rejects these whole
+    // (WSAEMSGSIZE) rather than truncating, so they arrive as a recv error and
+    // never reach the Ok path — which is why they previously incremented no
+    // counter whatsoever, not even packets_received.
+    pub oversized_packets: AtomicU64,
 }
 
 impl BridgeMetrics {
@@ -79,6 +90,14 @@ impl BridgeMetrics {
 
     pub fn incr_session_discarded(&self) {
         self.session_discarded.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn incr_panics_recovered(&self) {
+        self.panics_recovered.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn incr_oversized(&self) {
+        self.oversized_packets.fetch_add(1, Ordering::Relaxed);
     }
 
     pub fn on_enqueue(&self) {
@@ -125,6 +144,8 @@ impl BridgeMetrics {
             protected_dropped: self.protected_dropped.load(Ordering::Relaxed),
             sequence_gaps: self.sequence_gaps.load(Ordering::Relaxed),
             session_discarded: self.session_discarded.load(Ordering::Relaxed),
+            panics_recovered: self.panics_recovered.load(Ordering::Relaxed),
+            oversized_packets: self.oversized_packets.load(Ordering::Relaxed),
         }
     }
 }
@@ -143,4 +164,6 @@ pub struct BridgeMetricsSnapshot {
     pub protected_dropped: u64,
     pub sequence_gaps: u64,
     pub session_discarded: u64,
+    pub panics_recovered: u64,
+    pub oversized_packets: u64,
 }

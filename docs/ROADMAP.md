@@ -221,19 +221,19 @@ item 9 exists.
       kernel socket buffer is now *measured*, not inferred — that's what #2 targets.
       *Known limit: paced mode caps ~65/s (Windows `setTimeout` granularity ~15ms); use
       `--burst` for overload.*
-- [ ] 2. `socket2` + `SO_RCVBUF` sized for the snapshot burst, verified with `getsockopt`
+- [x] 2. ~~`socket2` + `SO_RCVBUF`~~ **DONE** (`8a6e686`, `2e29bd9`). 8MB requested, 8MB applied (Windows did not clamp). Recv loop never blocks. **burst 2,000: 407 -> 2,000 persisted; burst 20,000: 2,724 -> 20,000, nothing shed.** Buffer absorbs ~28,000 packets, was 238.
       (Windows silently clamps); lean recv loop (parse off the recv thread); remove the
       blocking `sender.send` — drop-and-count instead (~1 day)
-- [ ] 3. Sequence-gap detection **per `device_id`** → metrics. The only loss measurement that
+- [x] 3. ~~Sequence-gap detection~~ **DONE** (`a6bd925`). Cross-validated: app and harness independently agree (0 gaps at 20k; ~71k at 100k). The only loss measurement that
       cannot lie. The bridge already stamps it and the app ignores it (~½ day)
-- [ ] 4. SQLite: stop opening a connection per batch; make `synchronous = NORMAL` actually
+- [x] 4. ~~SQLite pragmas~~ **DONE** (`a6bd925`). `synchronous`/`busy_timeout` now set in `open_connection`, the only place that runs per connection. Note the per-batch `Connection::open` remains: measured irrelevant to burst loss (downstream of a queue that never fills). Was: make `synchronous = NORMAL` actually
       apply (it's per-connection and currently resets to `FULL` — an fsync per batch); add
       `busy_timeout` (~2 hrs)
-- [ ] 5. Count or fix the `session_id.is_none()` silent discard — currently uncounted, and
+- [x] 5. ~~`session_id.is_none()` silent discard~~ **DONE** (`a6bd925`). Counted at assignment and no longer queued. Was: currently uncounted, and
       gap detection would blame the transport for it (~2 hrs)
 - [ ] 6. File logging via `tauri-plugin-log`; convert `eprintln!`s (~½ day)
 - [ ] 7. Diagnostics panel rendering `get_bridge_metrics` **+ real gap counts** (~½ day)
-- [ ] 8. Crash-proofing: `parking_lot::Mutex` in `lib.rs` (51 sites, not ~40) + startup error
+- [ ] 8. Crash-proofing: `parking_lot::Mutex` in `lib.rs` (51 sites, not ~40) + startup error screen. **Partly done** (`19a61e0`, `8a6e686`): per-packet `catch_unwind` means the recv thread cannot die from a packet; bind failure reports instead of panicking. **Correction to the eng review:** the "14 hot-path unwraps that parking_lot won't fix" was wrong — that count included the test module. The real non-test panics are ~6 and almost all `lock().expect()`, which parking_lot *does* fix. `lib.rs` still needs the swap. Original text:
       screen; recv-thread `catch_unwind` + supervisor + counted errors for the 14 hot-path
       unwraps (`parking_lot` does **not** cover those); handle bind failure instead of
       `.expect` on `UdpSocket::bind` (~1 day)

@@ -726,9 +726,29 @@ fn bind_listener_socket(metrics: &Arc<BridgeMetrics>) -> Result<UdpSocket, Strin
     Ok(socket.into())
 }
 
-// Enqueue policy implementing graceful overload. Critical/important events block
-// briefly until the worker makes room (rare; guarantees no creative data loss),
-// while coalescible high-frequency telemetry is dropped when the queue is full.
+// Enqueue policy implementing graceful overload. NEVER blocks: this runs on the
+// only thread reading the socket, so blocking here stops the kernel buffer being
+// drained and destroys packets we have not even looked at yet.
+//
+// WHY THIS NO LONGER BLOCKS (measured 2026-07-15)
+// The previous version blocked on `sender.send` for Critical/Important events,
+// commented "guarantees no creative data loss". It guaranteed the opposite. The
+// call site is the receive loop, so blocking to protect ONE event stops draining
+// the socket, the kernel buffer fills, and the OS then discards whatever arrives
+// next — indiscriminately, FIFO, priority-blind, and uncounted, because those
+// packets die before `classify_priority` ever sees them. It traded a counted
+// drop of one low-priority event for an uncounted drop of arbitrary ones.
+//
+// Proof, at burst 100,000 with the 8MB buffer from E2: loss did not begin at the
+// buffer boundary (~28,000). It began at 7,904 — roughly the 4,096 queue filling
+// plus what the worker had drained — and then ran in ONE unbroken block to the
+// end. That is the signature of a stalled reader, not an overflowing buffer. The
+// blocking branch had never executed under test before (the documented burst of
+// 500 cannot fill a 4,096 queue), so this pathology shipped unmeasured.
+//
+// Dropping and counting is strictly better: the loss is bounded, visible in
+// metrics, and the priority scheme still decides WHICH event is sacrificed —
+// which is only possible while we are still reading the socket.
 fn enqueue_event(
     sender: &SyncSender<RecallEvent>,
     event: RecallEvent,
@@ -739,19 +759,21 @@ fn enqueue_event(
     match sender.try_send(event) {
         Ok(()) => metrics.on_enqueue(),
         Err(TrySendError::Full(event)) => {
+            // Queue full. Drop and count — never block the receive loop.
+            metrics.incr_dropped();
             if priority == EventPriority::Coalescible {
-                metrics.incr_dropped();
                 if VERBOSE_UDP_LOGGING {
                     println!("QUEUE FULL -> dropped coalescible {}", event.event_type);
                 }
             } else {
-                // Block until the worker drains room. Critical creative actions
-                // are rare, so the brief backpressure here cannot cause a storm.
-                if sender.send(event).is_ok() {
-                    metrics.on_enqueue();
-                } else {
-                    metrics.incr_dropped();
-                }
+                // A protected event was lost. This is the bar PRD §8 cares about,
+                // so make it loud rather than silent: if this fires in the field,
+                // the worker cannot keep up and the queue or the drain needs work.
+                metrics.incr_protected_dropped();
+                metrics.set_last_error(format!(
+                    "queue full — dropped protected event {} ({:?}). The persistence worker is not draining fast enough.",
+                    event.event_type, priority
+                ));
             }
         }
         Err(TrySendError::Disconnected(_)) => {

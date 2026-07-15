@@ -27,6 +27,28 @@ pub struct BridgeMetrics {
     pub queue_depth: AtomicI64,
     pub last_event_ms: AtomicU64,
     pub last_error: Mutex<Option<String>>,
+
+    // Of dropped_packets, how many were Critical or Important. This is the bar
+    // PRD §8 actually cares about — Coalescible shedding is the design working,
+    // protected loss is the design failing, and one number cannot say both.
+    pub protected_dropped: AtomicU64,
+
+    // Events the bridge sent that never reached us, counted from gaps in the
+    // per-device sequence the bridge stamps on every event.
+    //
+    // This is the ONLY counter that can see loss upstream of our code. Everything
+    // above counts what we received; if the kernel discards a packet because the
+    // socket buffer overflowed, or the sender never got it out, no counter here
+    // will ever fire — the event dies before `packets_received` increments. That
+    // blind spot is exactly why the diagnostics panel would have reported
+    // "0 dropped" during a measured 80% loss. Sequence gaps close it.
+    pub sequence_gaps: AtomicU64,
+
+    // Events dropped because no capture session was active. Previously these
+    // vanished silently: not persisted, not counted as dropped, not counted as
+    // persisted. Counted now so gap detection doesn't blame the transport for
+    // something the session lifecycle did.
+    pub session_discarded: AtomicU64,
 }
 
 impl BridgeMetrics {
@@ -44,6 +66,19 @@ impl BridgeMetrics {
 
     pub fn incr_dropped(&self) {
         self.dropped_packets.fetch_add(1, Ordering::Relaxed);
+    }
+
+    // Call alongside incr_dropped when the dropped event was Critical/Important.
+    pub fn incr_protected_dropped(&self) {
+        self.protected_dropped.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn add_sequence_gaps(&self, n: u64) {
+        self.sequence_gaps.fetch_add(n, Ordering::Relaxed);
+    }
+
+    pub fn incr_session_discarded(&self) {
+        self.session_discarded.fetch_add(1, Ordering::Relaxed);
     }
 
     pub fn on_enqueue(&self) {
@@ -87,6 +122,9 @@ impl BridgeMetrics {
                 Some(last_event_ms)
             },
             last_error: self.last_error.lock().ok().and_then(|slot| slot.clone()),
+            protected_dropped: self.protected_dropped.load(Ordering::Relaxed),
+            sequence_gaps: self.sequence_gaps.load(Ordering::Relaxed),
+            session_discarded: self.session_discarded.load(Ordering::Relaxed),
         }
     }
 }
@@ -102,4 +140,7 @@ pub struct BridgeMetricsSnapshot {
     pub queue_depth: u64,
     pub last_event_ms: Option<u64>,
     pub last_error: Option<String>,
+    pub protected_dropped: u64,
+    pub sequence_gaps: u64,
+    pub session_discarded: u64,
 }

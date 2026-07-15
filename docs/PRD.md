@@ -174,12 +174,50 @@ no assumption of technical skill beyond installing an app.
 | Requirement | Bar |
 | --- | --- |
 | Ableton impact | No audible glitch, no felt UI lag attributable to the bridge, ever |
-| Critical-event durability | Zero loss under stress (burst 500+, malformed, oversized) — verified by the stress suite |
+| Critical-event durability | **No loss of Critical/Important events while the app is running and a session is active, at any rate Ableton can produce.** Burst beyond the receive buffer degrades with bounded, *counted*, surfaced loss — never silent. Verified by `scripts/stress-sender.mjs --verify`, which asserts sent == persisted and zero sequence gaps and fails the build otherwise. *(Scoped 2026-07-15 — see below.)* |
 | Marathon sessions | 4+ hours / 50k+ events with bounded memory and a responsive timeline |
 | Crash posture | No single failure zombifies the app; capture failures degrade to "disconnected," never to data corruption |
 | Privacy | No network egress except the update check; no content telemetry |
 | Observability | Every field failure is diagnosable from the log file + metrics screenshot |
 | Data longevity | The SQLite file is the producer's; old DBs open forever (additive migrations) |
+
+### Why "zero loss" is scoped rather than absolute *(2026-07-15)*
+
+The old bar read *"Zero loss under stress (burst 500+) — verified by the stress
+suite."* Three things were wrong with it, all measured:
+
+1. **It was false.** At the documented burst of 500 the pipeline lost **29%**. At
+   burst 20,000 it lost **86%**, including **~80% of `Critical` events**. The loss
+   was in the kernel socket buffer, which ran at the OS default (~64KB) because
+   `std::net::UdpSocket` cannot size `SO_RCVBUF` at all.
+2. **The suite could not verify it.** It counted enqueues rather than sends,
+   closed its socket mid-flush, never sent `clip_created` at all, and asserted
+   nothing. The 29% sat inside the "verified" test undetected.
+3. **It is unachievable as an absolute, on any transport.** Nothing captures
+   events sent while the app isn't running, or before it binds :9000 — the bridge
+   loads whenever the producer loads the device, which may be first. No buffer
+   size fixes that. Promising zero loss full stop is promising something the
+   architecture cannot deliver.
+
+**What is true, and provable** (measured after E2–E8, `--mode critical`):
+
+| Rate | Result |
+|---|---|
+| Paced (any realistic Ableton rate) | 0 loss |
+| Burst 20,000 @ ~99,000/s | **0 loss** — nothing shed, not even Coalescible |
+| Burst 50,000 @ ~132,000/s | Degrades at the buffer boundary (~28,000 events), counted |
+| Burst 100,000 @ ~148,000/s | Degrades further, counted — 33MB of JSON in 675ms |
+
+Ableton cannot emit at those rates; the M4L bridge is JS in Live's process. The
+one real burst is the **deep snapshot on project load** (§7.1 / SPEC §F1), which
+is why it is paced at source rather than absorbed.
+
+**The bar that replaces it is falsifiable:** no protected loss at any rate the
+bridge can produce, and any loss beyond that is *counted and surfaced* rather than
+silent. Sequence-gap detection (SPEC §F8) is what makes the second half real — it
+is the only measurement that can see packets the kernel destroyed before our code
+ran, and it is why the diagnostics panel can no longer report "0 dropped" during
+an 80% loss.
 
 ## 9 · Release criteria (v1.0)
 

@@ -71,8 +71,26 @@ Three things live *outside* both layers and are never touched by re-materializat
 - Deep plugin parameters via the focused-device poller — adaptive and time-budgeted
   (bridge 0.17.0) so Live's UI thread is never the victim.
 - Listener: malformed/oversized packets are counted, never crash. Overload sheds
-  coalescible noise first; **critical creative events are never dropped** — verified
-  by `scripts/stress-sender.mjs` (burst 500+, malformed, oversized modes).
+  coalescible noise first; **protected events (Critical + Important) are never
+  dropped at any rate the bridge can produce** — verified by
+  `scripts/stress-sender.mjs --verify`, which asserts sent == persisted and zero
+  sequence gaps and exits non-zero otherwise. *(See PRD §8 for the scope of this
+  claim and why it is no longer stated as absolute.)*
+- **The receive path, as of 2026-07-15** (all measured, not assumed):
+  - `SO_RCVBUF` is sized to 8MB via `socket2` and read back with `getsockopt`
+    (Windows clamps silently). `std::net::UdpSocket` cannot set it — the OS
+    default (~64KB) is where a measured 80% of Critical events died.
+  - The receive loop **never blocks**. It used to block on a full queue to
+    "protect" Critical events, which stopped it draining the socket and caused
+    indiscriminate, uncounted kernel loss instead. It now drops and counts, and
+    `protected_dropped` says whether the shed policy is working or failing.
+  - Every packet is processed under `catch_unwind`: a panic costs one packet, not
+    the session. A dead receive thread is invisible — the app looks healthy and
+    records nothing.
+  - Bind failure is reported, not panicked. Another instance on :9000 used to kill
+    capture silently at startup.
+  - `parameter_changed` is **Important**, not Coalescible. Only
+    `transport_snapshot`, `track_selected` and `beat_time_changed` may be shed.
 - **Known limitation, documented not fixed:** VST preset loads are invisible to the
   Live API (proven with Serum); only "Device On" is exposed for some plugins. The
   timeline must degrade honestly ("preset changed — name not exposed by the plugin")
@@ -236,6 +254,20 @@ Storage moves to SQLite before beta (localStorage is OS-wipeable) using the exis
 - Diagnostics panel rendering `get_bridge_metrics`: connected state, bridge version
   (via heartbeat), received / persisted / dropped counters. Plain language: "3
   parameter ticks were thinned during a burst — nothing important was lost."
+- **`sequence_gaps` is the load-bearing number, not `dropped_packets`.** Every
+  other counter describes packets we *received*; a packet the kernel discards dies
+  before `packets_received` increments, so the panel would have shown "0 dropped"
+  during a measured 80% loss. The bridge stamps a monotonic `sequence` per
+  `device_id` on every event (including heartbeats) and the app ignored it for
+  months. Gaps in that sequence *are* the loss, exactly — the only measurement here
+  that can see upstream of our own code. Track per `device_id`: the bridge's
+  counter restarts at 1 on device reload, and a global counter reads that as
+  catastrophic loss.
+- The panel must distinguish **`protected_dropped`** (the design failing) from
+  `dropped_packets` (Coalescible shedding — the design working). One number cannot
+  say both. Also surface `session_discarded` (events with no active session — not a
+  transport problem), `oversized_packets`, and `panics_recovered` (should always be
+  zero).
 - React error boundary around every surface; a crash in one surface never blanks the
   app. DB-init failure gets a real error screen, not a zombie window.
 - Mutex posture: `parking_lot` (no poisoning) — one panic must not zombify every

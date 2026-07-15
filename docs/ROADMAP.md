@@ -210,10 +210,17 @@ buffer**, because the recv thread does a JSON parse per packet inline. Ableton n
 burst rate — **the deep snapshot on load (SPEC §F1) is the only real burst**, which is why
 item 9 exists.
 
-- [ ] 1. Corrected stress harness: count in the send callback, drain before close, assert
-      `sent == persisted` and zero sequence gaps, exit non-zero on loss (~½ day)
-      *(the old one counted enqueues, closed mid-flush, and never sent `clip_created` — which
-      is how 29% loss hid inside the test PRD §8 cites as proof)*
+- [x] 1. ~~Corrected stress harness~~ **DONE 2026-07-15** (`5c5186d`). Counts in the send
+      callback, drains before close, isolates each run by `device_id`, asserts
+      `sent == persisted` + zero gaps, exits non-zero. Verified: paced → PASS (261/261, 0
+      gaps); burst 2,000 → FAIL (402/2,000, 79.9% protected loss).
+      **Its gap ranges located the root cause:** loss starts at sequence **239**, not 1 —
+      1–238 survive contiguously, then dense gap runs. At 329 bytes average that's
+      **78,302 bytes absorbed before the first drop vs Windows' 65,536 default `SO_RCVBUF`**
+      (within 19%; the excess is the recv thread draining while the buffer floods). The
+      kernel socket buffer is now *measured*, not inferred — that's what #2 targets.
+      *Known limit: paced mode caps ~65/s (Windows `setTimeout` granularity ~15ms); use
+      `--burst` for overload.*
 - [ ] 2. `socket2` + `SO_RCVBUF` sized for the snapshot burst, verified with `getsockopt`
       (Windows silently clamps); lean recv loop (parse off the recv thread); remove the
       blocking `sender.send` — drop-and-count instead (~1 day)

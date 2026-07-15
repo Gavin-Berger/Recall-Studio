@@ -552,10 +552,15 @@ fn update_open_file(normalized_json: &Value, state: &Arc<Mutex<ConnectionState>>
     }
 }
 
-fn push_event(events: &Arc<Mutex<Vec<RecallEvent>>>, event: RecallEvent) {
+// Append a whole batch under ONE lock.
+//
+// This used to be called per event, so a 20,000-event burst meant 20,000 lock
+// acquisitions and 20,000 clones in the drain loop — the same per-event cost
+// `save_events_batch` exists to avoid, ten lines after it.
+fn push_events(events: &Arc<Mutex<Vec<RecallEvent>>>, batch: &[RecallEvent]) {
     let mut recent_events = events.lock().expect("Recent events lock failed");
 
-    recent_events.push(event);
+    recent_events.extend_from_slice(batch);
 
     // Bound the live buffer. The DB is authoritative and the frontend reloads
     // saved sessions from SQLite, so trimming the oldest live events caps memory
@@ -677,13 +682,21 @@ fn run_persistence_worker(
             }
         }
 
-        for event in batch {
-            push_event(&events, event.clone());
+        // One lock and one IPC hop for the whole batch, not one per event.
+        //
+        // This loop used to clone, lock, JSON-serialize and emit PER EVENT,
+        // immediately after save_events_batch had carefully done the opposite for
+        // the database. A 20,000-event burst meant 20,000 crossings into the
+        // webview. The frontend only debounces and reloads from SQLite anyway —
+        // it needs to know THAT something happened, not receive each event — so
+        // an array costs it nothing.
+        push_events(&events, &batch);
 
-            if let Err(e) = app_handle.emit("recall-event", &event) {
-                eprintln!("Failed to emit recall-event: {}", e);
-                metrics.set_last_error(format!("emit failed: {}", e));
-            } else {
+        if let Err(e) = app_handle.emit("recall-events", &batch) {
+            eprintln!("Failed to emit recall-events: {}", e);
+            metrics.set_last_error(format!("emit failed: {}", e));
+        } else {
+            for _ in &batch {
                 metrics.incr_emitted();
             }
         }

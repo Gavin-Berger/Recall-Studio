@@ -128,11 +128,18 @@ export function SchemaTimeline({
       }, LIVE_REFRESH_DEBOUNCE_MS);
     };
 
-    void listen<LiveRecallEvent>("recall-event", (event) => {
+    // The backend emits one array per persisted batch rather than one message per
+    // event: a burst used to mean thousands of individual IPC crossings into the
+    // webview. This handler only decides whether to refresh, so a batch is
+    // strictly cheaper — one crossing, one debounce, same outcome.
+    void listen<LiveRecallEvent[]>("recall-events", (event) => {
       const incoming = event.payload;
-      if (incoming.session_id !== sessionId) return;
-      const eventType = incoming.event_type ?? "";
-      if (!LIVE_REFRESH_EVENT_TYPES.has(eventType)) return;
+      const relevant = incoming.some(
+        (item) =>
+          item.session_id === sessionId &&
+          LIVE_REFRESH_EVENT_TYPES.has(item.event_type ?? ""),
+      );
+      if (!relevant) return;
       scheduleRefresh();
     }).then((cleanup) => {
       if (disposed) {

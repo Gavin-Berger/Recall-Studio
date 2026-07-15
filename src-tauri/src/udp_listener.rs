@@ -9,6 +9,7 @@ use serde::Serialize;
 use serde_json::{json, Map, Value};
 use socket2::{Domain, Protocol, Socket, Type};
 use std::{
+    collections::HashMap,
     net::{SocketAddr, UdpSocket},
     sync::{
         mpsc::{sync_channel, SyncSender, TrySendError},
@@ -568,16 +569,45 @@ fn push_event(events: &Arc<Mutex<Vec<RecallEvent>>>, event: RecallEvent) {
     }
 }
 
-fn assign_session_if_active(event: &mut RecallEvent, session: &Arc<Mutex<SessionState>>) {
+// Stamp the active session onto an event, and count it when there isn't one.
+//
+// Returns false when no session is active, which means this event will be
+// discarded downstream (`save_events_batch` skips rows with no session_id).
+//
+// WHY THE COUNT MATTERS
+// That discard used to be completely silent: the event was not persisted, not
+// counted as dropped, and not counted as persisted (`incr_persisted` only fires
+// for a Some(rowid)). Anything arriving before session start, after session end,
+// or during a session-state gap vanished with zero telemetry. That is bad on its
+// own, and worse next to sequence-gap detection: a gap detector would see the
+// hole and blame the transport for something the session lifecycle did.
+fn assign_session_if_active(
+    event: &mut RecallEvent,
+    session: &Arc<Mutex<SessionState>>,
+    metrics: &Arc<BridgeMetrics>,
+) -> bool {
     let session_state = session.lock().expect("Session state lock failed");
     event.session_id = session_state.active_session_id();
 
-    if let Some(session_id) = &event.session_id {
-        if VERBOSE_UDP_LOGGING {
-            println!(
-                "EVENT ASSIGNED TO SESSION -> event_type: {}, session_id: {}",
-                event.event_type, session_id
-            );
+    match &event.session_id {
+        Some(session_id) => {
+            if VERBOSE_UDP_LOGGING {
+                println!(
+                    "EVENT ASSIGNED TO SESSION -> event_type: {}, session_id: {}",
+                    event.event_type, session_id
+                );
+            }
+            true
+        }
+        None => {
+            metrics.incr_session_discarded();
+            if VERBOSE_UDP_LOGGING {
+                println!(
+                    "EVENT DISCARDED (no active session) -> event_type: {}",
+                    event.event_type
+                );
+            }
+            false
         }
     }
 }
@@ -659,6 +689,63 @@ fn run_persistence_worker(
     }
 
     eprintln!("Recall Studio persistence worker stopped (channel closed)");
+}
+
+// Per-device sequence tracking — the only way to see loss upstream of us.
+//
+// Every counter in metrics.rs describes packets we RECEIVED. If the kernel
+// discards a datagram because the socket buffer overflowed, or the sender never
+// got it out, nothing here fires: the event dies before `packets_received`
+// increments. That is the blind spot that let the diagnostics panel report
+// "0 dropped" during a measured 80% loss. The bridge already stamps a monotonic
+// `sequence` per `device_id` on every event (recall_m4l_bridge.js `emit`) and the
+// app has always thrown it away. Gaps in that sequence ARE the loss, exactly.
+//
+// Per device_id, not global: the bridge's counter restarts at 1 whenever the M4L
+// device is reloaded, and two devices would interleave. A global counter would
+// read a device reload as catastrophic loss.
+//
+// Lives on the receive thread and nowhere else, so it needs no lock.
+#[derive(Default)]
+struct SequenceTracker {
+    last_seen: HashMap<String, u64>,
+}
+
+impl SequenceTracker {
+    // Call for EVERY packet carrying a sequence, including heartbeats. The bridge
+    // stamps heartbeats through the same `emit` path, so skipping them would read
+    // each one as a hole.
+    fn observe(&mut self, json: &Value, metrics: &Arc<BridgeMetrics>) {
+        let bridge = match json.get("payload").and_then(|p| p.get("_bridge")) {
+            Some(bridge) => bridge,
+            None => return,
+        };
+        let device_id = match bridge.get("device_id").and_then(Value::as_str) {
+            Some(id) => id,
+            None => return,
+        };
+        let sequence = match bridge.get("sequence").and_then(Value::as_u64) {
+            Some(seq) => seq,
+            None => return,
+        };
+
+        if let Some(&last) = self.last_seen.get(device_id) {
+            if sequence > last + 1 {
+                let missing = sequence - last - 1;
+                metrics.add_sequence_gaps(missing);
+                eprintln!(
+                    "Recall Studio: {} event(s) never arrived from bridge {} (sequence {} -> {})",
+                    missing, device_id, last, sequence
+                );
+            }
+            // sequence <= last means the device reloaded (its counter restarts at
+            // 1) or, in theory, a duplicate. Not a gap either way. Loopback UDP
+            // does not reorder in practice — there is no wire to reorder on — so
+            // we follow the counter down rather than treating a reload as loss.
+        }
+
+        self.last_seen.insert(device_id.to_string(), sequence);
+    }
 }
 
 // Bind the listener with a receive buffer sized for the snapshot burst.
@@ -820,6 +907,7 @@ pub fn start_udp_listener(
         };
 
         let mut buffer = [0u8; RECV_BUFFER_BYTES];
+        let mut sequence_tracker = SequenceTracker::default();
 
         loop {
             match socket.recv_from(&mut buffer) {
@@ -853,6 +941,14 @@ pub fn start_udp_listener(
                         }
                     };
 
+                    // Sequence-gap check runs on the RAW json, before
+                    // normalize_udp_json flattens `payload` into a JSON string —
+                    // after that, payload._bridge is unreachable without
+                    // re-parsing. Runs on every packet that carries a sequence,
+                    // heartbeats included (the bridge stamps them through the
+                    // same emit path), and before any early `continue` below.
+                    sequence_tracker.observe(&raw_json, &metrics);
+
                     let normalized_json = match normalize_udp_json(raw_json) {
                         Ok(value) => value,
                         Err(error) => {
@@ -878,8 +974,13 @@ pub fn start_udp_listener(
 
                     match serde_json::from_value::<RecallEvent>(normalized_json) {
                         Ok(mut event) => {
-                            assign_session_if_active(&mut event, &session);
-                            enqueue_event(&sender, event, &metrics);
+                            // No active session means storage will discard this
+                            // row anyway — counted above, so don't spend queue
+                            // slots and a batch insert on an event that cannot
+                            // land. storage.rs keeps its own guard as a backstop.
+                            if assign_session_if_active(&mut event, &session, &metrics) {
+                                enqueue_event(&sender, event, &metrics);
+                            }
                         }
                         Err(error) => {
                             metrics.incr_malformed();
@@ -924,6 +1025,109 @@ mod tests {
     //! flat, fully-populated shape the rest of the app relies on.
     use super::*;
     use serde_json::json;
+
+    /// A raw bridge packet, shaped as it arrives on the wire: `payload` is still
+    /// a nested object here, which is the whole point of the sequence tests.
+    fn raw_packet(device_id: &str, sequence: u64) -> Value {
+        json!({
+            "protocol": "recall.v2",
+            "event_type": "device_added",
+            "payload": {
+                "_bridge": { "device_id": device_id, "bridge_version": "0.17.0", "sequence": sequence }
+            }
+        })
+    }
+
+    #[test]
+    fn contiguous_sequences_report_no_gaps() {
+        let metrics = BridgeMetrics::new();
+        let mut tracker = SequenceTracker::default();
+        for seq in 1..=100 {
+            tracker.observe(&raw_packet("dev-a", seq), &metrics);
+        }
+        assert_eq!(metrics.snapshot().sequence_gaps, 0);
+    }
+
+    #[test]
+    fn a_hole_in_the_sequence_is_counted_exactly() {
+        let metrics = BridgeMetrics::new();
+        let mut tracker = SequenceTracker::default();
+        tracker.observe(&raw_packet("dev-a", 1), &metrics);
+        // 2..=10 never arrive — nine events lost.
+        tracker.observe(&raw_packet("dev-a", 11), &metrics);
+        assert_eq!(metrics.snapshot().sequence_gaps, 9);
+    }
+
+    #[test]
+    fn sequences_are_tracked_per_device_not_globally() {
+        // Two bridges interleaving must not read as loss. A global counter would
+        // see 1,1,2,2 as chaos; per-device it is two clean streams.
+        let metrics = BridgeMetrics::new();
+        let mut tracker = SequenceTracker::default();
+        tracker.observe(&raw_packet("dev-a", 1), &metrics);
+        tracker.observe(&raw_packet("dev-b", 1), &metrics);
+        tracker.observe(&raw_packet("dev-a", 2), &metrics);
+        tracker.observe(&raw_packet("dev-b", 2), &metrics);
+        assert_eq!(metrics.snapshot().sequence_gaps, 0);
+    }
+
+    #[test]
+    fn a_device_reload_resets_the_counter_and_is_not_loss() {
+        // The bridge's sequence restarts at 1 when the M4L device is reloaded.
+        // A naive detector reads that as ~1000 events lost.
+        let metrics = BridgeMetrics::new();
+        let mut tracker = SequenceTracker::default();
+        tracker.observe(&raw_packet("dev-a", 1000), &metrics);
+        tracker.observe(&raw_packet("dev-a", 1), &metrics);
+        tracker.observe(&raw_packet("dev-a", 2), &metrics);
+        assert_eq!(metrics.snapshot().sequence_gaps, 0);
+    }
+
+    #[test]
+    fn packets_without_a_bridge_stamp_are_ignored() {
+        let metrics = BridgeMetrics::new();
+        let mut tracker = SequenceTracker::default();
+        tracker.observe(&json!({ "event_type": "device_added" }), &metrics);
+        tracker.observe(&json!({ "payload": { "other": 1 } }), &metrics);
+        assert_eq!(metrics.snapshot().sequence_gaps, 0);
+    }
+
+    #[test]
+    fn tracker_reads_the_raw_packet_not_the_normalized_one() {
+        // REGRESSION: normalize_udp_json flattens `payload` into a JSON *string*,
+        // so payload._bridge is unreachable afterwards and every lookup silently
+        // returns None. The first version of this tracker ran post-normalize and
+        // reported zero gaps while 71,358 packets were provably lost. Observe the
+        // raw packet, or don't observe at all.
+        let metrics = BridgeMetrics::new();
+        let mut tracker = SequenceTracker::default();
+
+        let normalized = Value::Object(normalized(raw_packet("dev-a", 1)));
+        assert!(
+            normalized.get("payload").unwrap().is_string(),
+            "normalize_udp_json must still flatten payload — if this fails, the \
+             tracker's placement in the recv loop should be re-examined"
+        );
+
+        // Post-normalize: invisible. Pre-normalize: counted.
+        tracker.observe(&normalized, &metrics);
+        tracker.observe(&Value::Object(normalized_map_for(("dev-a", 50))), &metrics);
+        assert_eq!(
+            metrics.snapshot().sequence_gaps,
+            0,
+            "a flattened payload carries no observable sequence, so nothing is counted"
+        );
+
+        let mut raw_tracker = SequenceTracker::default();
+        let raw_metrics = BridgeMetrics::new();
+        raw_tracker.observe(&raw_packet("dev-a", 1), &raw_metrics);
+        raw_tracker.observe(&raw_packet("dev-a", 50), &raw_metrics);
+        assert_eq!(raw_metrics.snapshot().sequence_gaps, 48);
+    }
+
+    fn normalized_map_for(spec: (&str, u64)) -> Map<String, Value> {
+        normalized(raw_packet(spec.0, spec.1))
+    }
 
     /// Normalize a packet and return its object map, panicking on rejection.
     /// Keeps each test focused on assertions rather than unwrapping boilerplate.

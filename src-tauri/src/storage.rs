@@ -139,13 +139,40 @@ impl StorageState {
             .ok_or_else(|| "Database path has not been configured".to_string())
     }
 
+    // Open a connection with the pragmas that MUST be set per-connection.
+    //
+    // WHY synchronous AND busy_timeout LIVE HERE, NOT IN initialize_database
+    // `journal_mode = WAL` is persistent — it lives in the database file, so
+    // setting it once at init is correct and it survives every reopen.
+    // `synchronous` and `busy_timeout` are NOT. They are per-connection settings
+    // that reset to SQLite's defaults on every `Connection::open`.
+    //
+    // initialize_database sets `PRAGMA synchronous = NORMAL` on its own
+    // throwaway connection, so it applied to exactly that connection and nothing
+    // else. Every connection opened afterwards — including the one the
+    // persistence worker opens per 256-event batch — silently ran at the default
+    // `synchronous = FULL`, meaning a full fsync on every batch commit, on
+    // Windows, in WAL mode. WAL was on and its durability partner quietly wasn't.
+    //
+    // NORMAL is the right setting for WAL: it fsyncs at checkpoints rather than
+    // every commit. The documented risk is losing the tail of the last
+    // transaction on an OS crash or power cut (not on an app crash), which is a
+    // fair trade for a capture pipeline that must keep up with a burst.
+    //
+    // busy_timeout matters because readers exist: the stress harness attaches to
+    // this file while the worker is committing, and without a timeout a busy
+    // database is an instant error rather than a short wait.
     fn open_connection(&self) -> Result<Connection, String> {
         let connection = Connection::open(self.database_path()?)
             .map_err(|error| format!("Failed to open SQLite database: {}", error))?;
 
         connection
-            .execute_batch("PRAGMA foreign_keys = ON;")
-            .map_err(|error| format!("Failed to enable SQLite foreign keys: {}", error))?;
+            .execute_batch(
+                "PRAGMA foreign_keys = ON;
+                 PRAGMA synchronous = NORMAL;
+                 PRAGMA busy_timeout = 5000;",
+            )
+            .map_err(|error| format!("Failed to configure SQLite connection: {}", error))?;
 
         Ok(connection)
     }

@@ -7,8 +7,9 @@ use crate::session::SessionState;
 use crate::storage::StorageState;
 use serde::Serialize;
 use serde_json::{json, Map, Value};
+use socket2::{Domain, Protocol, Socket, Type};
 use std::{
-    net::UdpSocket,
+    net::{SocketAddr, UdpSocket},
     sync::{
         mpsc::{sync_channel, SyncSender, TrySendError},
         Arc, Mutex,
@@ -29,6 +30,23 @@ const RECV_BUFFER_BYTES: usize = 16_384;
 // enqueue policy (see classify/enqueue) protects critical creative events and
 // sheds only coalescible noise.
 const EVENT_QUEUE_CAPACITY: usize = 4_096;
+
+// Kernel socket receive buffer. This is the single highest-value constant in the
+// file, because it is where packets actually died.
+//
+// MEASURED 2026-07-15: with the OS default, loss begins at exactly the buffer
+// boundary. 2,000 Critical events, OS-confirmed 2,000/2,000 sends — burst at
+// ~80k/s persisted 407 (80% lost); paced at ~500/s persisted 2,000 (0% lost).
+// The gap ranges start at sequence 239, not 1: sequences 1-238 survive
+// contiguously (78,302 bytes at 329 bytes average) against Windows' 65,536-byte
+// default, then loss runs in dense blocks. The queue (4,096) was never the
+// binding constraint — only 2,000 were in flight, so it could not fill.
+//
+// Sized for the deep snapshot on project load (SPEC §F1), which is the only
+// burst Ableton actually produces: ~8MB absorbs roughly 24,000 events at 350
+// bytes each. Windows silently clamps large values, so the bind path reads the
+// applied size back with getsockopt rather than trusting the request.
+const RECV_SOCKET_BUFFER_BYTES: usize = 8 * 1024 * 1024;
 
 // Max events drained and persisted in one transaction by the worker.
 const PERSIST_BATCH_MAX: usize = 256;
@@ -643,6 +661,71 @@ fn run_persistence_worker(
     eprintln!("Recall Studio persistence worker stopped (channel closed)");
 }
 
+// Bind the listener with a receive buffer sized for the snapshot burst.
+//
+// Two things std::net::UdpSocket cannot do, both of which cost us packets:
+//   1. Set SO_RCVBUF at all — there is no setter, so we were silently running on
+//      the OS default (~64KB on Windows), which is where the measured 80% burst
+//      loss happened.
+//   2. Report what the OS actually applied. Windows clamps large requests
+//      without telling you, so we read it back with getsockopt and log both
+//      numbers rather than assuming the request was honoured.
+//
+// Failures degrade rather than panic: if the buffer cannot be sized we still
+// bind and capture, just with less headroom, and the reason is recorded in
+// metrics. Only a bind failure is fatal to this thread, and the caller reports
+// it instead of dying.
+fn bind_listener_socket(metrics: &Arc<BridgeMetrics>) -> Result<UdpSocket, String> {
+    let addr: SocketAddr = "127.0.0.1:9000"
+        .parse()
+        .map_err(|error| format!("Invalid listener address: {}", error))?;
+
+    let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))
+        .map_err(|error| format!("Failed to create UDP socket: {}", error))?;
+
+    // Best-effort: a smaller buffer still captures, it just has less burst
+    // headroom. Not worth refusing to start over.
+    if let Err(error) = socket.set_recv_buffer_size(RECV_SOCKET_BUFFER_BYTES) {
+        let message = format!(
+            "Could not set receive buffer to {} bytes ({}); running on the OS default. \
+             Burst capture (project-load snapshots) may lose events.",
+            RECV_SOCKET_BUFFER_BYTES, error
+        );
+        eprintln!("Recall Studio: {}", message);
+        metrics.set_last_error(message);
+    }
+
+    socket
+        .bind(&addr.into())
+        .map_err(|error| format!("Failed to bind 127.0.0.1:9000 ({}). Another Recall Studio instance may already be running.", error))?;
+
+    // Read back what the OS actually gave us. Linux reports double the requested
+    // value (it counts bookkeeping overhead); Windows clamps silently. Either
+    // way, log the applied size so a field report says what the buffer really
+    // was rather than what we asked for.
+    match socket.recv_buffer_size() {
+        Ok(applied) => {
+            println!(
+                "Recall Studio UDP listener running on 127.0.0.1:9000 (recv buffer: requested {} bytes, applied {} bytes)",
+                RECV_SOCKET_BUFFER_BYTES, applied
+            );
+            if applied < RECV_SOCKET_BUFFER_BYTES {
+                let message = format!(
+                    "OS clamped the receive buffer to {} bytes (requested {}). Burst headroom is lower than intended.",
+                    applied, RECV_SOCKET_BUFFER_BYTES
+                );
+                eprintln!("Recall Studio: {}", message);
+                metrics.set_last_error(message);
+            }
+        }
+        Err(error) => {
+            println!("Recall Studio UDP listener running on 127.0.0.1:9000 (recv buffer size unreadable: {})", error);
+        }
+    }
+
+    Ok(socket.into())
+}
+
 // Enqueue policy implementing graceful overload. Critical/important events block
 // briefly until the worker makes room (rare; guarantees no creative data loss),
 // while coalescible high-frequency telemetry is dropped when the queue is full.
@@ -701,10 +784,18 @@ pub fn start_udp_listener(
 
     // UDP receive loop — parse, normalize, classify, enqueue. No SQLite, no emit.
     thread::spawn(move || {
-        let socket = UdpSocket::bind("127.0.0.1:9000")
-            .expect("Failed to bind UDP listener on 127.0.0.1:9000");
-
-        println!("Recall Studio UDP listener running on 127.0.0.1:9000");
+        let socket = match bind_listener_socket(&metrics) {
+            Ok(socket) => socket,
+            Err(error) => {
+                // Never panic here. This thread dying takes capture with it and
+                // leaves the app looking perfectly healthy while recording
+                // nothing — the producer would finish a session and find it
+                // empty, with no error anywhere. Report it and stop.
+                eprintln!("Recall Studio UDP listener FAILED TO START -> {}", error);
+                metrics.set_last_error(error);
+                return;
+            }
+        };
 
         let mut buffer = [0u8; RECV_BUFFER_BYTES];
 

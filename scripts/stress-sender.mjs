@@ -170,6 +170,31 @@ function sendOne(msg) {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// Open the app's DB for reading, retrying while it's busy.
+//
+// The app writes in WAL mode. Right after a burst it is committing hard, and a
+// reader attaching mid-recovery gets SQLITE_BUSY_RECOVERY (261) rather than
+// waiting politely. readOnly also blocks the reader from performing WAL
+// recovery itself, so a plain readOnly open can fail outright. Retry with
+// backoff, then fall back to a read-write handle which is allowed to recover.
+async function openDbWithRetry(p, attempts = 12) {
+  let lastErr;
+  for (let i = 0; i < attempts; i++) {
+    for (const readOnly of [true, false]) {
+      try {
+        const db = new DatabaseSync(p, { readOnly });
+        db.exec("PRAGMA busy_timeout = 5000;");
+        db.prepare("SELECT 1").get(); // prove the handle actually works
+        return db;
+      } catch (e) {
+        lastErr = e;
+      }
+    }
+    await sleep(250 * (i + 1));
+  }
+  throw lastErr;
+}
+
 // Poll until the row count stops climbing, so we measure a settled pipeline
 // rather than racing the persistence worker.
 async function waitForDrain(db, maxMs = 15000) {
@@ -276,7 +301,7 @@ async function run() {
 
   let db;
   try {
-    db = new DatabaseSync(dbPath, { readOnly: true });
+    db = await openDbWithRetry(dbPath);
   } catch (e) {
     console.error(`[stress] cannot open DB at ${dbPath}: ${e.message}`);
     console.error("[stress] is the app running? pass --db <path> to override.");

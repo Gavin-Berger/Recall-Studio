@@ -1,12 +1,18 @@
-// Audio analysis for the Project Organizer: turn an attached bounce into the two
-// things the mix view shows — a waveform envelope and its loudness. Everything
-// here runs in the webview via Web Audio (no Rust, no filesystem), so an
-// <input type="file"> hands us real bytes and we derive real numbers from them.
+// Audio analysis for the Project Organizer: turn an attached bounce into the
+// things the mix view shows — a waveform envelope, its loudness, and its
+// dynamic range. Everything here runs in the webview via Web Audio (no Rust, no
+// filesystem), so an <input type="file"> hands us real bytes and we derive real
+// numbers from them.
 //
-// Loudness is integrated LUFS per ITU-R BS.1770-4: K-weight each channel, take
-// mean square over gated 400ms blocks, combine. The K-weighting biquads are the
-// RBJ-cookbook realisations of the standard's high-shelf + high-pass stages, so
-// the coefficients track the file's real sample rate rather than assuming 48k.
+// Loudness is integrated LUFS and Loudness Range (LRA) per ITU-R BS.1770-4 /
+// EBU R128: K-weight each channel, take mean square over gated blocks, combine.
+// The K-weighting biquads are the RBJ-cookbook realisations of the standard's
+// high-shelf + high-pass stages, so the coefficients track the file's real
+// sample rate rather than assuming 48k.
+//
+// Speed: block powers come from a running per-100ms-segment sum of squares, so
+// a 3-minute 192kHz file is a handful of passes, not a sliding window that
+// re-reads millions of overlapping samples per step.
 //
 // The math (biquads, loudness, bucketing) is pure and unit-tested. Only
 // analyzeAudioFile touches the AudioContext.
@@ -29,6 +35,9 @@ export type AudioAnalysis = {
   // Integrated loudness in LUFS, or null when the bounce is too short (< 400ms)
   // or too quiet to measure. Null is honest: the UI shows "—", never a fake 0.
   integratedLufs: number | null;
+  // Loudness range (LRA) in LU — the statistical spread of short-term loudness,
+  // i.e. dynamic range. Null when the bounce is too short (< ~3s) to measure.
+  dynamicRangeLu: number | null;
   // Sample peak in dBFS (a true-peak approximation — no oversampling).
   peakDb: number;
 };
@@ -78,7 +87,7 @@ export function highPassCoeffs(fs: number): BiquadCoeffs {
   return { b0: b0 / a0, b1: b1 / a0, b2: b2 / a0, a1: a1 / a0, a2: a2 / a0 };
 }
 
-// Direct-form-I biquad, applied in place-safe fashion (returns a new array).
+// Direct-form-I biquad, returns a new array.
 export function applyBiquad(input: Float32Array, c: BiquadCoeffs): Float32Array {
   const out = new Float32Array(input.length);
   let x1 = 0;
@@ -101,60 +110,121 @@ export function kWeight(channel: Float32Array, fs: number): Float32Array {
   return applyBiquad(applyBiquad(channel, highShelfCoeffs(fs)), highPassCoeffs(fs));
 }
 
-// --- Integrated loudness (BS.1770 gating) ---
+// --- Gated loudness (shared machinery for LUFS and LRA) ---
 
 const ABSOLUTE_GATE_LUFS = -70;
-const BLOCK_SEC = 0.4;
 const STEP_SEC = 0.1;
+const SEGMENTS_PER_MOMENTARY = 4; // 400ms window for integrated loudness
+const SEGMENTS_PER_SHORT_TERM = 30; // 3s window for loudness range
+const REL_GATE_INTEGRATED = 10; // LU below the abs-gated mean
+const REL_GATE_LRA = 20; // LU below the abs-gated mean
 
-// Block loudness from per-channel mean-square powers (channel weights all 1 for
-// mono/stereo). Returns LUFS.
+type Block = { loudness: number; powers: number[] };
+
+// Loudness of a block from its per-channel mean-square powers (channel weights
+// all 1 for mono/stereo).
 function blockLoudness(channelPowers: number[]): number {
   const summed = channelPowers.reduce((total, p) => total + p, 0);
   if (summed <= 0) return -Infinity;
   return -0.691 + 10 * Math.log10(summed);
 }
 
-export function integratedLoudness(channels: Float32Array[], fs: number): number | null {
-  if (channels.length === 0) return null;
-  const weighted = channels.map((ch) => kWeight(ch, fs));
-  const blockLen = Math.round(BLOCK_SEC * fs);
-  const step = Math.round(STEP_SEC * fs);
-  const total = weighted[0].length;
-  if (total < blockLen) return null;
-
-  // Per-block: mean-square power for each channel, plus the block's loudness.
-  const blocks: { loudness: number; powers: number[] }[] = [];
-  for (let start = 0; start + blockLen <= total; start += step) {
-    const powers = weighted.map((ch) => {
-      let sum = 0;
-      for (let i = start; i < start + blockLen; i++) sum += ch[i] * ch[i];
-      return sum / blockLen;
-    });
-    blocks.push({ loudness: blockLoudness(powers), powers });
-  }
-
-  // Absolute gate at -70 LUFS.
-  const absGated = blocks.filter((b) => b.loudness >= ABSOLUTE_GATE_LUFS);
-  if (absGated.length === 0) return null;
-
-  // Relative gate at (mean gated loudness - 10 LU).
-  const meanPowers = averagePowers(absGated);
-  const relThreshold = blockLoudness(meanPowers) - 10;
-  const relGated = absGated.filter((b) => b.loudness >= relThreshold);
-  const gated = relGated.length > 0 ? relGated : absGated;
-
-  const finalLoudness = blockLoudness(averagePowers(gated));
-  return Number.isFinite(finalLoudness) ? finalLoudness : null;
-}
-
-function averagePowers(blocks: { powers: number[] }[]): number[] {
+function averagePowers(blocks: Block[]): number[] {
   const channelCount = blocks[0].powers.length;
   const sums = new Array<number>(channelCount).fill(0);
   for (const b of blocks) {
     for (let c = 0; c < channelCount; c++) sums[c] += b.powers[c];
   }
   return sums.map((s) => s / blocks.length);
+}
+
+// Sum of squares per 100ms segment for one channel. The final partial segment
+// is dropped so every block is full-length.
+function segmentSumSquares(channel: Float32Array, segLen: number): Float64Array {
+  const segCount = Math.floor(channel.length / segLen);
+  const out = new Float64Array(segCount);
+  for (let s = 0; s < segCount; s++) {
+    let sum = 0;
+    const start = s * segLen;
+    for (let i = start; i < start + segLen; i++) sum += channel[i] * channel[i];
+    out[s] = sum;
+  }
+  return out;
+}
+
+// Overlapping blocks, each `segsPerBlock` segments wide, stepping one segment.
+function blocksFromSegments(
+  segByChannel: Float64Array[],
+  segLen: number,
+  segsPerBlock: number,
+): Block[] {
+  const segCount = segByChannel[0].length;
+  const windowSamples = segsPerBlock * segLen;
+  const blocks: Block[] = [];
+  for (let start = 0; start + segsPerBlock <= segCount; start++) {
+    const powers = segByChannel.map((seg) => {
+      let sum = 0;
+      for (let s = start; s < start + segsPerBlock; s++) sum += seg[s];
+      return sum / windowSamples;
+    });
+    blocks.push({ loudness: blockLoudness(powers), powers });
+  }
+  return blocks;
+}
+
+function kWeightAll(channels: Float32Array[], fs: number): Float64Array[] {
+  const segLen = Math.round(STEP_SEC * fs);
+  return channels.map((ch) => segmentSumSquares(kWeight(ch, fs), segLen));
+}
+
+// Integrated loudness from momentary (400ms) blocks: absolute gate at -70 LUFS,
+// then a relative gate 10 LU below the abs-gated mean.
+function integratedFromBlocks(blocks: Block[]): number | null {
+  const absGated = blocks.filter((b) => b.loudness >= ABSOLUTE_GATE_LUFS);
+  if (absGated.length === 0) return null;
+  const relThreshold = blockLoudness(averagePowers(absGated)) - REL_GATE_INTEGRATED;
+  const relGated = absGated.filter((b) => b.loudness >= relThreshold);
+  const gated = relGated.length > 0 ? relGated : absGated;
+  const loudness = blockLoudness(averagePowers(gated));
+  return Number.isFinite(loudness) ? loudness : null;
+}
+
+function percentile(sortedAsc: number[], p: number): number {
+  if (sortedAsc.length === 1) return sortedAsc[0];
+  const idx = p * (sortedAsc.length - 1);
+  const lo = Math.floor(idx);
+  const hi = Math.ceil(idx);
+  if (lo === hi) return sortedAsc[lo];
+  return sortedAsc[lo] + (sortedAsc[hi] - sortedAsc[lo]) * (idx - lo);
+}
+
+// Loudness range from short-term (3s) blocks: absolute gate at -70 LUFS, then a
+// relative gate 20 LU below the abs-gated mean, then the 95th minus the 10th
+// percentile of the surviving short-term loudness values (EBU Tech 3342).
+function lraFromBlocks(blocks: Block[]): number | null {
+  const absGated = blocks.filter((b) => b.loudness >= ABSOLUTE_GATE_LUFS);
+  if (absGated.length < 2) return null;
+  const relThreshold = blockLoudness(averagePowers(absGated)) - REL_GATE_LRA;
+  const relGated = absGated.filter((b) => b.loudness >= relThreshold);
+  if (relGated.length < 2) return null;
+  const sorted = relGated.map((b) => b.loudness).sort((a, b) => a - b);
+  return percentile(sorted, 0.95) - percentile(sorted, 0.1);
+}
+
+export function integratedLoudness(channels: Float32Array[], fs: number): number | null {
+  if (channels.length === 0) return null;
+  const segByChannel = kWeightAll(channels, fs);
+  const segLen = Math.round(STEP_SEC * fs);
+  if (segByChannel[0].length < SEGMENTS_PER_MOMENTARY) return null;
+  return integratedFromBlocks(blocksFromSegments(segByChannel, segLen, SEGMENTS_PER_MOMENTARY));
+}
+
+export function loudnessRange(channels: Float32Array[], fs: number): number | null {
+  if (channels.length === 0) return null;
+  const segByChannel = kWeightAll(channels, fs);
+  const segLen = Math.round(STEP_SEC * fs);
+  if (segByChannel[0].length < SEGMENTS_PER_SHORT_TERM) return null;
+  return lraFromBlocks(blocksFromSegments(segByChannel, segLen, SEGMENTS_PER_SHORT_TERM));
 }
 
 // --- Waveform envelope + peak ---
@@ -231,18 +301,32 @@ export async function analyzeAudioFile(file: File, bucketCount = 480): Promise<A
   for (let c = 0; c < buffer.numberOfChannels; c++) {
     channels.push(buffer.getChannelData(c));
   }
+  const fs = buffer.sampleRate;
 
   const peakAmp = samplePeak(channels);
   const peaks = bucketPeaks(mixToMono(channels), bucketCount);
-  const integratedLufs = integratedLoudness(channels, buffer.sampleRate);
   const peakDb = toDb(peakAmp);
+
+  // K-weight once, derive both loudness figures from the same segment powers.
+  const segByChannel = kWeightAll(channels, fs);
+  const segLen = Math.round(STEP_SEC * fs);
+  const segCount = segByChannel[0].length;
+  const integratedLufs =
+    segCount >= SEGMENTS_PER_MOMENTARY
+      ? integratedFromBlocks(blocksFromSegments(segByChannel, segLen, SEGMENTS_PER_MOMENTARY))
+      : null;
+  const dynamicRangeLu =
+    segCount >= SEGMENTS_PER_SHORT_TERM
+      ? lraFromBlocks(blocksFromSegments(segByChannel, segLen, SEGMENTS_PER_SHORT_TERM))
+      : null;
 
   return {
     durationSec: buffer.duration,
-    sampleRate: buffer.sampleRate,
+    sampleRate: fs,
     channelCount: buffer.numberOfChannels,
     peaks,
     integratedLufs,
+    dynamicRangeLu,
     peakDb: Number.isFinite(peakDb) ? peakDb : -Infinity,
   };
 }

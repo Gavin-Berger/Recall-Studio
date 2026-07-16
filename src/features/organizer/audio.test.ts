@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { bucketPeaks, integratedLoudness, samplePeak, toDb } from "./audio";
+import { bucketPeaks, integratedLoudness, loudnessRange, samplePeak, toDb } from "./audio";
 
 const FS = 48000;
 
@@ -44,6 +44,38 @@ describe("integratedLoudness", () => {
     // Summing two equal channels adds ~3 LU over a single channel.
     expect(stereo - mono).toBeGreaterThan(2);
     expect(stereo - mono).toBeLessThan(4);
+  });
+});
+
+// Concatenate segments into one signal.
+function concat(...parts: Float32Array[]): Float32Array {
+  const total = parts.reduce((n, p) => n + p.length, 0);
+  const out = new Float32Array(total);
+  let offset = 0;
+  for (const p of parts) {
+    out.set(p, offset);
+    offset += p.length;
+  }
+  return out;
+}
+
+describe("loudnessRange", () => {
+  it("returns null for a bounce shorter than one 3s short-term window", () => {
+    expect(loudnessRange([sine(1000, 0.5, 2)], FS)).toBeNull();
+  });
+
+  it("reports a small range for a steady tone", () => {
+    const lra = loudnessRange([sine(1000, 0.3, 8)], FS);
+    expect(lra).not.toBeNull();
+    expect(lra!).toBeLessThan(2);
+  });
+
+  it("reports a large range for a quiet-then-loud signal", () => {
+    // 4s at -26 dBFS into 4s at -6 dBFS: the short-term spread is wide.
+    const quietThenLoud = concat(sine(1000, 0.05, 4), sine(1000, 0.5, 4));
+    const lra = loudnessRange([quietThenLoud], FS);
+    expect(lra).not.toBeNull();
+    expect(lra!).toBeGreaterThan(5);
   });
 });
 

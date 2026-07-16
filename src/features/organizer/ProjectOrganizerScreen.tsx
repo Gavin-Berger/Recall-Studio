@@ -22,6 +22,7 @@ type ExportBounce = {
   channelCount: number;
   peaks: number[];
   integratedLufs: number | null;
+  dynamicRangeLu: number | null;
   peakDb: number;
   added_at_ms: number;
 };
@@ -80,6 +81,15 @@ function formatDuration(sec: number): string {
 
 function formatLufs(lufs: number | null): string {
   return lufs === null ? "—" : `${lufs.toFixed(1)} LUFS`;
+}
+
+function formatLra(lra: number | null | undefined): string {
+  return lra == null ? "—" : `${lra.toFixed(1)} LU`;
+}
+
+// Unique enough for a batch added in the same millisecond.
+function makeExportId(index: number): string {
+  return `exp-${Date.now().toString(36)}-${index}-${Math.random().toString(36).slice(2, 7)}`;
 }
 
 function formatDb(db: number): string {
@@ -204,32 +214,49 @@ export function ProjectOrganizerScreen() {
   }
 
   async function handleFilePicked(event: React.ChangeEvent<HTMLInputElement>) {
-    const file = event.target.files?.[0];
-    event.target.value = ""; // allow re-adding the same file
-    if (!file || !selected) return;
+    const files = Array.from(event.target.files ?? []);
+    event.target.value = ""; // allow re-adding the same file(s)
+    if (files.length === 0 || !selected) return;
     setError(null);
-    setAnalyzing(file.name);
-    try {
-      const analysis = await analyzeAudioFile(file);
-      const now = Date.now();
-      const bounce: ExportBounce = {
-        id: `exp-${now}`,
-        fileName: file.name,
-        fileSizeBytes: file.size,
-        durationSec: analysis.durationSec,
-        sampleRate: analysis.sampleRate,
-        channelCount: analysis.channelCount,
-        peaks: analysis.peaks,
-        integratedLufs: analysis.integratedLufs,
-        peakDb: analysis.peakDb,
-        added_at_ms: now,
-      };
-      urls.current.set(bounce.id, URL.createObjectURL(file));
-      mutateProject(selected.id, (p) => ({ ...p, exports: [bounce, ...p.exports] }));
-    } catch (err) {
-      setError(`Couldn't read "${file.name}" — ${String(err)}`);
-    } finally {
-      setAnalyzing(null);
+
+    const analyzed: ExportBounce[] = [];
+    const failures: string[] = [];
+    // Sequential, so a marathon batch of large bounces doesn't decode all at
+    // once. One bad file is reported, not fatal to the rest.
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      setAnalyzing(files.length > 1 ? `${file.name} (${i + 1} of ${files.length})` : file.name);
+      try {
+        const analysis = await analyzeAudioFile(file);
+        const now = Date.now();
+        const bounce: ExportBounce = {
+          id: makeExportId(i),
+          fileName: file.name,
+          fileSizeBytes: file.size,
+          durationSec: analysis.durationSec,
+          sampleRate: analysis.sampleRate,
+          channelCount: analysis.channelCount,
+          peaks: analysis.peaks,
+          integratedLufs: analysis.integratedLufs,
+          dynamicRangeLu: analysis.dynamicRangeLu,
+          peakDb: analysis.peakDb,
+          added_at_ms: now,
+        };
+        urls.current.set(bounce.id, URL.createObjectURL(file));
+        analyzed.push(bounce);
+      } catch {
+        failures.push(file.name);
+      }
+    }
+
+    if (analyzed.length > 0) {
+      mutateProject(selected.id, (p) => ({ ...p, exports: [...analyzed, ...p.exports] }));
+    }
+    setAnalyzing(null);
+    if (failures.length > 0) {
+      setError(
+        `Couldn't read ${failures.length} file${failures.length === 1 ? "" : "s"}: ${failures.join(", ")}`,
+      );
     }
   }
 
@@ -304,6 +331,7 @@ export function ProjectOrganizerScreen() {
         ref={fileInputRef}
         type="file"
         accept="audio/*"
+        multiple
         hidden
         onChange={handleFilePicked}
       />
@@ -390,7 +418,7 @@ export function ProjectOrganizerScreen() {
               disabled={analyzing !== null}
               onClick={() => fileInputRef.current?.click()}
             >
-              {analyzing ? "Reading…" : "Add export…"}
+              {analyzing ? "Reading…" : "Add exports…"}
             </button>
           </div>
 
@@ -455,6 +483,10 @@ export function ProjectOrganizerScreen() {
                       <div className="organizer__stat">
                         <dt>Loudness</dt>
                         <dd>{formatLufs(exp.integratedLufs)}</dd>
+                      </div>
+                      <div className="organizer__stat">
+                        <dt>Dynamics</dt>
+                        <dd>{formatLra(exp.dynamicRangeLu)}</dd>
                       </div>
                       <div className="organizer__stat">
                         <dt>Peak</dt>

@@ -14,6 +14,14 @@ import { Waveform } from "./Waveform";
 // bytes themselves are not stored, so playback is available in the session that
 // attached the file. Moving bounces into durable storage is the follow-up.
 
+type ReleaseType = "album" | "ep" | "single";
+
+const RELEASE_TYPES: ReleaseType[] = ["album", "ep", "single"];
+
+function releaseTypeLabel(type: ReleaseType): string {
+  return type === "album" ? "Album" : type === "ep" ? "EP" : "Single";
+}
+
 type AlsFile = {
   id: string;
   path: string;
@@ -37,7 +45,9 @@ type ExportBounce = {
 type OrganizerProject = {
   id: string;
   name: string;
+  releaseType: ReleaseType;
   alsFiles: AlsFile[];
+  // Order is the tracklist order: exports[0] is track 1. New exports append.
   exports: ExportBounce[];
   created_at_ms: number;
   updated_at_ms: number;
@@ -74,9 +84,15 @@ function normalizeProject(raw: unknown): OrganizerProject | null {
     ];
   }
 
+  const releaseType: ReleaseType =
+    r.releaseType === "album" || r.releaseType === "ep" || r.releaseType === "single"
+      ? r.releaseType
+      : "album";
+
   return {
     id: r.id,
     name: r.name,
+    releaseType,
     alsFiles,
     exports: r.exports as ExportBounce[],
     created_at_ms: typeof r.created_at_ms === "number" ? r.created_at_ms : Date.now(),
@@ -115,6 +131,17 @@ function formatDuration(sec: number): string {
   const m = Math.floor(total / 60);
   const s = total % 60;
   return `${m}:${s.toString().padStart(2, "0")}`;
+}
+
+// Total runtime, hours-aware — a release can run past an hour.
+function formatTotalDuration(sec: number): string {
+  if (!Number.isFinite(sec) || sec <= 0) return "0:00";
+  const total = Math.round(sec);
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  const mm = h > 0 ? m.toString().padStart(2, "0") : m.toString();
+  return h > 0 ? `${h}:${mm}:${s.toString().padStart(2, "0")}` : `${mm}:${s.toString().padStart(2, "0")}`;
 }
 
 function formatLufs(lufs: number | null): string {
@@ -167,6 +194,21 @@ export function ProjectOrganizerScreen() {
   );
   const selected = ordered.find((p) => p.id === selectedId) ?? ordered[0] ?? null;
 
+  // Release-level totals for the summary row.
+  const releaseStats = useMemo(() => {
+    if (!selected) return null;
+    const trackCount = selected.exports.length;
+    const totalSec = selected.exports.reduce(
+      (total, e) => total + (Number.isFinite(e.durationSec) ? e.durationSec : 0),
+      0,
+    );
+    const lufs = selected.exports
+      .map((e) => e.integratedLufs)
+      .filter((v): v is number => v != null);
+    const avgLufs = lufs.length > 0 ? lufs.reduce((a, b) => a + b, 0) / lufs.length : null;
+    return { trackCount, totalSec, avgLufs };
+  }, [selected]);
+
   useEffect(() => {
     persistProjects(projects);
   }, [projects]);
@@ -210,6 +252,7 @@ export function ProjectOrganizerScreen() {
     const project: OrganizerProject = {
       id: `org-${now}`,
       name: "",
+      releaseType: "album",
       alsFiles: [],
       exports: [],
       created_at_ms: now,
@@ -222,6 +265,24 @@ export function ProjectOrganizerScreen() {
   function handleRename(name: string) {
     if (!selected) return;
     mutateProject(selected.id, (p) => ({ ...p, name }));
+  }
+
+  function handleSetType(type: ReleaseType) {
+    if (!selected) return;
+    mutateProject(selected.id, (p) => ({ ...p, releaseType: type }));
+  }
+
+  // Move a track one place up (dir -1) or down (dir +1) in the tracklist.
+  function moveExport(exportId: string, dir: -1 | 1) {
+    if (!selected) return;
+    mutateProject(selected.id, (p) => {
+      const idx = p.exports.findIndex((e) => e.id === exportId);
+      const next = idx + dir;
+      if (idx < 0 || next < 0 || next >= p.exports.length) return p;
+      const exports = [...p.exports];
+      [exports[idx], exports[next]] = [exports[next], exports[idx]];
+      return { ...p, exports };
+    });
   }
 
   function handleDeleteProject(project: OrganizerProject) {
@@ -306,7 +367,8 @@ export function ProjectOrganizerScreen() {
     }
 
     if (analyzed.length > 0) {
-      mutateProject(selected.id, (p) => ({ ...p, exports: [...analyzed, ...p.exports] }));
+      // Append: new bounces land at the end of the tracklist.
+      mutateProject(selected.id, (p) => ({ ...p, exports: [...p.exports, ...analyzed] }));
     }
     setAnalyzing(null);
     if (failures.length > 0) {
@@ -452,6 +514,35 @@ export function ProjectOrganizerScreen() {
 
           {error && <p className="organizer__error">{error}</p>}
 
+          <div className="organizer__release">
+            <div className="organizer__type" role="group" aria-label="Release type">
+              {RELEASE_TYPES.map((type) => (
+                <button
+                  key={type}
+                  type="button"
+                  className={`organizer__type-btn ${selected.releaseType === type ? "is-active" : ""}`}
+                  aria-pressed={selected.releaseType === type}
+                  onClick={() => handleSetType(type)}
+                >
+                  {releaseTypeLabel(type)}
+                </button>
+              ))}
+            </div>
+            {releaseStats && (
+              <div className="organizer__release-meta">
+                <span>
+                  {releaseStats.trackCount} track{releaseStats.trackCount === 1 ? "" : "s"}
+                </span>
+                {releaseStats.trackCount > 0 && (
+                  <span>{formatTotalDuration(releaseStats.totalSec)}</span>
+                )}
+                {releaseStats.avgLufs != null && (
+                  <span>avg {releaseStats.avgLufs.toFixed(1)} LUFS</span>
+                )}
+              </div>
+            )}
+          </div>
+
           <div className="organizer__als">
             <div className="organizer__als-head">
               <span className="organizer__field-label">Ableton projects</span>
@@ -507,17 +598,43 @@ export function ProjectOrganizerScreen() {
             </div>
           ) : (
             <div className="organizer__exports">
-              {selected.exports.map((exp) => {
+              {selected.exports.map((exp, index) => {
                 const playable = urls.current.has(exp.id);
                 const active = activeExportId === exp.id;
                 return (
                   <article key={exp.id} className="organizer__bounce">
                     <div className="organizer__bounce-head">
-                      <span className="organizer__bounce-name">{exp.fileName}</span>
+                      <div className="organizer__bounce-title">
+                        <span className="organizer__track-num" aria-hidden="true">
+                          {index + 1}
+                        </span>
+                        <span className="organizer__bounce-name">
+                          <span className="sr-only">{`Track ${index + 1}: `}</span>
+                          {exp.fileName}
+                        </span>
+                      </div>
                       <div className="organizer__bounce-actions">
                         <span className="organizer__bounce-added">
                           {formatDate(exp.added_at_ms)}
                         </span>
+                        <button
+                          type="button"
+                          className="organizer__reorder"
+                          disabled={index === 0}
+                          aria-label={`Move ${exp.fileName} up`}
+                          onClick={() => moveExport(exp.id, -1)}
+                        >
+                          ↑
+                        </button>
+                        <button
+                          type="button"
+                          className="organizer__reorder"
+                          disabled={index === selected.exports.length - 1}
+                          aria-label={`Move ${exp.fileName} down`}
+                          onClick={() => moveExport(exp.id, 1)}
+                        >
+                          ↓
+                        </button>
                         <button
                           type="button"
                           className="px-btn px-btn--danger"

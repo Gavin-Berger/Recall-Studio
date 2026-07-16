@@ -10,6 +10,7 @@ import { SchemaTimeline } from "./components/schema/SchemaTimeline";
 import {
   NotesScreen,
   ProjectManagerScreen,
+  ProjectOrganizerScreen,
   ProjectVersionsScreen,
   SessionRecapScreen,
   StartupScreen,
@@ -374,6 +375,7 @@ function App() {
         />
       }
       timeline={<SchemaTimeline sessionId={effectiveSessionId} session={currentSession} />}
+      organizer={<ProjectOrganizerScreen />}
       notes={<NotesScreen />}
       glossary={<ProductionCheatSheet />}
     />

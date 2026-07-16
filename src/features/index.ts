@@ -2,6 +2,7 @@
 // feature-internal pieces (e.g. BridgeSetup) stay private to their folder.
 
 export { NotesScreen } from "./notes/NotesScreen";
+export { ProjectOrganizerScreen } from "./organizer/ProjectOrganizerScreen";
 export { ProjectManagerScreen } from "./projects/ProjectManagerScreen";
 export { ProjectVersionsScreen } from "./projects/ProjectVersionsScreen";
 export { SessionRecapScreen } from "./projects/SessionRecapScreen";

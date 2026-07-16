@@ -3627,3 +3627,421 @@
     flex-wrap: wrap;
   }
 }
+
+/* ── Project Organizer ─────────────────────────────────────────────────────
+   A per-song release view: projects on the left, the selected project's set
+   link + exported bounces on the right. Each bounce reads like a mix-review
+   file — waveform, integrated loudness, peak. Mirrors the Notes surface. */
+
+.organizer {
+  width: 100%;
+  max-width: 1360px;
+  display: grid;
+  grid-template-columns: 264px minmax(0, 1fr);
+  gap: 14px;
+  align-items: start;
+  min-height: calc(100vh - 96px);
+}
+
+.organizer__list {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 8px;
+  background: rgba(15, 18, 29, 0.85);
+  max-height: calc(100vh - 96px);
+  overflow: hidden;
+}
+
+.organizer__list-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 12px 12px 10px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.organizer__list-empty {
+  margin: 0;
+  padding: 16px 14px;
+  font-size: 0.78rem;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+.organizer__items {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px;
+  overflow-y: auto;
+}
+
+.organizer__item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 10px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--m-settle) var(--ease-arrive);
+}
+
+.organizer__item:hover {
+  background: rgba(99, 130, 255, 0.06);
+}
+
+.organizer__item.is-selected {
+  background: linear-gradient(90deg, rgba(99, 130, 255, 0.14), rgba(99, 130, 255, 0.03));
+  box-shadow: inset 2px 0 0 rgba(99, 130, 255, 0.7);
+}
+
+.organizer__item-title {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: #c7cce0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.organizer__item.is-selected .organizer__item-title {
+  color: var(--paper-strong);
+}
+
+.organizer__item-meta {
+  font-size: 0.68rem;
+  font-family: var(--font-mono);
+  color: var(--faint-aa);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.organizer__detail {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+  padding: 4px 4px 40px;
+}
+
+.organizer__detail-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.organizer__name {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  border-bottom: 1px solid transparent;
+  background: transparent;
+  color: var(--paper-strong);
+  font-family: var(--font-display);
+  font-size: 1.6rem;
+  line-height: 1.2;
+  padding: 2px 0;
+  transition: border-color var(--m-settle) var(--ease-arrive);
+}
+
+.organizer__name::placeholder {
+  color: var(--faint);
+}
+
+.organizer__name:focus {
+  outline: none;
+  border-bottom-color: rgba(99, 130, 255, 0.6);
+}
+
+.organizer__error {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: rgba(220, 90, 106, 0.12);
+  color: #f0a9b2;
+  font-size: 0.76rem;
+}
+
+.organizer__field-label {
+  font-size: 0.66rem;
+  font-family: var(--font-mono);
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--faint-aa);
+}
+
+.organizer__als {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 8px;
+  background: rgba(15, 18, 29, 0.6);
+}
+
+.organizer__als-info {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.organizer__als-name {
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  color: var(--paper);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.organizer__als-none {
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.organizer__exports-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 4px;
+}
+
+.organizer__analyzing {
+  margin: 0;
+  font-size: 0.78rem;
+  font-family: var(--font-mono);
+  color: var(--muted);
+}
+
+.organizer__exports-empty,
+.organizer__blank {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 28px 22px;
+  border: 1px dashed rgba(255, 255, 255, 0.1);
+  border-radius: 10px;
+  background: rgba(15, 18, 29, 0.4);
+}
+
+.organizer__exports-empty strong,
+.organizer__blank strong {
+  font-family: var(--font-display);
+  font-size: 1rem;
+  color: var(--paper-strong);
+}
+
+.organizer__exports-empty p,
+.organizer__blank p {
+  margin: 0;
+  font-size: 0.82rem;
+  line-height: 1.5;
+  color: var(--muted);
+  max-width: 46ch;
+}
+
+.organizer__blank {
+  align-items: flex-start;
+}
+
+.organizer__detail--empty {
+  padding-top: 24px;
+}
+
+.organizer__exports {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.organizer__bounce {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px 16px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  background: rgba(9, 12, 20, 0.55);
+  animation: organizer-arrive var(--m-arrive) var(--ease-arrive) both;
+}
+
+.organizer__bounce-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.organizer__bounce-name {
+  font-family: var(--font-mono);
+  font-size: 0.84rem;
+  color: var(--paper-strong);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.organizer__bounce-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+.organizer__bounce-added {
+  font-size: 0.68rem;
+  font-family: var(--font-mono);
+  color: var(--faint-aa);
+}
+
+.organizer__player {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.organizer__play {
+  flex-shrink: 0;
+  width: 40px;
+  height: 40px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--paper-strong);
+  font-size: 0.8rem;
+  cursor: pointer;
+  transition: border-color var(--m-settle) var(--ease-arrive),
+    background var(--m-settle) var(--ease-arrive);
+}
+
+.organizer__play:hover:not(:disabled) {
+  border-color: rgba(99, 130, 255, 0.5);
+  background: rgba(99, 130, 255, 0.12);
+}
+
+.organizer__play:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* Waveform: the finished bounce's envelope. Develops once and holds (§6). */
+.orgwave {
+  flex: 1;
+  min-width: 0;
+  width: 100%;
+  height: 72px;
+  display: block;
+  cursor: pointer;
+  color: var(--muted);
+}
+
+.orgwave[role="img"] {
+  cursor: default;
+}
+
+.orgwave:focus-visible {
+  outline: 2px solid var(--track);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+.orgwave__base {
+  fill: rgba(216, 220, 239, 0.26);
+}
+
+.orgwave__played {
+  fill: var(--paper-strong);
+}
+
+.orgwave__head {
+  stroke: var(--transport);
+  stroke-width: 1.5;
+}
+
+.orgwave--develop {
+  animation: orgwave-develop var(--m-develop) var(--ease-arrive) both;
+  transform-origin: center;
+}
+
+@keyframes orgwave-develop {
+  from {
+    opacity: 0;
+    transform: scaleY(0.55);
+  }
+  to {
+    opacity: 1;
+    transform: scaleY(1);
+  }
+}
+
+@keyframes organizer-arrive {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.organizer__stats {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  margin: 0;
+  padding-top: 2px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.organizer__stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-top: 8px;
+}
+
+.organizer__stat dt {
+  font-size: 0.62rem;
+  font-family: var(--font-mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--faint-aa);
+}
+
+.organizer__stat dd {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 0.9rem;
+  color: var(--paper-strong);
+}
+
+@media (max-width: 860px) {
+  .organizer {
+    grid-template-columns: 1fr;
+    min-height: 0;
+  }
+
+  .organizer__list {
+    max-height: 220px;
+  }
+
+  .organizer__stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}

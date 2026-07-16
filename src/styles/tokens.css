@@ -5,6 +5,8 @@
   --paper-strong: #f4f6ff;
   --muted: #8b90a3;
   --faint: #636a82;
+  /* AA-safe replacement for --faint on text under 19px (DESIGN.md §2). */
+  --faint-aa: #7d84a0;
   --panel: #14161f;
   --panel-2: #191c27;
   --panel-3: #202432;
@@ -27,6 +29,14 @@
   --radius: 10px;
   --radius-sm: 6px;
   --shadow: 0 24px 70px rgba(0, 0, 0, 0.34);
+
+  /* Motion (DESIGN.md §6). Two registers only: arrival and recognition.
+     linear easing is banned; --ease-arrive is the default. */
+  --m-settle: 120ms;
+  --m-arrive: 220ms;
+  --m-develop: 420ms;
+  --ease-arrive: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-exit: cubic-bezier(0.4, 0, 1, 1);
   --font-display: "Bahnschrift", "Aptos Display", "Segoe UI Variable Display", "Segoe UI", sans-serif;
   --font-body: "Aptos", "Segoe UI Variable Text", "Segoe UI", sans-serif;
   --font-mono: "Cascadia Code", "JetBrains Mono", "SFMono-Regular", Consolas, monospace;

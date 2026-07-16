@@ -2,10 +2,17 @@ import type { ReactNode } from "react";
 import { RecallMark } from "./RecallMark";
 
 // The milestone surfaces: project management, a project's version memory, a recap
-// for the selected capture, the timeline workspace, the producer notebook, and
-// the producer reference. "versions" is a drill-in under Projects, so it shares
-// the Projects nav item.
-export type AppSurface = "projects" | "versions" | "recap" | "timeline" | "notes" | "glossary";
+// for the selected capture, the timeline workspace, the release organizer, the
+// producer notebook, and the producer reference. "versions" is a drill-in under
+// Projects, so it shares the Projects nav item.
+export type AppSurface =
+  | "projects"
+  | "versions"
+  | "recap"
+  | "timeline"
+  | "organizer"
+  | "notes"
+  | "glossary";
 
 type NavItem = {
   id: AppSurface;
@@ -17,6 +24,7 @@ const NAV_ITEMS: NavItem[] = [
   { id: "projects", label: "Projects", hint: "Songs & versions" },
   { id: "recap", label: "Recap", hint: "Session summary" },
   { id: "timeline", label: "Timeline", hint: "Workspace" },
+  { id: "organizer", label: "Organizer", hint: "Mixes & releases" },
   { id: "notes", label: "Notes", hint: "Producer notebook" },
   { id: "glossary", label: "Reference", hint: "Sound terms" },
 ];
@@ -29,6 +37,7 @@ type AppShellProps = {
   versions: ReactNode;
   recap: ReactNode;
   timeline: ReactNode;
+  organizer: ReactNode;
   notes: ReactNode;
   glossary: ReactNode;
 };
@@ -41,6 +50,7 @@ export function AppShell({
   versions,
   recap,
   timeline,
+  organizer,
   notes,
   glossary,
 }: AppShellProps) {
@@ -97,6 +107,8 @@ export function AppShell({
             <div className="home-surface">{versions}</div>
           ) : surface === "recap" ? (
             <div className="home-surface">{recap}</div>
+          ) : surface === "organizer" ? (
+            <div className="home-surface">{organizer}</div>
           ) : surface === "notes" ? (
             <div className="home-surface">{notes}</div>
           ) : surface === "glossary" ? (

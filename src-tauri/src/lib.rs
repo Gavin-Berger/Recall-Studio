@@ -1,6 +1,7 @@
 mod event_catalog;
 mod install;
 mod metrics;
+mod organizer;
 mod protocol;
 mod schema_projection;
 mod session;
@@ -30,6 +31,55 @@ struct AppState {
 #[tauri::command]
 fn write_text_file(path: String, contents: String) -> Result<(), String> {
     std::fs::write(&path, contents).map_err(|error| format!("Failed to write file: {}", error))
+}
+
+/// Return a producer-selected audio export as a raw IPC response. The organizer
+/// persists the path and reloads bytes only when that track's player is opened.
+#[tauri::command]
+fn read_organizer_audio(path: String) -> Result<tauri::ipc::Response, String> {
+    let source = std::path::Path::new(&path);
+    let extension = source
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    const AUDIO_EXTENSIONS: &[&str] = &["wav", "wave", "aif", "aiff", "flac", "mp3", "m4a", "aac", "ogg"];
+    if !AUDIO_EXTENSIONS.contains(&extension.as_str()) {
+        return Err("That file is not a supported audio export.".into());
+    }
+    let bytes = std::fs::read(source)
+        .map_err(|error| format!("Failed to read audio export: {}", error))?;
+    Ok(tauri::ipc::Response::new(bytes))
+}
+
+/// Load every organizer project (release) from native storage, with cover art
+/// and waveform envelopes hydrated from their cache files.
+#[tauri::command]
+fn list_organizer_projects(
+    state: State<'_, AppState>,
+) -> Result<Vec<organizer::OrganizerProject>, String> {
+    let storage = state.storage.lock().expect("Storage state lock failed");
+    storage.list_organizer_projects()
+}
+
+/// Save one whole organizer project atomically: cover + waveform assets to
+/// files, structured rows in a single transaction.
+#[tauri::command]
+fn save_organizer_project(
+    state: State<'_, AppState>,
+    project: organizer::OrganizerProject,
+) -> Result<(), String> {
+    let storage = state.storage.lock().expect("Storage state lock failed");
+    storage.save_organizer_project(&project)
+}
+
+#[tauri::command]
+fn delete_organizer_project(
+    state: State<'_, AppState>,
+    project_id: String,
+) -> Result<(), String> {
+    let storage = state.storage.lock().expect("Storage state lock failed");
+    storage.delete_organizer_project(&project_id)
 }
 
 #[tauri::command]
@@ -998,6 +1048,10 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             write_text_file,
+            read_organizer_audio,
+            list_organizer_projects,
+            save_organizer_project,
+            delete_organizer_project,
             get_connection_status,
             get_recent_events,
             start_session,

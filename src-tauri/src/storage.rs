@@ -177,6 +177,39 @@ impl StorageState {
         Ok(connection)
     }
 
+    // Organizer asset files (waveform cache, cover art) live in a subdirectory
+    // next to the database file, so they travel with the app-data directory.
+    fn organizer_assets_dir(&self) -> Result<PathBuf, String> {
+        let db = self.database_path()?;
+        let parent = db
+            .parent()
+            .ok_or_else(|| "Database path has no parent directory".to_string())?;
+        Ok(parent.join("organizer"))
+    }
+
+    pub fn list_organizer_projects(
+        &self,
+    ) -> Result<Vec<crate::organizer::OrganizerProject>, String> {
+        let connection = self.open_connection()?;
+        let assets = self.organizer_assets_dir()?;
+        crate::organizer::list_projects(&connection, &assets)
+    }
+
+    pub fn save_organizer_project(
+        &self,
+        project: &crate::organizer::OrganizerProject,
+    ) -> Result<(), String> {
+        let mut connection = self.open_connection()?;
+        let assets = self.organizer_assets_dir()?;
+        crate::organizer::save_project(&mut connection, project, &assets)
+    }
+
+    pub fn delete_organizer_project(&self, project_id: &str) -> Result<(), String> {
+        let mut connection = self.open_connection()?;
+        let assets = self.organizer_assets_dir()?;
+        crate::organizer::delete_project(&mut connection, project_id, &assets)
+    }
+
     pub fn resume_or_create_active_session(&self) -> Result<SessionStatus, String> {
         let connection = self.open_connection()?;
 
@@ -2988,6 +3021,7 @@ pub fn initialize_database(db_path: &Path) -> rusqlite::Result<()> {
     migrate_event_columns(&connection)?;
     migrate_parameter_change_columns(&connection)?;
     backfill_projects(&connection)?;
+    crate::organizer::initialize_schema(&connection)?;
 
     Ok(())
 }

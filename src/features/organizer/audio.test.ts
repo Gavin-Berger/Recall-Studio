@@ -1,5 +1,17 @@
 import { describe, expect, it } from "vitest";
-import { bucketPeaks, integratedLoudness, loudnessRange, samplePeak, toDb } from "./audio";
+import {
+  bucketPeaks,
+  highPassCoeffs,
+  highShelfCoeffs,
+  integratedLoudness,
+  loudnessRange,
+  packWaveformEnvelope,
+  samplePeak,
+  toDb,
+  truePeak,
+  unpackWaveformEnvelope,
+  waveformEnvelope,
+} from "./audio";
 
 const FS = 48000;
 
@@ -21,13 +33,10 @@ describe("integratedLoudness", () => {
     expect(integratedLoudness([sine(1000, 0.5, 0.2)], FS)).toBeNull();
   });
 
-  it("measures a 1kHz tone in a sane LUFS range", () => {
-    // A -20 dBFS (amplitude 0.1) 1kHz tone lands near -23 LUFS after
-    // K-weighting; assert a loose but meaningful window, not an exact value.
-    const lufs = integratedLoudness([sine(1000, 0.1, 2)], FS);
-    expect(lufs).not.toBeNull();
-    expect(lufs!).toBeGreaterThan(-30);
-    expect(lufs!).toBeLessThan(-16);
+  it("measures the BS.1770 1 kHz reference level", () => {
+    // A mono 1 kHz sine at -20 dBFS peak measures -23.00 LUFS after the
+    // published K-weighting filters (steady-state analytic result: -23.0036).
+    expect(integratedLoudness([sine(1000, 0.1, 5)], FS)).toBeCloseTo(-23.0, 1);
   });
 
   it("reports a louder tone as louder", () => {
@@ -44,6 +53,40 @@ describe("integratedLoudness", () => {
     // Summing two equal channels adds ~3 LU over a single channel.
     expect(stereo - mono).toBeGreaterThan(2);
     expect(stereo - mono).toBeLessThan(4);
+  });
+
+  it("holds the reference level across common production sample rates", () => {
+    for (const fs of [44100, 96000]) {
+      expect(integratedLoudness([sine(1000, 0.1, 5, fs)], fs)).toBeCloseTo(-23.0, 1);
+    }
+  });
+
+  it("applies BS.1770 channel weights to a Web Audio 5.1 layout", () => {
+    const silence = () => new Float32Array(FS * 2);
+    const front = integratedLoudness([sine(1000, 0.1, 2), silence(), silence(), silence(), silence(), silence()], FS)!;
+    const surround = integratedLoudness([silence(), silence(), silence(), silence(), sine(1000, 0.1, 2), silence()], FS)!;
+    const lfeOnly = integratedLoudness([silence(), silence(), silence(), sine(1000, 0.5, 2), silence(), silence()], FS);
+
+    expect(surround - front).toBeCloseTo(1.5, 1);
+    expect(lfeOnly).toBeNull();
+  });
+});
+
+describe("K-weighting coefficients", () => {
+  it("matches the coefficients published by BS.1770-5 at 48 kHz", () => {
+    const shelf = highShelfCoeffs(FS);
+    expect(shelf.b0).toBeCloseTo(1.53512485958697, 12);
+    expect(shelf.b1).toBeCloseTo(-2.69169618940638, 12);
+    expect(shelf.b2).toBeCloseTo(1.19839281085285, 12);
+    expect(shelf.a1).toBeCloseTo(-1.69065929318241, 12);
+    expect(shelf.a2).toBeCloseTo(0.73248077421585, 12);
+
+    const highPass = highPassCoeffs(FS);
+    expect(highPass.b0).toBe(1);
+    expect(highPass.b1).toBe(-2);
+    expect(highPass.b2).toBe(1);
+    expect(highPass.a1).toBeCloseTo(-1.99004745483398, 12);
+    expect(highPass.a2).toBeCloseTo(0.99007225036621, 12);
   });
 });
 
@@ -91,6 +134,53 @@ describe("bucketPeaks", () => {
 
   it("returns an empty envelope for an empty signal", () => {
     expect(bucketPeaks(new Float32Array(0), 32)).toEqual([]);
+  });
+});
+
+describe("waveformEnvelope", () => {
+  it("preserves real positive and negative sample excursions", () => {
+    const waveform = waveformEnvelope(new Float32Array([-0.75, 0.25, -0.1, 0.9]), 2);
+    expect(waveform.min).toEqual([-0.75, -0.1]);
+    expect(waveform.max).toEqual([0.25, 0.9]);
+  });
+
+  it("does not normalize a quiet waveform to full height", () => {
+    const waveform = waveformEnvelope(new Float32Array([-0.1, 0.08]), 1);
+    expect(waveform.min[0]).toBe(-0.1);
+    expect(waveform.max[0]).toBe(0.08);
+  });
+
+  it("round-trips a compact envelope within display-pixel precision", () => {
+    const min = [-1, -0.48, -0.03];
+    const max = [0.04, 0.51, 1];
+    const packed = packWaveformEnvelope(min, max);
+    const unpacked = unpackWaveformEnvelope(packed, min.length);
+    for (let index = 0; index < min.length; index++) {
+      expect(unpacked.min[index]).toBeCloseTo(min[index], 2);
+      expect(unpacked.max[index]).toBeCloseTo(max[index], 2);
+    }
+  });
+});
+
+describe("truePeak", () => {
+  it("keeps digital silence at zero", () => {
+    expect(truePeak([new Float32Array(4096)], 48000)).toBe(0);
+  });
+
+  it("recovers the 3 dB quarter-sample-rate under-read described by BS.1770", () => {
+    const tone = new Float32Array(FS);
+    for (let i = 0; i < tone.length; i++) {
+      tone[i] = Math.sin((Math.PI / 2) * i + Math.PI / 4);
+    }
+    const sp = samplePeak([tone]);
+    const tp = truePeak([tone], 48000);
+    expect(toDb(sp)).toBeCloseTo(-3.01, 1);
+    expect(Math.abs(toDb(tp))).toBeLessThan(0.1);
+  });
+
+  it("never reports below the sample peak", () => {
+    const tone = sine(1000, 0.4, 1, 48000);
+    expect(truePeak([tone], 48000)).toBeGreaterThanOrEqual(samplePeak([tone]) - 1e-6);
   });
 });
 

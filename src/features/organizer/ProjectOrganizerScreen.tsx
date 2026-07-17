@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { invoke, isTauri } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { analyzeAudioFile } from "./audio";
 import { Waveform } from "./Waveform";
@@ -10,9 +11,8 @@ import { Waveform } from "./Waveform";
 // not linking one file.
 //
 // Storage tier: localStorage, same as the producer notebook (NotesScreen). The
-// derived analysis (waveform envelope + LUFS) is tiny and persists; the audio
-// bytes themselves are not stored, so playback is available in the session that
-// attached the file. Moving bounces into durable storage is the follow-up.
+// derived analysis (waveform envelope + LUFS) and the producer-selected audio
+// path persist. Audio bytes are loaded on demand when a track's player opens.
 
 type ReleaseType = "album" | "ep" | "single";
 
@@ -28,26 +28,72 @@ type AlsFile = {
   name: string;
 };
 
+export type TimedComment = {
+  id: string;
+  timeSec: number;
+  text: string;
+  created_at_ms: number;
+};
+
+export function commentsCrossed(
+  comments: readonly TimedComment[],
+  previousTime: number,
+  currentTime: number,
+): TimedComment[] {
+  if (currentTime < previousTime) return [];
+  return comments.filter(
+    (comment) => comment.timeSec > previousTime + 0.01 && comment.timeSec <= currentTime + 0.05,
+  );
+}
+
 type ExportBounce = {
   id: string;
   fileName: string;
+  sourcePath?: string;
   fileSizeBytes: number;
   durationSec: number;
   sampleRate: number;
   channelCount: number;
   peaks: number[];
+  waveformMin?: number[];
+  waveformMax?: number[];
+  waveformData?: string;
+  waveformChannels?: string[];
+  waveformPoints?: number;
   integratedLufs: number | null;
   dynamicRangeLu: number | null;
   peakDb: number;
+  // Older saved entries are sample peak; newly analyzed entries are true peak.
+  peakKind?: "sample" | "true";
+  analysisVersion?: number;
   added_at_ms: number;
+  timedComments?: TimedComment[];
+  volume?: number;
+};
+
+type OrganizerTrack = {
+  id: string;
+  title: string;
+  comment: string;
+  alsFile: AlsFile | null;
+  bounces: ExportBounce[];
+  finalBounceId: string | null;
+  // Compatibility projection used by the hidden v1 renderer.
+  bounce: ExportBounce | null;
 };
 
 type OrganizerProject = {
   id: string;
   name: string;
+  artist: string;
+  releaseDate: string;
+  notes: string;
   releaseType: ReleaseType;
+  coverImageDataUrl: string | null;
+  // Array order is album order. Each track owns its source set and final mix.
+  tracks: OrganizerTrack[];
+  // Read-only compatibility projections for the pre-tracklist renderer below.
   alsFiles: AlsFile[];
-  // Order is the tracklist order: exports[0] is track 1. New exports append.
   exports: ExportBounce[];
   created_at_ms: number;
   updated_at_ms: number;
@@ -55,13 +101,20 @@ type OrganizerProject = {
 
 const STORAGE_KEY = "recall-studio.organizer.v1";
 
-// Coerce a stored record into a project, tolerating older shapes. The v1 single
-// link (alsPath/alsName) is migrated into the alsFiles list so early projects
-// keep their set.
-function normalizeProject(raw: unknown): OrganizerProject | null {
+function normalizeBounceVolume(bounce: ExportBounce): ExportBounce {
+  return {
+    ...bounce,
+    volume: typeof bounce.volume === "number" ? clampVolume(bounce.volume) : 1,
+  };
+}
+
+// Coerce a stored record into a project, tolerating older shapes. The original
+// organizer kept Ableton sets and exports in separate arrays; pair them by
+// position so existing releases become Track 1, Track 2, etc. without loss.
+export function normalizeProject(raw: unknown): OrganizerProject | null {
   if (typeof raw !== "object" || raw === null) return null;
   const r = raw as Record<string, unknown>;
-  if (typeof r.id !== "string" || typeof r.name !== "string" || !Array.isArray(r.exports)) {
+  if (typeof r.id !== "string" || typeof r.name !== "string") {
     return null;
   }
 
@@ -84,6 +137,60 @@ function normalizeProject(raw: unknown): OrganizerProject | null {
     ];
   }
 
+  const oldExports = Array.isArray(r.exports)
+    ? (r.exports as ExportBounce[]).map(normalizeBounceVolume)
+    : [];
+  let tracks: OrganizerTrack[];
+  if (Array.isArray(r.tracks)) {
+    tracks = r.tracks
+      .filter((track): track is Record<string, unknown> => typeof track === "object" && track !== null)
+      .map((track) => {
+        const rawAls = typeof track.alsFile === "object" && track.alsFile !== null
+          ? track.alsFile as Record<string, unknown>
+          : null;
+        const alsFile = rawAls && typeof rawAls.path === "string"
+          ? {
+              id: typeof rawAls.id === "string" ? rawAls.id : makeAlsId(),
+              path: rawAls.path,
+              name: typeof rawAls.name === "string" ? rawAls.name : basename(rawAls.path),
+            }
+          : null;
+        const legacyBounce = typeof track.bounce === "object" && track.bounce !== null
+          ? normalizeBounceVolume(track.bounce as ExportBounce)
+          : null;
+        const bounces = Array.isArray(track.bounces)
+          ? track.bounces
+              .filter((bounce): bounce is ExportBounce => typeof bounce === "object" && bounce !== null)
+              .map(normalizeBounceVolume)
+          : legacyBounce ? [legacyBounce] : [];
+        const requestedFinalId = typeof track.finalBounceId === "string" ? track.finalBounceId : null;
+        const finalBounceId = bounces.some((bounce) => bounce.id === requestedFinalId)
+          ? requestedFinalId
+          : bounces[0]?.id ?? null;
+        const bounce = bounces.find((candidate) => candidate.id === finalBounceId) ?? bounces[0] ?? null;
+        return {
+          id: typeof track.id === "string" ? track.id : makeTrackId(),
+          title: typeof track.title === "string" ? track.title : "",
+          comment: typeof track.comment === "string" ? track.comment : "",
+          alsFile,
+          bounces,
+          finalBounceId,
+          bounce,
+        };
+      });
+  } else {
+    const trackCount = Math.max(alsFiles.length, oldExports.length);
+    tracks = Array.from({ length: trackCount }, (_, index) => ({
+      id: makeTrackId(),
+      title: "",
+      comment: "",
+      alsFile: alsFiles[index] ?? null,
+      bounces: oldExports[index] ? [oldExports[index]] : [],
+      finalBounceId: oldExports[index]?.id ?? null,
+      bounce: oldExports[index] ?? null,
+    }));
+  }
+
   const releaseType: ReleaseType =
     r.releaseType === "album" || r.releaseType === "ep" || r.releaseType === "single"
       ? r.releaseType
@@ -92,9 +199,17 @@ function normalizeProject(raw: unknown): OrganizerProject | null {
   return {
     id: r.id,
     name: r.name,
+    artist: typeof r.artist === "string" ? r.artist : "",
+    releaseDate: typeof r.releaseDate === "string" ? r.releaseDate : "",
+    notes: typeof r.notes === "string" ? r.notes : "",
     releaseType,
-    alsFiles,
-    exports: r.exports as ExportBounce[],
+    coverImageDataUrl:
+      typeof r.coverImageDataUrl === "string" && r.coverImageDataUrl.startsWith("data:image/")
+        ? r.coverImageDataUrl
+        : null,
+    tracks,
+    alsFiles: tracks.flatMap((track) => track.alsFile ? [track.alsFile] : []),
+    exports: tracks.flatMap((track) => track.bounces),
     created_at_ms: typeof r.created_at_ms === "number" ? r.created_at_ms : Date.now(),
     updated_at_ms: typeof r.updated_at_ms === "number" ? r.updated_at_ms : Date.now(),
   };
@@ -161,8 +276,44 @@ function makeAlsId(): string {
   return `als-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
-function formatDb(db: number): string {
-  return Number.isFinite(db) ? `${db >= 0 ? "+" : ""}${db.toFixed(1)} dB` : "—";
+function makeTrackId(): string {
+  return `track-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function makeTrack(): OrganizerTrack {
+  return {
+    id: makeTrackId(),
+    title: "",
+    comment: "",
+    alsFile: null,
+    bounces: [],
+    finalBounceId: null,
+    bounce: null,
+  };
+}
+
+function withTrackBounces(
+  track: OrganizerTrack,
+  bounces: ExportBounce[],
+  requestedFinalId: string | null = track.finalBounceId,
+): OrganizerTrack {
+  const finalBounceId = bounces.some((bounce) => bounce.id === requestedFinalId)
+    ? requestedFinalId
+    : bounces[0]?.id ?? null;
+  return {
+    ...track,
+    bounces,
+    finalBounceId,
+    bounce: bounces.find((bounce) => bounce.id === finalBounceId) ?? null,
+  };
+}
+
+function titleFromFile(name: string): string {
+  return name.replace(/\.(als|wav|aiff?|mp3|flac|m4a|ogg)$/i, "");
+}
+
+function formatDb(db: number, unit: "dBTP" | "dBFS"): string {
+  return Number.isFinite(db) ? `${db >= 0 ? "+" : ""}${db.toFixed(1)} ${unit}` : "—";
 }
 
 function formatDate(ms: number): string {
@@ -173,20 +324,69 @@ function formatDate(ms: number): string {
   });
 }
 
+function clampVolume(value: number): number {
+  return Math.min(1, Math.max(0, value));
+}
+
+function volumePercent(value: number | undefined): number {
+  return Math.round(clampVolume(value ?? 1) * 100);
+}
+
+function versionLabel(index: number): string {
+  return index < 26 ? String.fromCharCode(65 + index) : `${index + 1}`;
+}
+
+async function prepareCoverImage(file: File): Promise<string> {
+  const objectUrl = URL.createObjectURL(file);
+  try {
+    const image = new Image();
+    image.src = objectUrl;
+    await image.decode();
+
+    const size = 1000;
+    const sourceSize = Math.min(image.naturalWidth, image.naturalHeight);
+    const sourceX = (image.naturalWidth - sourceSize) / 2;
+    const sourceY = (image.naturalHeight - sourceSize) / 2;
+    const canvas = document.createElement("canvas");
+    canvas.width = size;
+    canvas.height = size;
+    const context = canvas.getContext("2d");
+    if (!context) throw new Error("Cover art could not be processed.");
+    context.drawImage(image, sourceX, sourceY, sourceSize, sourceSize, 0, 0, size, size);
+    return canvas.toDataURL("image/webp", 0.86);
+  } finally {
+    URL.revokeObjectURL(objectUrl);
+  }
+}
+
 export function ProjectOrganizerScreen() {
   const [projects, setProjects] = useState<OrganizerProject[]>(loadProjects);
   const [selectedId, setSelectedId] = useState<string | null>(() => loadProjects()[0]?.id ?? null);
   const [activeExportId, setActiveExportId] = useState<string | null>(null);
   const [progress, setProgress] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
+  const [expandedTrackIds, setExpandedTrackIds] = useState<Set<string>>(() => new Set());
+  const [, setPlaybackRevision] = useState(0);
   const [analyzing, setAnalyzing] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [draggedTrackId, setDraggedTrackId] = useState<string | null>(null);
+  const [dragOverTrackId, setDragOverTrackId] = useState<string | null>(null);
+  const [timedCommentDrafts, setTimedCommentDrafts] = useState<Record<string, string>>({});
+  const [attentionCommentIds, setAttentionCommentIds] = useState<Set<string>>(() => new Set());
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const coverInputRef = useRef<HTMLInputElement | null>(null);
+  const pendingExportTrackId = useRef<string | null>(null);
+  const pendingReplaceBounceId = useRef<string | null>(null);
+  const pendingExportAutoPlay = useRef(false);
   // Session-only object URLs for the attached bounces, keyed by export id.
   const urls = useRef<Map<string, string>>(new Map());
   const rafRef = useRef<number | null>(null);
+  const lastProgressPaintRef = useRef(0);
+  const playbackCursorRef = useRef<{ exportId: string | null; timeSec: number }>({ exportId: null, timeSec: 0 });
+  const commentAttentionTimers = useRef<Map<string, number>>(new Map());
+  const waveformUpgradeIds = useRef<Set<string>>(new Set());
 
   const ordered = useMemo(
     () => [...projects].sort((a, b) => b.updated_at_ms - a.updated_at_ms),
@@ -197,27 +397,67 @@ export function ProjectOrganizerScreen() {
   // Release-level totals for the summary row.
   const releaseStats = useMemo(() => {
     if (!selected) return null;
-    const trackCount = selected.exports.length;
-    const totalSec = selected.exports.reduce(
+    const bounces = selected.tracks
+      .map((track) => track.bounce)
+      .filter((bounce): bounce is ExportBounce => bounce !== null);
+    const trackCount = selected.tracks.length;
+    const totalSec = bounces.reduce(
       (total, e) => total + (Number.isFinite(e.durationSec) ? e.durationSec : 0),
       0,
     );
-    const lufs = selected.exports
+    const lufs = bounces
       .map((e) => e.integratedLufs)
       .filter((v): v is number => v != null);
-    const avgLufs = lufs.length > 0 ? lufs.reduce((a, b) => a + b, 0) / lufs.length : null;
-    return { trackCount, totalSec, avgLufs };
+    const loudnessSpan = lufs.length > 0 ? { min: Math.min(...lufs), max: Math.max(...lufs) } : null;
+    return { trackCount, completedCount: bounces.length, totalSec, loudnessSpan };
   }, [selected]);
 
   useEffect(() => {
     persistProjects(projects);
   }, [projects]);
 
+  useEffect(() => {
+    if (!activeExportId) return;
+    const exp = selected?.tracks
+      .flatMap((track) => track.bounces)
+      .find((bounce) => bounce.id === activeExportId);
+    if (!exp || !Number.isFinite(exp.durationSec) || exp.durationSec <= 0) return;
+    const currentTime = Math.min(exp.durationSec, Math.max(0, progress * exp.durationSec));
+    const previous = playbackCursorRef.current;
+    if (previous.exportId !== exp.id || !isPlaying || currentTime < previous.timeSec) {
+      playbackCursorRef.current = { exportId: exp.id, timeSec: currentTime };
+      return;
+    }
+    const crossed = commentsCrossed(exp.timedComments ?? [], previous.timeSec, currentTime);
+    playbackCursorRef.current = { exportId: exp.id, timeSec: currentTime };
+    if (crossed.length === 0) return;
+    setAttentionCommentIds((current) => {
+      const next = new Set(current);
+      for (const comment of crossed) next.add(comment.id);
+      return next;
+    });
+    for (const comment of crossed) {
+      const existingTimer = commentAttentionTimers.current.get(comment.id);
+      if (existingTimer !== undefined) window.clearTimeout(existingTimer);
+      const timer = window.setTimeout(() => {
+        setAttentionCommentIds((current) => {
+          const next = new Set(current);
+          next.delete(comment.id);
+          return next;
+        });
+        commentAttentionTimers.current.delete(comment.id);
+      }, Math.min(2200, 700 + comment.text.length * 22));
+      commentAttentionTimers.current.set(comment.id, timer);
+    }
+  }, [activeExportId, isPlaying, progress, selected]);
+
   // Revoke every object URL on unmount so we don't leak the session's audio.
   useEffect(() => {
     const map = urls.current;
     return () => {
       if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
+      for (const timer of commentAttentionTimers.current.values()) window.clearTimeout(timer);
+      commentAttentionTimers.current.clear();
       for (const url of map.values()) URL.revokeObjectURL(url);
       map.clear();
     };
@@ -230,11 +470,55 @@ export function ProjectOrganizerScreen() {
     }
   }, []);
 
-  const tick = useCallback(() => {
+  const ensureBounceUrl = useCallback(async (bounce: ExportBounce) => {
+    const existing = urls.current.get(bounce.id);
+    if (existing) return existing;
+    if (!bounce.sourcePath || !isTauri()) return null;
+    const bytes = await invoke<ArrayBuffer>("read_organizer_audio", { path: bounce.sourcePath });
+    const url = URL.createObjectURL(new Blob([bytes]));
+    urls.current.set(bounce.id, url);
+    setPlaybackRevision((revision) => revision + 1);
+    return url;
+  }, []);
+
+  useEffect(() => {
+    const lastTrackId = selected?.tracks[selected.tracks.length - 1]?.id;
+    setExpandedTrackIds(lastTrackId ? new Set([lastTrackId]) : new Set());
+  }, [selected?.id]);
+
+  useEffect(() => {
+    const bounces = selected?.tracks
+      .filter((track) => expandedTrackIds.has(track.id))
+      .flatMap((track) => track.bounce ? [track.bounce] : [])
+      .filter((bounce) => bounce.sourcePath && !urls.current.has(bounce.id)) ?? [];
+    if (bounces.length === 0) return;
+    let cancelled = false;
+    void Promise.all(bounces.map(async (bounce) => {
+      const url = await ensureBounceUrl(bounce);
+      if (cancelled && url) {
+        URL.revokeObjectURL(url);
+        urls.current.delete(bounce.id);
+      }
+    }))
+      .catch(() => {
+        if (!cancelled) {
+          const name = bounces[0]?.fileName ?? "audio export";
+          setError(`Couldn't reopen ${name}. Use Replace to locate it again.`);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [ensureBounceUrl, expandedTrackIds, selected]);
+
+  const tick = useCallback((timestamp: number) => {
     const audio = audioRef.current;
     if (!audio) return;
     const dur = Number.isFinite(audio.duration) && audio.duration > 0 ? audio.duration : 0;
-    if (dur > 0) setProgress(Math.min(1, audio.currentTime / dur));
+    if (dur > 0 && timestamp - lastProgressPaintRef.current >= 33) {
+      lastProgressPaintRef.current = timestamp;
+      setProgress(Math.min(1, audio.currentTime / dur));
+    }
     rafRef.current = requestAnimationFrame(tick);
   }, []);
 
@@ -247,12 +531,72 @@ export function ProjectOrganizerScreen() {
     [],
   );
 
+  useEffect(() => {
+    if (!selected || expandedTrackIds.size === 0 || !isTauri()) return;
+    const staleBounces = selected.tracks
+      .filter((track) => expandedTrackIds.has(track.id))
+      .flatMap((track) => track.bounces.map((bounce) => ({ trackId: track.id, bounce })))
+      .filter(({ bounce }) => bounce.sourcePath
+        && (!bounce.waveformChannels?.length || (bounce.analysisVersion ?? 0) < 3)
+        && !waveformUpgradeIds.current.has(bounce.id));
+    if (staleBounces.length === 0) return;
+    let cancelled = false;
+
+    void (async () => {
+      for (const { trackId, bounce } of staleBounces) {
+        if (cancelled) return;
+        waveformUpgradeIds.current.add(bounce.id);
+        try {
+          setAnalyzing(`${bounce.fileName} waveform`);
+          const bytes = await invoke<ArrayBuffer>("read_organizer_audio", { path: bounce.sourcePath! });
+          const file = new File([bytes], bounce.fileName);
+          if (!urls.current.has(bounce.id)) {
+            urls.current.set(bounce.id, URL.createObjectURL(file));
+            setPlaybackRevision((revision) => revision + 1);
+          }
+          const analysis = await analyzeAudioFile(file);
+          if (cancelled) return;
+          mutateProject(selected.id, (project) => ({
+            ...project,
+            tracks: project.tracks.map((candidate) => {
+              if (candidate.id !== trackId) return candidate;
+              const bounces = candidate.bounces.map((current) => current.id === bounce.id
+                ? {
+                    ...current,
+                    waveformChannels: analysis.waveformChannels,
+                    waveformPoints: analysis.waveformPoints,
+                    analysisVersion: 3,
+                  }
+                : current);
+              return withTrackBounces(candidate, bounces);
+            }),
+          }));
+        } catch {
+          if (!cancelled) setError(`Couldn't upgrade the waveform for ${bounce.fileName}. Use Replace to locate it again.`);
+        } finally {
+          waveformUpgradeIds.current.delete(bounce.id);
+          if (!cancelled) setAnalyzing(null);
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [expandedTrackIds, mutateProject, selected]);
+
   function handleNewProject() {
     const now = Date.now();
+    const firstTrack = makeTrack();
     const project: OrganizerProject = {
       id: `org-${now}`,
       name: "",
+      artist: "",
+      releaseDate: "",
+      notes: "",
       releaseType: "album",
+      coverImageDataUrl: null,
+      tracks: [firstTrack],
       alsFiles: [],
       exports: [],
       created_at_ms: now,
@@ -260,6 +604,7 @@ export function ProjectOrganizerScreen() {
     };
     setProjects((prev) => [project, ...prev]);
     setSelectedId(project.id);
+    setExpandedTrackIds(new Set([firstTrack.id]));
   }
 
   function handleRename(name: string) {
@@ -272,114 +617,294 @@ export function ProjectOrganizerScreen() {
     mutateProject(selected.id, (p) => ({ ...p, releaseType: type }));
   }
 
-  // Move a track one place up (dir -1) or down (dir +1) in the tracklist.
-  function moveExport(exportId: string, dir: -1 | 1) {
+  function handleSetArtist(artist: string) {
+    if (!selected) return;
+    mutateProject(selected.id, (p) => ({ ...p, artist }));
+  }
+
+  function handleSetReleaseDate(releaseDate: string) {
+    if (!selected) return;
+    mutateProject(selected.id, (p) => ({ ...p, releaseDate }));
+  }
+
+  function handleSetNotes(notes: string) {
+    if (!selected) return;
+    mutateProject(selected.id, (p) => ({ ...p, notes }));
+  }
+
+  function handleCoverPicked(event: React.ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file || !selected) return;
+    setError(null);
+    void prepareCoverImage(file)
+      .then((coverImageDataUrl) => {
+        mutateProject(selected.id, (project) => ({ ...project, coverImageDataUrl }));
+      })
+      .catch(() => setError("Couldn't read that cover image. Try a PNG, JPG, or WebP file."));
+  }
+
+  function handleRemoveCover() {
+    if (!selected) return;
+    mutateProject(selected.id, (project) => ({ ...project, coverImageDataUrl: null }));
+  }
+
+  function handleAddTrack() {
+    if (!selected) return;
+    const track = makeTrack();
+    setExpandedTrackIds((current) => new Set(current).add(track.id));
+    mutateProject(selected.id, (project) => ({ ...project, tracks: [...project.tracks, track] }));
+  }
+
+  function handleRenameTrack(trackId: string, title: string) {
+    if (!selected) return;
+    mutateProject(selected.id, (project) => ({
+      ...project,
+      tracks: project.tracks.map((track) => track.id === trackId ? { ...track, title } : track),
+    }));
+  }
+
+  function handleTrackComment(trackId: string, comment: string) {
+    if (!selected) return;
+    mutateProject(selected.id, (project) => ({
+      ...project,
+      tracks: project.tracks.map((track) => track.id === trackId ? { ...track, comment } : track),
+    }));
+  }
+
+  function handleVersionVolume(trackId: string, bounceId: string, volume: number) {
+    if (!selected) return;
+    const nextVolume = clampVolume(volume);
+    if (activeExportId === bounceId && audioRef.current) {
+      audioRef.current.volume = nextVolume;
+    }
+    mutateProject(selected.id, (project) => ({
+      ...project,
+      tracks: project.tracks.map((candidate) => {
+        if (candidate.id !== trackId) return candidate;
+        const bounces = candidate.bounces.map((bounce) => bounce.id === bounceId ? { ...bounce, volume: nextVolume } : bounce);
+        return withTrackBounces(candidate, bounces);
+      }),
+    }));
+  }
+
+  // Move a whole song, keeping its Ableton set and exported mix together.
+  function moveTrack(trackId: string, dir: -1 | 1) {
     if (!selected) return;
     mutateProject(selected.id, (p) => {
-      const idx = p.exports.findIndex((e) => e.id === exportId);
+      const idx = p.tracks.findIndex((track) => track.id === trackId);
       const next = idx + dir;
-      if (idx < 0 || next < 0 || next >= p.exports.length) return p;
-      const exports = [...p.exports];
-      [exports[idx], exports[next]] = [exports[next], exports[idx]];
-      return { ...p, exports };
+      if (idx < 0 || next < 0 || next >= p.tracks.length) return p;
+      const tracks = [...p.tracks];
+      [tracks[idx], tracks[next]] = [tracks[next], tracks[idx]];
+      return { ...p, tracks };
     });
+  }
+
+  function reorderTrack(sourceTrackId: string, targetTrackId: string) {
+    if (!selected || sourceTrackId === targetTrackId) return;
+    mutateProject(selected.id, (project) => {
+      const from = project.tracks.findIndex((track) => track.id === sourceTrackId);
+      const to = project.tracks.findIndex((track) => track.id === targetTrackId);
+      if (from < 0 || to < 0) return project;
+      const tracks = [...project.tracks];
+      const [moved] = tracks.splice(from, 1);
+      tracks.splice(to, 0, moved);
+      return { ...project, tracks };
+    });
+  }
+
+  function beginTrackDrag(event: React.MouseEvent<HTMLButtonElement>, sourceTrackId: string) {
+    event.preventDefault();
+    setDraggedTrackId(sourceTrackId);
+    setDragOverTrackId(sourceTrackId);
+
+    const handleMove = (moveEvent: MouseEvent) => {
+      const target = document.elementFromPoint(moveEvent.clientX, moveEvent.clientY)?.closest<HTMLElement>("[data-track-id]");
+      if (!target?.dataset.trackId) return;
+      setDragOverTrackId(target.dataset.trackId);
+      if (target.dataset.trackId !== sourceTrackId) reorderTrack(sourceTrackId, target.dataset.trackId);
+    };
+    const handleUp = (upEvent: MouseEvent) => {
+      const target = document.elementFromPoint(upEvent.clientX, upEvent.clientY)?.closest<HTMLElement>("[data-track-id]");
+      if (target?.dataset.trackId) reorderTrack(sourceTrackId, target.dataset.trackId);
+      setDraggedTrackId(null);
+      setDragOverTrackId(null);
+      window.removeEventListener("mousemove", handleMove);
+      window.removeEventListener("mouseup", handleUp);
+    };
+
+    window.addEventListener("mousemove", handleMove);
+    window.addEventListener("mouseup", handleUp);
+  }
+
+  function handleDeleteTrack(track: OrganizerTrack) {
+    if (!selected) return;
+    setExpandedTrackIds((current) => {
+      const next = new Set(current);
+      next.delete(track.id);
+      return next;
+    });
+    for (const bounce of track.bounces) releaseBounce(bounce);
+    mutateProject(selected.id, (project) => ({
+      ...project,
+      tracks: project.tracks.filter((candidate) => candidate.id !== track.id),
+    }));
   }
 
   function handleDeleteProject(project: OrganizerProject) {
     const label = project.name.trim() || "Untitled project";
     if (!window.confirm(`Delete "${label}" and its exports? This can't be undone.`)) return;
-    for (const exp of project.exports) {
-      const url = urls.current.get(exp.id);
-      if (url) {
-        URL.revokeObjectURL(url);
-        urls.current.delete(exp.id);
-      }
+    for (const track of project.tracks) {
+      for (const bounce of track.bounces) releaseBounce(bounce);
     }
     setProjects((prev) => prev.filter((p) => p.id !== project.id));
     if (selectedId === project.id) setSelectedId(null);
   }
 
-  async function handleAddAls() {
+  async function handleAddAls(trackId = selected?.tracks[0]?.id ?? "") {
     if (!selected) return;
     setError(null);
     try {
       const picked = await open({
-        multiple: true,
-        title: "Add Ableton sets to this project",
+        multiple: false,
+        title: "Link the Ableton set for this track",
         filters: [{ name: "Ableton Live Set", extensions: ["als"] }],
       });
       if (picked == null) return;
-      const paths = Array.isArray(picked) ? picked : [picked];
-      if (paths.length === 0) return;
-      const additions: AlsFile[] = paths.map((path) => ({
+      const path = Array.isArray(picked) ? picked[0] : picked;
+      if (!path) return;
+      const alsFile: AlsFile = {
         id: makeAlsId(),
         path,
         name: basename(path),
+      };
+      mutateProject(selected.id, (project) => ({
+        ...project,
+        tracks: project.tracks.map((track) => track.id === trackId
+          ? { ...track, alsFile, title: track.title || titleFromFile(alsFile.name) }
+          : track),
       }));
-      mutateProject(selected.id, (p) => ({ ...p, alsFiles: [...p.alsFiles, ...additions] }));
     } catch (err) {
       setError(String(err));
     }
   }
 
-  function handleRemoveAls(alsId: string) {
+  function moveExport(exportId: string, dir: -1 | 1) {
+    const trackId = selected?.tracks.find((track) => track.bounces.some((bounce) => bounce.id === exportId))?.id;
+    if (trackId) moveTrack(trackId, dir);
+  }
+
+  function handleRemoveAls(trackId: string) {
     if (!selected) return;
-    mutateProject(selected.id, (p) => ({
-      ...p,
-      alsFiles: p.alsFiles.filter((f) => f.id !== alsId),
+    mutateProject(selected.id, (project) => ({
+      ...project,
+      tracks: project.tracks.map((track) => track.id === trackId ? { ...track, alsFile: null } : track),
     }));
   }
 
-  async function handleFilePicked(event: React.ChangeEvent<HTMLInputElement>) {
-    const files = Array.from(event.target.files ?? []);
-    event.target.value = ""; // allow re-adding the same file(s)
-    if (files.length === 0 || !selected) return;
-    setError(null);
-
-    const analyzed: ExportBounce[] = [];
-    const failures: string[] = [];
-    // Sequential, so a marathon batch of large bounces doesn't decode all at
-    // once. One bad file is reported, not fatal to the rest.
-    for (let i = 0; i < files.length; i++) {
-      const file = files[i];
-      setAnalyzing(files.length > 1 ? `${file.name} (${i + 1} of ${files.length})` : file.name);
+  async function startAddExport(trackId: string, playWhenReady = false, replaceBounceId: string | null = null) {
+    setExpandedTrackIds((current) => new Set(current).add(trackId));
+    if (isTauri()) {
       try {
-        const analysis = await analyzeAudioFile(file);
-        const now = Date.now();
-        const bounce: ExportBounce = {
-          id: makeExportId(i),
-          fileName: file.name,
-          fileSizeBytes: file.size,
-          durationSec: analysis.durationSec,
-          sampleRate: analysis.sampleRate,
-          channelCount: analysis.channelCount,
-          peaks: analysis.peaks,
-          integratedLufs: analysis.integratedLufs,
-          dynamicRangeLu: analysis.dynamicRangeLu,
-          peakDb: analysis.peakDb,
-          added_at_ms: now,
-        };
-        urls.current.set(bounce.id, URL.createObjectURL(file));
-        analyzed.push(bounce);
-      } catch {
-        failures.push(file.name);
+        const picked = await open({
+          multiple: false,
+          title: "Choose the exported mix for this track",
+          filters: [{
+            name: "Audio exports",
+            extensions: ["wav", "wave", "aif", "aiff", "flac", "mp3", "m4a", "aac", "ogg"],
+          }],
+        });
+        const path = Array.isArray(picked) ? picked[0] : picked;
+        if (!path) return;
+        const bytes = await invoke<ArrayBuffer>("read_organizer_audio", { path });
+        const bounce = await attachExportFile(trackId, new File([bytes], basename(path)), path, replaceBounceId);
+        if (playWhenReady && bounce) playExport(bounce);
+      } catch (err) {
+        setError(String(err));
       }
+      return;
     }
+    pendingExportTrackId.current = trackId;
+    pendingReplaceBounceId.current = replaceBounceId;
+    pendingExportAutoPlay.current = playWhenReady;
+    fileInputRef.current?.click();
+  }
 
-    if (analyzed.length > 0) {
-      // Append: new bounces land at the end of the tracklist.
-      mutateProject(selected.id, (p) => ({ ...p, exports: [...p.exports, ...analyzed] }));
-    }
-    setAnalyzing(null);
-    if (failures.length > 0) {
-      setError(
-        `Couldn't read ${failures.length} file${failures.length === 1 ? "" : "s"}: ${failures.join(", ")}`,
-      );
+  async function handleFilePicked(event: React.ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    event.target.value = ""; // allow re-adding the same file(s)
+    const trackId = pendingExportTrackId.current;
+    const playWhenReady = pendingExportAutoPlay.current;
+    const replaceBounceId = pendingReplaceBounceId.current;
+    pendingExportTrackId.current = null;
+    pendingReplaceBounceId.current = null;
+    pendingExportAutoPlay.current = false;
+    if (!file || !selected || !trackId) return;
+    const bounce = await attachExportFile(trackId, file, undefined, replaceBounceId);
+    if (playWhenReady && bounce) playExport(bounce);
+  }
+
+  async function attachExportFile(
+    trackId: string,
+    file: File,
+    sourcePath?: string,
+    replaceBounceId: string | null = null,
+  ) {
+    if (!selected) return;
+    setError(null);
+    setAnalyzing(file.name);
+    try {
+      const analysis = await analyzeAudioFile(file);
+      const previous = replaceBounceId
+        ? selected.tracks.find((track) => track.id === trackId)?.bounces.find((candidate) => candidate.id === replaceBounceId)
+        : null;
+      const bounce: ExportBounce = {
+        id: replaceBounceId ?? makeExportId(0),
+        fileName: file.name,
+        sourcePath,
+        fileSizeBytes: file.size,
+        durationSec: analysis.durationSec,
+        sampleRate: analysis.sampleRate,
+        channelCount: analysis.channelCount,
+        peaks: analysis.peaks,
+        waveformChannels: analysis.waveformChannels,
+        waveformPoints: analysis.waveformPoints,
+        integratedLufs: analysis.integratedLufs,
+        dynamicRangeLu: analysis.dynamicRangeLu,
+        peakDb: analysis.truePeakDb,
+        peakKind: "true",
+        analysisVersion: 3,
+        added_at_ms: Date.now(),
+        timedComments: previous?.timedComments ?? [],
+        volume: previous?.volume ?? 1,
+      };
+      if (previous) releaseBounce(previous);
+      urls.current.set(bounce.id, URL.createObjectURL(file));
+      mutateProject(selected.id, (project) => ({
+        ...project,
+        tracks: project.tracks.map((track) => {
+          if (track.id !== trackId) return track;
+          const bounces = replaceBounceId
+            ? track.bounces.map((candidate) => candidate.id === replaceBounceId ? bounce : candidate)
+            : [...track.bounces, bounce];
+          return {
+            ...withTrackBounces(track, bounces, track.finalBounceId ?? bounce.id),
+            title: track.title || titleFromFile(file.name),
+          };
+        }),
+      }));
+      setExpandedTrackIds((current) => new Set(current).add(trackId));
+      return bounce;
+    } catch {
+      setError(`Couldn't read ${file.name}.`);
+      return null;
+    } finally {
+      setAnalyzing(null);
     }
   }
 
-  function handleDeleteExport(exp: ExportBounce) {
-    if (!selected) return;
+  function releaseBounce(exp: ExportBounce) {
     if (activeExportId === exp.id) {
       audioRef.current?.pause();
       stopRaf();
@@ -392,10 +917,95 @@ export function ProjectOrganizerScreen() {
       URL.revokeObjectURL(url);
       urls.current.delete(exp.id);
     }
-    mutateProject(selected.id, (p) => ({
-      ...p,
-      exports: p.exports.filter((e) => e.id !== exp.id),
+  }
+
+  function handleDeleteExport(trackIdOrExport: string | ExportBounce, maybeExport?: ExportBounce) {
+    if (!selected) return;
+    const exp = typeof trackIdOrExport === "string" ? maybeExport : trackIdOrExport;
+    if (!exp) return;
+    const trackId = typeof trackIdOrExport === "string"
+      ? trackIdOrExport
+      : selected.tracks.find((track) => track.bounces.some((bounce) => bounce.id === exp.id))?.id;
+    if (!trackId) return;
+    releaseBounce(exp);
+    mutateProject(selected.id, (project) => ({
+      ...project,
+      tracks: project.tracks.map((track) => track.id === trackId
+        ? withTrackBounces(track, track.bounces.filter((bounce) => bounce.id !== exp.id))
+        : track),
     }));
+  }
+
+  function handleSetFinalBounce(trackId: string, bounceId: string) {
+    if (!selected) return;
+    mutateProject(selected.id, (project) => ({
+      ...project,
+      tracks: project.tracks.map((track) => track.id === trackId
+        ? withTrackBounces(track, track.bounces, bounceId)
+        : track),
+    }));
+  }
+
+  function currentBounceTime(exp: ExportBounce): number {
+    if (activeExportId !== exp.id) return 0;
+    const currentTime = audioRef.current?.currentTime;
+    if (currentTime != null && Number.isFinite(currentTime)) {
+      return Math.min(exp.durationSec, Math.max(0, currentTime));
+    }
+    return Math.min(exp.durationSec, Math.max(0, progress * exp.durationSec));
+  }
+
+  function addTimedComment(trackId: string, exp: ExportBounce) {
+    if (!selected) return;
+    const text = (timedCommentDrafts[exp.id] ?? "").trim();
+    if (!text) return;
+    const timedComment: TimedComment = {
+      id: `comment-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`,
+      timeSec: currentBounceTime(exp),
+      text,
+      created_at_ms: Date.now(),
+    };
+    mutateProject(selected.id, (project) => ({
+      ...project,
+      tracks: project.tracks.map((track) => {
+        if (track.id !== trackId) return track;
+        const bounces = track.bounces.map((bounce) => bounce.id === exp.id
+          ? { ...bounce, timedComments: [...(bounce.timedComments ?? []), timedComment] }
+          : bounce);
+        return withTrackBounces(track, bounces);
+      }),
+    }));
+    setTimedCommentDrafts((drafts) => ({ ...drafts, [exp.id]: "" }));
+  }
+
+  function deleteTimedComment(trackId: string, bounceId: string, commentId: string) {
+    if (!selected) return;
+    mutateProject(selected.id, (project) => ({
+      ...project,
+      tracks: project.tracks.map((track) => {
+        if (track.id !== trackId) return track;
+        const bounces = track.bounces.map((bounce) => bounce.id === bounceId
+          ? { ...bounce, timedComments: (bounce.timedComments ?? []).filter((comment) => comment.id !== commentId) }
+          : bounce);
+        return withTrackBounces(track, bounces);
+      }),
+    }));
+  }
+
+  async function jumpToTimedComment(exp: ExportBounce, timeSec: number) {
+    if (!urls.current.has(exp.id) && exp.sourcePath) {
+      try {
+        await ensureBounceUrl(exp);
+      } catch {
+        setError(`Couldn't reopen ${exp.fileName}. Use Replace to locate it again.`);
+        return;
+      }
+    }
+    if (!urls.current.has(exp.id)) {
+      setError(`Locate ${exp.fileName} before jumping to its comments.`);
+      return;
+    }
+    seekExport(exp, exp.durationSec > 0 ? timeSec / exp.durationSec : 0);
   }
 
   function playExport(exp: ExportBounce) {
@@ -407,9 +1017,11 @@ export function ProjectOrganizerScreen() {
       setActiveExportId(exp.id);
       setProgress(0);
     }
+    audio.volume = clampVolume(exp.volume ?? 1);
     void audio.play();
     setIsPlaying(true);
     stopRaf();
+    lastProgressPaintRef.current = 0;
     rafRef.current = requestAnimationFrame(tick);
   }
 
@@ -423,6 +1035,24 @@ export function ProjectOrganizerScreen() {
     }
   }
 
+  async function handleMixPlay(trackId: string, exp: ExportBounce) {
+    if (urls.current.has(exp.id)) {
+      togglePlay(exp);
+      return;
+    }
+    if (exp.sourcePath) {
+      try {
+        await ensureBounceUrl(exp);
+        playExport(exp);
+      } catch {
+        setError(`Couldn't reopen ${exp.fileName}. Choose its current location.`);
+        await startAddExport(trackId, true, exp.id);
+      }
+      return;
+    }
+    await startAddExport(trackId, true, exp.id);
+  }
+
   function seekExport(exp: ExportBounce, fraction: number) {
     const audio = audioRef.current;
     const url = urls.current.get(exp.id);
@@ -433,6 +1063,7 @@ export function ProjectOrganizerScreen() {
     }
     const dur = Number.isFinite(audio.duration) && audio.duration > 0 ? audio.duration : exp.durationSec;
     audio.currentTime = fraction * dur;
+    playbackCursorRef.current = { exportId: exp.id, timeSec: audio.currentTime };
     setProgress(fraction);
   }
 
@@ -442,17 +1073,56 @@ export function ProjectOrganizerScreen() {
     stopRaf();
   }
 
+  function toggleTrackPlayer(trackId: string) {
+    const closing = expandedTrackIds.has(trackId);
+    const closingActiveTrack = closing && selected?.tracks
+      .find((track) => track.id === trackId)
+      ?.bounces.some((bounce) => bounce.id === activeExportId);
+    if (closingActiveTrack) {
+      audioRef.current?.pause();
+      stopRaf();
+      setIsPlaying(false);
+    }
+    setExpandedTrackIds((current) => {
+      const next = new Set(current);
+      if (next.has(trackId)) next.delete(trackId);
+      else next.add(trackId);
+      return next;
+    });
+  }
+
   return (
-    <div className="organizer">
+    <div className={`organizer ${selected?.coverImageDataUrl ? "has-gutter-art" : ""}`}>
       <audio ref={audioRef} preload="none" onEnded={handleEnded} hidden />
       <input
         ref={fileInputRef}
         type="file"
         accept="audio/*"
-        multiple
         hidden
         onChange={handleFilePicked}
       />
+      <input
+        ref={coverInputRef}
+        type="file"
+        accept="image/png,image/jpeg,image/webp"
+        hidden
+        onChange={handleCoverPicked}
+      />
+
+      {selected?.coverImageDataUrl && (
+        <>
+          <div
+            className="organizer__gutter-art organizer__gutter-art--left"
+            style={{ backgroundImage: `url("${selected.coverImageDataUrl}")` }}
+            aria-hidden="true"
+          />
+          <div
+            className="organizer__gutter-art organizer__gutter-art--right"
+            style={{ backgroundImage: `url("${selected.coverImageDataUrl}")` }}
+            aria-hidden="true"
+          />
+        </>
+      )}
 
       <aside className="organizer__list" aria-label="Projects">
         <div className="organizer__list-head">
@@ -480,11 +1150,11 @@ export function ProjectOrganizerScreen() {
                   {project.name.trim() || "Untitled project"}
                 </span>
                 <span className="organizer__item-meta">
-                  {project.exports.length === 0
-                    ? "No exports"
-                    : `${project.exports.length} export${project.exports.length === 1 ? "" : "s"}`}
-                  {project.alsFiles.length > 0
-                    ? ` · ${project.alsFiles.length} set${project.alsFiles.length === 1 ? "" : "s"}`
+                  {project.tracks.length === 0
+                    ? "No tracks"
+                    : `${project.tracks.length} track${project.tracks.length === 1 ? "" : "s"}`}
+                  {project.tracks.some((track) => track.bounces.length > 0)
+                    ? ` · ${project.tracks.reduce((total, track) => total + track.bounces.length, 0)} mixes`
                     : ""}
                 </span>
               </button>
@@ -514,6 +1184,274 @@ export function ProjectOrganizerScreen() {
 
           {error && <p className="organizer__error">{error}</p>}
 
+          <div className="organizer__album-head">
+            <div className="organizer__cover">
+              {selected.coverImageDataUrl ? (
+                <img src={selected.coverImageDataUrl} alt={`${selected.name || "Untitled"} cover`} />
+              ) : (
+                <div className="organizer__cover-empty">Cover art</div>
+              )}
+              <div className="organizer__cover-actions">
+                <button type="button" className="px-btn" onClick={() => coverInputRef.current?.click()}>
+                  {selected.coverImageDataUrl ? "Change image" : "Add image"}
+                </button>
+                {selected.coverImageDataUrl && (
+                  <button type="button" className="px-btn px-btn--danger" onClick={handleRemoveCover}>Remove</button>
+                )}
+              </div>
+            </div>
+            <div className="organizer__album-meta">
+              <div className="organizer__type" role="group" aria-label="Release type">
+                {RELEASE_TYPES.map((type) => (
+                  <button key={type} type="button" className={`organizer__type-btn ${selected.releaseType === type ? "is-active" : ""}`} aria-pressed={selected.releaseType === type} onClick={() => handleSetType(type)}>
+                    {releaseTypeLabel(type)}
+                  </button>
+                ))}
+              </div>
+
+              <div className="organizer__project-fields">
+                <label className="organizer__project-field">
+                  <span className="organizer__field-label">Artist</span>
+                  <input
+                    className="organizer__project-input"
+                    value={selected.artist}
+                    placeholder="Artist or alias"
+                    aria-label="Artist"
+                    onChange={(event) => handleSetArtist(event.target.value)}
+                  />
+                </label>
+                <label className="organizer__project-field organizer__project-field--date">
+                  <span className="organizer__field-label">Release date</span>
+                  <input
+                    className="organizer__project-input"
+                    type="date"
+                    value={selected.releaseDate}
+                    aria-label="Release date"
+                    onChange={(event) => handleSetReleaseDate(event.target.value)}
+                  />
+                </label>
+              </div>
+
+              <label className="organizer__project-field organizer__project-field--notes">
+                <span className="organizer__field-label">Notes</span>
+                <textarea
+                  className="organizer__project-notes"
+                  value={selected.notes}
+                  placeholder="The concept, the vibe, the order in your head — what this release is."
+                  aria-label="Project notes"
+                  rows={2}
+                  onChange={(event) => handleSetNotes(event.target.value)}
+                />
+              </label>
+
+              {releaseStats && (
+                <div className="organizer__release-meta">
+                  <span>{releaseStats.trackCount} track{releaseStats.trackCount === 1 ? "" : "s"}</span>
+                  {releaseStats.completedCount > 0 && <span>{releaseStats.completedCount} mixed</span>}
+                  {releaseStats.completedCount > 0 && <span>{formatTotalDuration(releaseStats.totalSec)}</span>}
+                  {releaseStats.loudnessSpan && <span title="Integrated loudness span across tracks">{releaseStats.loudnessSpan.min.toFixed(1)} to {releaseStats.loudnessSpan.max.toFixed(1)} LUFS</span>}
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="organizer__tracklist-head">
+            <span className="organizer__field-label">Tracklist</span>
+            <button type="button" className="px-btn px-btn--primary" onClick={handleAddTrack}>Add track</button>
+          </div>
+          {analyzing && (
+            <p className="organizer__analyzing organizer__analyzing--tracklist">
+              Measuring loudness of {analyzing}…
+            </p>
+          )}
+
+          <div className="organizer__tracklist">
+            {selected.tracks.map((track, index) => {
+              const expanded = expandedTrackIds.has(track.id);
+              const label = track.title.trim() || `Track ${index + 1}`;
+              return (
+                <article
+                  key={track.id}
+                  data-track-id={track.id}
+                  className={`organizer__track ${track.bounces.some((bounce) => bounce.id === activeExportId) ? "has-active-playback" : ""} ${draggedTrackId === track.id ? "is-dragging" : ""} ${dragOverTrackId === track.id ? "is-drag-over" : ""}`}
+                >
+                  <header className="organizer__track-head">
+                    <button
+                      type="button"
+                      className="organizer__drag-handle"
+                      aria-label={`Drag ${label} to reorder`}
+                      title="Drag to reorder"
+                      onMouseDown={(event) => beginTrackDrag(event, track.id)}
+                    >⠿</button>
+                    <span className="organizer__track-num">{(index + 1).toString().padStart(2, "0")}</span>
+                    <input className="organizer__track-title" value={track.title} placeholder={`Track ${index + 1} title`} aria-label={`Track ${index + 1} title`} onChange={(event) => handleRenameTrack(track.id, event.target.value)} />
+                    <div className="organizer__bounce-actions">
+                      <button type="button" className="organizer__reorder" disabled={index === 0} aria-label={`Move ${label} up`} onClick={() => moveTrack(track.id, -1)}>↑</button>
+                      <button type="button" className="organizer__reorder" disabled={index === selected.tracks.length - 1} aria-label={`Move ${label} down`} onClick={() => moveTrack(track.id, 1)}>↓</button>
+                      <button type="button" className="px-btn px-btn--danger" onClick={() => handleDeleteTrack(track)}>Remove track</button>
+                    </div>
+                  </header>
+
+                  <div className="organizer__source-row">
+                    <div className="organizer__source-file">
+                      <span className="organizer__field-label">Ableton set</span>
+                      {track.alsFile ? <span className="organizer__als-name" title={track.alsFile.path}>{track.alsFile.name}</span> : <span className="organizer__als-none">No .als linked</span>}
+                    </div>
+                    <div className="organizer__source-actions">
+                      <button type="button" className="px-btn" onClick={() => void handleAddAls(track.id)}>{track.alsFile ? "Change .als" : "Link .als"}</button>
+                      {track.alsFile && <button type="button" className="px-btn px-btn--danger" onClick={() => handleRemoveAls(track.id)}>Unlink</button>}
+                    </div>
+                  </div>
+
+                  <div className="organizer__versions-head">
+                    <div>
+                      <span className="organizer__field-label">Mix versions</span>
+                      <span>{track.bounces.length} export{track.bounces.length === 1 ? "" : "s"}</span>
+                    </div>
+                    <div className="organizer__bounce-actions">
+                      {track.bounces.length > 0 && <button type="button" className="px-btn" aria-expanded={expanded} onClick={() => toggleTrackPlayer(track.id)}>{expanded ? "Hide players" : "Compare versions"}</button>}
+                      <button type="button" className="px-btn px-btn--primary" disabled={analyzing !== null} onClick={() => void startAddExport(track.id)}>Add version</button>
+                    </div>
+                  </div>
+
+                  {track.bounces.length > 0 ? track.bounces.map((exp, bounceIndex) => {
+                    const playable = urls.current.has(exp.id);
+                    const active = activeExportId === exp.id;
+                    const isFinal = track.finalBounceId === exp.id;
+                    const version = versionLabel(bounceIndex);
+                    const timedComments = [...(exp.timedComments ?? [])].sort((a, b) => a.timeSec - b.timeSec);
+                    const playbackTime = active ? progress * exp.durationSec : 0;
+                    const nextComment = active
+                      ? timedComments.find((comment) => comment.timeSec > playbackTime)
+                      : undefined;
+                    const secondsUntilNextComment = nextComment ? nextComment.timeSec - playbackTime : null;
+                    const commentEmphasis = (comment: TimedComment) => {
+                      if (!active || comment.timeSec <= playbackTime) return 1;
+                      return Math.max(0, 1 - (comment.timeSec - playbackTime) / 20);
+                    };
+                    return (
+                      <div key={exp.id} className={`organizer__mix organizer__mix--version ${isFinal ? "is-final" : ""} ${active ? "is-active" : ""} ${active && isPlaying ? "is-playing" : ""}`}>
+                        <div className="organizer__bounce-head">
+                          <div className="organizer__bounce-title">
+                            <span className="organizer__version-line"><span className="organizer__version-badge">{version}</span>{isFinal && <span className="organizer__final-badge">Final</span>}</span>
+                            <span className="organizer__bounce-name">{exp.fileName}</span>
+                          </div>
+                          <div className="organizer__bounce-actions">
+                            <span className="organizer__bounce-added">{formatDate(exp.added_at_ms)}</span>
+                            <button type="button" className="px-btn" disabled={isFinal} onClick={() => handleSetFinalBounce(track.id, exp.id)}>{isFinal ? "Selected final" : "Mark final"}</button>
+                            <button type="button" className="px-btn" onClick={() => void startAddExport(track.id, false, exp.id)}>Replace</button>
+                            <button type="button" className="px-btn px-btn--danger" onClick={() => handleDeleteExport(track.id, exp)}>Remove</button>
+                          </div>
+                        </div>
+                        {expanded && (
+                          <>
+                            <div className="organizer__player">
+                              <button type="button" className={`organizer__play ${active && isPlaying ? "is-playing" : ""}`} aria-label={active && isPlaying ? `Pause version ${version}` : playable ? `Play version ${version}` : `Locate version ${version} and play`} title={playable ? `Play version ${version}` : "Locate audio file to play"} onClick={() => void handleMixPlay(track.id, exp)}>{active && isPlaying ? "❚❚" : "▶"}</button>
+                              <div className="organizer__player-main">
+                                {nextComment && secondsUntilNextComment != null && secondsUntilNextComment <= 20 && (
+                                  <div
+                                    className="organizer__comment-coming"
+                                    style={{ opacity: 0.38 + commentEmphasis(nextComment) * 0.62 }}
+                                    aria-live="polite"
+                                  >
+                                    <span>Comment in {formatDuration(Math.ceil(secondsUntilNextComment))}</span>
+                                    <strong>{nextComment.text}</strong>
+                                  </div>
+                                )}
+                                <Waveform
+                                  peaks={exp.peaks}
+                                  waveformMin={exp.waveformMin}
+                                  waveformMax={exp.waveformMax}
+                                  waveformData={exp.waveformData}
+                                  waveformChannels={exp.waveformChannels}
+                                  waveformPoints={exp.waveformPoints}
+                                  progress={active ? progress : 0}
+                                  durationSec={exp.durationSec}
+                                  markers={timedComments.map((comment) => ({
+                                    id: comment.id,
+                                    fraction: exp.durationSec > 0 ? comment.timeSec / exp.durationSec : 0,
+                                    emphasis: commentEmphasis(comment),
+                                  }))}
+                                  onSeek={playable ? (fraction) => seekExport(exp, fraction) : undefined}
+                                />
+                                <label className="organizer__volume organizer__volume--version">
+                                  <span className="organizer__volume-label">Version volume</span>
+                                  <input
+                                    type="range"
+                                    min="0"
+                                    max="1"
+                                    step="0.01"
+                                    value={exp.volume ?? 1}
+                                    aria-label={`Version ${version} volume`}
+                                    onChange={(event) => handleVersionVolume(track.id, exp.id, Number(event.target.value))}
+                                  />
+                                  <output>{volumePercent(exp.volume)}%</output>
+                                </label>
+                              </div>
+                            </div>
+                            <dl className="organizer__stats">
+                              <div className="organizer__stat"><dt>Length</dt><dd>{formatDuration(exp.durationSec)}</dd></div>
+                              <div className="organizer__stat"><dt>Integrated</dt><dd>{formatLufs(exp.integratedLufs)}</dd></div>
+                              <div className="organizer__stat"><dt>Dynamic range</dt><dd className={exp.dynamicRangeLu == null ? "organizer__stat-empty" : undefined}>{exp.dynamicRangeLu == null ? "Not long enough" : formatLra(exp.dynamicRangeLu)}</dd></div>
+                              <div className="organizer__stat"><dt>{exp.peakKind === "true" ? "True peak" : "Sample peak"}</dt><dd>{formatDb(exp.peakDb, exp.peakKind === "true" ? "dBTP" : "dBFS")}</dd></div>
+                              <div className="organizer__stat"><dt>Format</dt><dd>{Math.round(exp.sampleRate / 100) / 10} kHz · {exp.channelCount === 1 ? "mono" : exp.channelCount === 2 ? "stereo" : `${exp.channelCount}ch`}</dd></div>
+                            </dl>
+                            <div className="organizer__timed-comments">
+                              <form className="organizer__timed-comment-form" onSubmit={(event) => { event.preventDefault(); addTimedComment(track.id, exp); }}>
+                                <label>
+                                  <span className="organizer__field-label">Comment at {formatDuration(currentBounceTime(exp))}</span>
+                                  <input
+                                    type="text"
+                                    value={timedCommentDrafts[exp.id] ?? ""}
+                                    placeholder="Leave a note at this playhead position…"
+                                    aria-label={`Comment on version ${version} at ${formatDuration(currentBounceTime(exp))}`}
+                                    onChange={(event) => setTimedCommentDrafts((drafts) => ({ ...drafts, [exp.id]: event.target.value }))}
+                                  />
+                                </label>
+                                <button type="submit" className="px-btn px-btn--primary" disabled={!(timedCommentDrafts[exp.id] ?? "").trim()}>Add comment</button>
+                              </form>
+                              {timedComments.length > 0 && (
+                                <ol className="organizer__comment-chain" aria-label={`Timed comments for version ${version}`}>
+                                  {timedComments.map((comment) => (
+                                    <li
+                                      key={comment.id}
+                                      className={attentionCommentIds.has(comment.id) ? "is-attention" : comment.timeSec > playbackTime && active ? "is-upcoming" : undefined}
+                                      style={{ opacity: active && comment.timeSec > playbackTime ? 0.28 + commentEmphasis(comment) * 0.72 : 1 }}
+                                    >
+                                      <button type="button" className="organizer__comment-time" onClick={() => void jumpToTimedComment(exp, comment.timeSec)}>{formatDuration(comment.timeSec)}</button>
+                                      <span className={`organizer__comment-text ${attentionCommentIds.has(comment.id) ? "is-rolling" : ""}`} aria-label={comment.text}>
+                                        {attentionCommentIds.has(comment.id)
+                                          ? comment.text.split("").map((letter, letterIndex) => (
+                                              <span key={`${comment.id}-${letterIndex}`} aria-hidden="true" style={{ animationDelay: `${letterIndex * 22}ms` }}>{letter === " " ? "\u00a0" : letter}</span>
+                                            ))
+                                          : comment.text}
+                                      </span>
+                                      <button type="button" className="organizer__comment-delete" aria-label={`Delete comment at ${formatDuration(comment.timeSec)}`} onClick={() => deleteTimedComment(track.id, exp.id, comment.id)}>×</button>
+                                    </li>
+                                  ))}
+                                </ol>
+                              )}
+                            </div>
+                          </>
+                        )}
+                      </div>
+                    );
+                  }) : (
+                    <div className="organizer__export-slot">
+                      <div><strong>No exports attached yet.</strong></div>
+                    </div>
+                  )}
+
+                  <label className="organizer__comment">
+                    <span className="organizer__field-label">Track comments</span>
+                    <textarea value={track.comment} placeholder="Mix notes, revisions, arrangement decisions…" aria-label={`${label} comments`} onChange={(event) => handleTrackComment(track.id, event.target.value)} />
+                  </label>
+                </article>
+              );
+            })}
+            {selected.tracks.length === 0 && <div className="organizer__exports-empty"><strong>No tracks yet.</strong><button type="button" className="px-btn px-btn--primary" onClick={handleAddTrack}>Add track</button></div>}
+          </div>
+
           <div className="organizer__release">
             <div className="organizer__type" role="group" aria-label="Release type">
               {RELEASE_TYPES.map((type) => (
@@ -536,8 +1474,11 @@ export function ProjectOrganizerScreen() {
                 {releaseStats.trackCount > 0 && (
                   <span>{formatTotalDuration(releaseStats.totalSec)}</span>
                 )}
-                {releaseStats.avgLufs != null && (
-                  <span>avg {releaseStats.avgLufs.toFixed(1)} LUFS</span>
+                {releaseStats.loudnessSpan != null && (
+                  <span title="Integrated loudness span across tracks">
+                    {releaseStats.loudnessSpan.min.toFixed(1)} to{" "}
+                    {releaseStats.loudnessSpan.max.toFixed(1)} LUFS
+                  </span>
                 )}
               </div>
             )}
@@ -593,7 +1534,7 @@ export function ProjectOrganizerScreen() {
               <strong>No bounces yet.</strong>
               <p>
                 Add a rendered mixdown (WAV, AIFF, MP3, FLAC) and Recall shows its waveform,
-                integrated loudness, and peak — like a file in a mix-review.
+                integrated LUFS, loudness range, and true peak.
               </p>
             </div>
           ) : (
@@ -658,6 +1599,11 @@ export function ProjectOrganizerScreen() {
                       </button>
                       <Waveform
                         peaks={exp.peaks}
+                        waveformMin={exp.waveformMin}
+                        waveformMax={exp.waveformMax}
+                        waveformData={exp.waveformData}
+                        waveformChannels={exp.waveformChannels}
+                        waveformPoints={exp.waveformPoints}
                         progress={active ? progress : 0}
                         onSeek={playable ? (f) => seekExport(exp, f) : undefined}
                       />
@@ -669,11 +1615,11 @@ export function ProjectOrganizerScreen() {
                         <dd>{formatDuration(exp.durationSec)}</dd>
                       </div>
                       <div className="organizer__stat">
-                        <dt>Loudness</dt>
+                        <dt>Integrated</dt>
                         <dd>{formatLufs(exp.integratedLufs)}</dd>
                       </div>
                       <div className="organizer__stat">
-                        <dt>Dynamics</dt>
+                        <dt title="Loudness range (LRA)">Dynamic range</dt>
                         {exp.dynamicRangeLu == null ? (
                           <dd
                             className="organizer__stat-empty"
@@ -686,8 +1632,10 @@ export function ProjectOrganizerScreen() {
                         )}
                       </div>
                       <div className="organizer__stat">
-                        <dt>Peak</dt>
-                        <dd>{formatDb(exp.peakDb)}</dd>
+                        <dt>{exp.peakKind === "true" ? "True peak" : "Sample peak"}</dt>
+                        <dd>
+                          {formatDb(exp.peakDb, exp.peakKind === "true" ? "dBTP" : "dBFS")}
+                        </dd>
                       </div>
                       <div className="organizer__stat">
                         <dt>Format</dt>

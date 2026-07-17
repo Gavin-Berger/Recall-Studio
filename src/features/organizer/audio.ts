@@ -4,11 +4,11 @@
 // filesystem), so an <input type="file"> hands us real bytes and we derive real
 // numbers from them.
 //
-// Loudness is integrated LUFS and Loudness Range (LRA) per ITU-R BS.1770-4 /
+// Loudness is integrated LUFS and Loudness Range (LRA) per ITU-R BS.1770-5 /
 // EBU R128: K-weight each channel, take mean square over gated blocks, combine.
-// The K-weighting biquads are the RBJ-cookbook realisations of the standard's
-// high-shelf + high-pass stages, so the coefficients track the file's real
-// sample rate rather than assuming 48k.
+// The K-weighting biquads use the De Man parameterisation of the standard's
+// high-shelf + high-pass stages. At 48 kHz they reproduce the published
+// BS.1770-5 coefficients; at other rates they preserve that response.
 //
 // Speed: block powers come from a running per-100ms-segment sum of squares, so
 // a 3-minute 192kHz file is a handful of passes, not a sliding window that
@@ -32,17 +32,23 @@ export type AudioAnalysis = {
   // Waveform envelope, one amplitude per bucket, normalized so the loudest
   // bucket is 1. Shape only — level lives in the loudness fields below.
   peaks: number[];
+  // High-resolution, full-scale waveform envelope. Each pair is the actual
+  // minimum and maximum sample excursion in that time slice, not a normalized
+  // magnitude block, so zooming preserves the waveform's real contour.
+  waveformChannels: string[];
+  waveformPoints: number;
   // Integrated loudness in LUFS, or null when the bounce is too short (< 400ms)
   // or too quiet to measure. Null is honest: the UI shows "—", never a fake 0.
   integratedLufs: number | null;
   // Loudness range (LRA) in LU — the statistical spread of short-term loudness,
   // i.e. dynamic range. Null when the bounce is too short (< ~3s) to measure.
   dynamicRangeLu: number | null;
-  // Sample peak in dBFS (a true-peak approximation — no oversampling).
-  peakDb: number;
+  // True peak in dBTP (BS.1770-5): oversampled so inter-sample peaks above 0
+  // dBFS are caught, not just the loudest stored sample.
+  truePeakDb: number;
 };
 
-// --- K-weighting filters (BS.1770 stages 1 & 2), RBJ cookbook realisations ---
+// --- K-weighting filters (BS.1770 stages 1 & 2) ---
 
 // Stage 1: high-shelf "pre-filter". Constants are the standard's.
 export function highShelfCoeffs(fs: number): BiquadCoeffs {
@@ -50,21 +56,18 @@ export function highShelfCoeffs(fs: number): BiquadCoeffs {
   const G = 3.999843853973347; // dB
   const Q = 0.7071752369554196;
 
-  const A = Math.pow(10, G / 40);
-  const w0 = (2 * Math.PI * f0) / fs;
-  const cos = Math.cos(w0);
-  const sin = Math.sin(w0);
-  const alpha = sin / (2 * Q);
-  const beta = 2 * Math.sqrt(A) * alpha;
+  const K = Math.tan((Math.PI * f0) / fs);
+  const Vh = Math.pow(10, G / 20);
+  const Vb = Math.pow(Vh, 0.4996667741545416);
+  const a0 = 1 + K / Q + K * K;
 
-  const b0 = A * (A + 1 + (A - 1) * cos + beta);
-  const b1 = -2 * A * (A - 1 + (A + 1) * cos);
-  const b2 = A * (A + 1 + (A - 1) * cos - beta);
-  const a0 = A + 1 - (A - 1) * cos + beta;
-  const a1 = 2 * (A - 1 - (A + 1) * cos);
-  const a2 = A + 1 - (A - 1) * cos - beta;
-
-  return { b0: b0 / a0, b1: b1 / a0, b2: b2 / a0, a1: a1 / a0, a2: a2 / a0 };
+  return {
+    b0: (Vh + (Vb * K) / Q + K * K) / a0,
+    b1: (2 * (K * K - Vh)) / a0,
+    b2: (Vh - (Vb * K) / Q + K * K) / a0,
+    a1: (2 * (K * K - 1)) / a0,
+    a2: (1 - K / Q + K * K) / a0,
+  };
 }
 
 // Stage 2: high-pass (RLB weighting).
@@ -72,19 +75,18 @@ export function highPassCoeffs(fs: number): BiquadCoeffs {
   const f0 = 38.13547087602444;
   const Q = 0.5003270373238773;
 
-  const w0 = (2 * Math.PI * f0) / fs;
-  const cos = Math.cos(w0);
-  const sin = Math.sin(w0);
-  const alpha = sin / (2 * Q);
+  const K = Math.tan((Math.PI * f0) / fs);
+  const a0 = 1 + K / Q + K * K;
 
-  const b0 = (1 + cos) / 2;
-  const b1 = -(1 + cos);
-  const b2 = (1 + cos) / 2;
-  const a0 = 1 + alpha;
-  const a1 = -2 * cos;
-  const a2 = 1 - alpha;
-
-  return { b0: b0 / a0, b1: b1 / a0, b2: b2 / a0, a1: a1 / a0, a2: a2 / a0 };
+  // BS.1770 deliberately leaves the numerator unnormalised. At 48 kHz this
+  // gives b=[1,-2,1], a=[1,-1.9900474548,0.9900722504] exactly.
+  return {
+    b0: 1,
+    b1: -2,
+    b2: 1,
+    a1: (2 * (K * K - 1)) / a0,
+    a2: (1 - K / Q + K * K) / a0,
+  };
 }
 
 // Direct-form-I biquad, returns a new array.
@@ -174,16 +176,31 @@ function blocksFromSegments(
 
 function kWeightAll(channels: Float32Array[], fs: number): Float64Array[] {
   const segLen = Math.round(STEP_SEC * fs);
-  return channels.map((ch) => segmentSumSquares(kWeight(ch, fs), segLen));
+  const channelWeights = channels.length === 4
+    ? [1, 1, 1.41, 1.41]
+    : channels.length === 6
+      ? [1, 1, 1, 0, 1.41, 1.41]
+      : new Array<number>(channels.length).fill(1);
+
+  return channels.map((ch, index) => {
+    const weight = channelWeights[index];
+    const segmentCount = Math.floor(ch.length / segLen);
+    if (weight === 0) return new Float64Array(segmentCount); // 5.1 LFE is excluded.
+    const powers = segmentSumSquares(kWeight(ch, fs), segLen);
+    if (weight !== 1) {
+      for (let i = 0; i < powers.length; i++) powers[i] *= weight;
+    }
+    return powers;
+  });
 }
 
 // Integrated loudness from momentary (400ms) blocks: absolute gate at -70 LUFS,
 // then a relative gate 10 LU below the abs-gated mean.
 function integratedFromBlocks(blocks: Block[]): number | null {
-  const absGated = blocks.filter((b) => b.loudness >= ABSOLUTE_GATE_LUFS);
+  const absGated = blocks.filter((b) => b.loudness > ABSOLUTE_GATE_LUFS);
   if (absGated.length === 0) return null;
   const relThreshold = blockLoudness(averagePowers(absGated)) - REL_GATE_INTEGRATED;
-  const relGated = absGated.filter((b) => b.loudness >= relThreshold);
+  const relGated = absGated.filter((b) => b.loudness > relThreshold);
   const gated = relGated.length > 0 ? relGated : absGated;
   const loudness = blockLoudness(averagePowers(gated));
   return Number.isFinite(loudness) ? loudness : null;
@@ -202,10 +219,10 @@ function percentile(sortedAsc: number[], p: number): number {
 // relative gate 20 LU below the abs-gated mean, then the 95th minus the 10th
 // percentile of the surviving short-term loudness values (EBU Tech 3342).
 function lraFromBlocks(blocks: Block[]): number | null {
-  const absGated = blocks.filter((b) => b.loudness >= ABSOLUTE_GATE_LUFS);
+  const absGated = blocks.filter((b) => b.loudness > ABSOLUTE_GATE_LUFS);
   if (absGated.length < 2) return null;
   const relThreshold = blockLoudness(averagePowers(absGated)) - REL_GATE_LRA;
-  const relGated = absGated.filter((b) => b.loudness >= relThreshold);
+  const relGated = absGated.filter((b) => b.loudness > relThreshold);
   if (relGated.length < 2) return null;
   const sorted = relGated.map((b) => b.loudness).sort((a, b) => a - b);
   return percentile(sorted, 0.95) - percentile(sorted, 0.1);
@@ -252,6 +269,70 @@ export function samplePeak(channels: Float32Array[]): number {
   return peak;
 }
 
+// True-peak meter (BS.1770-5). Oversample so peaks that fall *between* stored
+// samples are caught — those are what clip a DAC even when no sample reads over
+// 0 dBFS. The oversampling factor scales down with sample rate to hold the
+// effective rate near 192kHz (at/above 192kHz the sample peak already suffices).
+// At 48 kHz, use the exact order-48, four-phase FIR published in Annex 2.
+const ITU_TRUE_PEAK_4X: readonly (readonly number[])[] = [
+  [0.001708984375, 0.010986328125, -0.0196533203125, 0.033203125, -0.0594482421875, 0.1373291015625, 0.97216796875, -0.102294921875, 0.047607421875, -0.026611328125, 0.014892578125, -0.00830078125],
+  [-0.0291748046875, 0.029296875, -0.0517578125, 0.089111328125, -0.16650390625, 0.465087890625, 0.77978515625, -0.2003173828125, 0.1015625, -0.0582275390625, 0.0330810546875, -0.0189208984375],
+  [-0.0189208984375, 0.0330810546875, -0.0582275390625, 0.1015625, -0.2003173828125, 0.77978515625, 0.465087890625, -0.16650390625, 0.089111328125, -0.0517578125, 0.029296875, -0.0291748046875],
+  [-0.00830078125, 0.014892578125, -0.026611328125, 0.047607421875, -0.102294921875, 0.97216796875, 0.1373291015625, -0.0594482421875, 0.033203125, -0.0196533203125, 0.010986328125, 0.001708984375],
+];
+
+function truePeakFactor(fs: number): number {
+  return Math.max(1, Math.min(4, Math.round(192000 / fs)));
+}
+
+function buildPolyphase(factor: number): Float64Array[] {
+  const taps = 16;
+  const phases: Float64Array[] = [];
+  for (let p = 1; p < factor; p++) {
+    const d = p / factor;
+    const row = new Float64Array(taps);
+    let sum = 0;
+    for (let t = 0; t < taps; t++) {
+      const k = t - 7; // sample offset relative to n
+      const x = k - d;
+      const sinc = x === 0 ? 1 : Math.sin(Math.PI * x) / (Math.PI * x);
+      const w = 0.5 - 0.5 * Math.cos((2 * Math.PI * t) / (taps - 1)); // Hann
+      row[t] = sinc * w;
+      sum += row[t];
+    }
+    for (let t = 0; t < taps; t++) row[t] /= sum; // unity DC gain
+    phases.push(row);
+  }
+  return phases;
+}
+
+export function truePeak(channels: Float32Array[], fs: number): number {
+  const factor = truePeakFactor(fs);
+  let peak = samplePeak(channels); // the stored samples are phase 0
+  if (factor === 1 || channels.length === 0) return peak;
+
+  const phases = factor === 4 && fs === 48000
+    ? ITU_TRUE_PEAK_4X
+    : buildPolyphase(factor);
+  const center = phases[0].length === 12 ? 6 : 7;
+  for (const ch of channels) {
+    const n = ch.length;
+    for (let i = 0; i < n; i++) {
+      for (let ph = 0; ph < phases.length; ph++) {
+        const row = phases[ph];
+        let acc = 0;
+        for (let t = 0; t < row.length; t++) {
+          const idx = i + t - center;
+          if (idx >= 0 && idx < n) acc += ch[idx] * row[t];
+        }
+        const a = Math.abs(acc);
+        if (a > peak) peak = a;
+      }
+    }
+  }
+  return peak;
+}
+
 // Bucket a mono signal into `bucketCount` amplitude values (max-abs per bucket),
 // normalized so the loudest bucket is 1. Shape for the eye, not a measurement.
 export function bucketPeaks(mono: Float32Array, bucketCount: number): number[] {
@@ -271,6 +352,61 @@ export function bucketPeaks(mono: Float32Array, bucketCount: number): number[] {
   const loudest = buckets.reduce((m, v) => (v > m ? v : m), 0);
   if (loudest <= 0) return buckets;
   return buckets.map((v) => Math.min(1, v / loudest));
+}
+
+export function waveformEnvelope(
+  mono: Float32Array,
+  bucketCount: number,
+): { min: number[]; max: number[] } {
+  if (mono.length === 0 || bucketCount <= 0) return { min: [], max: [] };
+  const count = Math.min(bucketCount, mono.length);
+  const min = new Array<number>(count);
+  const max = new Array<number>(count);
+  const per = mono.length / count;
+  for (let bucket = 0; bucket < count; bucket++) {
+    const start = Math.floor(bucket * per);
+    const end = Math.max(start + 1, Math.min(mono.length, Math.floor((bucket + 1) * per)));
+    let low = 1;
+    let high = -1;
+    for (let sample = start; sample < end; sample++) {
+      const value = mono[sample];
+      if (value < low) low = value;
+      if (value > high) high = value;
+    }
+    // Millisample precision is visually lossless here and keeps persisted
+    // album projects comfortably below localStorage limits.
+    min[bucket] = Math.round(Math.max(-1, low) * 1000) / 1000;
+    max[bucket] = Math.round(Math.min(1, high) * 1000) / 1000;
+  }
+  return { min, max };
+}
+
+export function packWaveformEnvelope(min: number[], max: number[]): string {
+  if (min.length !== max.length) throw new Error("Waveform envelope channels must have equal lengths.");
+  const bytes = new Uint8Array(min.length * 2);
+  const quantize = (value: number) => Math.round((Math.max(-1, Math.min(1, value)) + 1) * 127.5);
+  for (let index = 0; index < min.length; index++) {
+    bytes[index * 2] = quantize(min[index]);
+    bytes[index * 2 + 1] = quantize(max[index]);
+  }
+  let binary = "";
+  for (let offset = 0; offset < bytes.length; offset += 32768) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + 32768));
+  }
+  return btoa(binary);
+}
+
+export function unpackWaveformEnvelope(data: string, pointCount: number) {
+  if (!data || pointCount <= 0) return { min: [] as number[], max: [] as number[] };
+  const binary = atob(data);
+  if (binary.length !== pointCount * 2) return { min: [] as number[], max: [] as number[] };
+  const min = new Array<number>(pointCount);
+  const max = new Array<number>(pointCount);
+  for (let index = 0; index < pointCount; index++) {
+    min[index] = binary.charCodeAt(index * 2) / 127.5 - 1;
+    max[index] = binary.charCodeAt(index * 2 + 1) / 127.5 - 1;
+  }
+  return { min, max };
 }
 
 export function toDb(amplitude: number): number {
@@ -303,8 +439,11 @@ export async function analyzeAudioFile(file: File, bucketCount = 480): Promise<A
   }
   const fs = buffer.sampleRate;
 
-  const peakAmp = samplePeak(channels);
-  const peaks = bucketPeaks(mixToMono(channels), bucketCount);
+  const peakAmp = truePeak(channels, fs);
+  const mono = mixToMono(channels);
+  const peaks = bucketPeaks(mono, bucketCount);
+  const channelWaveforms = channels.slice(0, 2).map((channel) => waveformEnvelope(channel, 65536));
+  const waveformChannels = channelWaveforms.map((waveform) => packWaveformEnvelope(waveform.min, waveform.max));
   const peakDb = toDb(peakAmp);
 
   // K-weight once, derive both loudness figures from the same segment powers.
@@ -325,8 +464,10 @@ export async function analyzeAudioFile(file: File, bucketCount = 480): Promise<A
     sampleRate: fs,
     channelCount: buffer.numberOfChannels,
     peaks,
+    waveformChannels,
+    waveformPoints: channelWaveforms[0]?.min.length ?? 0,
     integratedLufs,
     dynamicRangeLu,
-    peakDb: Number.isFinite(peakDb) ? peakDb : -Infinity,
+    truePeakDb: Number.isFinite(peakDb) ? peakDb : -Infinity,
   };
 }

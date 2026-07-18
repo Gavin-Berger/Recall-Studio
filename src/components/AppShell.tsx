@@ -101,26 +101,40 @@ export function AppShell({
         </nav>
 
         <div className="recall-frame__content">
+          {/* Every surface except the Organizer swaps with the keyed transition,
+              mounting on entry and unmounting on exit as before. */}
+          {surface !== "organizer" && (
+            <div
+              key={surface}
+              className={`recall-surface-stage recall-surface-stage--${surface}`}
+              data-surface={surface}
+            >
+              {surface === "projects" ? (
+                <div className="home-surface">{projects}</div>
+              ) : surface === "versions" ? (
+                <div className="home-surface">{versions}</div>
+              ) : surface === "recap" ? (
+                <div className="home-surface">{recap}</div>
+              ) : surface === "notes" ? (
+                <div className="home-surface">{notes}</div>
+              ) : surface === "glossary" ? (
+                <div className="document-surface">{glossary}</div>
+              ) : (
+                <div className="schema-surface">{timeline}</div>
+              )}
+            </div>
+          )}
+
+          {/* The Organizer stays mounted across tab changes so its audio keeps
+              playing when you navigate away — only its visibility toggles. */}
           <div
-            key={surface}
-            className={`recall-surface-stage recall-surface-stage--${surface}`}
-            data-surface={surface}
+            key="persistent-organizer"
+            className="recall-surface-stage recall-surface-stage--organizer"
+            data-surface="organizer"
+            hidden={surface !== "organizer"}
+            style={surface === "organizer" ? undefined : { display: "none" }}
           >
-            {surface === "projects" ? (
-              <div className="home-surface">{projects}</div>
-            ) : surface === "versions" ? (
-              <div className="home-surface">{versions}</div>
-            ) : surface === "recap" ? (
-              <div className="home-surface">{recap}</div>
-            ) : surface === "organizer" ? (
-              <div className="home-surface">{organizer}</div>
-            ) : surface === "notes" ? (
-              <div className="home-surface">{notes}</div>
-            ) : surface === "glossary" ? (
-              <div className="document-surface">{glossary}</div>
-            ) : (
-              <div className="schema-surface">{timeline}</div>
-            )}
+            <div className="home-surface">{organizer}</div>
           </div>
         </div>
       </div>

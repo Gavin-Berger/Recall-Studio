@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { analyzeAudioFile, type AudioAnalysis } from "./audio";
@@ -531,7 +532,15 @@ async function prepareCoverImage(file: File): Promise<string> {
   }
 }
 
-export function ProjectOrganizerScreen() {
+type ProjectOrganizerScreenProps = {
+  showNowPlaying?: boolean;
+  onOpenOrganizer?: () => void;
+};
+
+export function ProjectOrganizerScreen({
+  showNowPlaying = false,
+  onOpenOrganizer,
+}: ProjectOrganizerScreenProps) {
   const repository = useMemo<OrganizerRepository>(() => organizerRepository(), []);
   const nativeStorage = useMemo(() => isTauri(), []);
   const [projects, setProjects] = useState<OrganizerProject[]>([]);
@@ -569,6 +578,7 @@ export function ProjectOrganizerScreen() {
   const persistedRevisions = useRef<Map<string, number>>(new Map());
   const saveTimers = useRef<Map<string, number>>(new Map());
   const saveQueues = useRef<Map<string, Promise<void>>>(new Map());
+  const analysisJobRef = useRef(0);
 
   const ordered = useMemo(
     () => [...projects].sort((a, b) => b.updated_at_ms - a.updated_at_ms),
@@ -579,6 +589,25 @@ export function ProjectOrganizerScreen() {
     () => selected ? selectReleasePreviewTracks(selected) : [],
     [selected],
   );
+  const activePlayback = useMemo(() => {
+    if (!activeExportId) return null;
+    for (const project of projects) {
+      for (let trackIndex = 0; trackIndex < project.tracks.length; trackIndex += 1) {
+        const track = project.tracks[trackIndex];
+        const bounceIndex = track.bounces.findIndex((bounce) => bounce.id === activeExportId);
+        if (bounceIndex >= 0) {
+          return {
+            project,
+            track,
+            bounce: track.bounces[bounceIndex],
+            trackIndex,
+            bounceIndex,
+          };
+        }
+      }
+    }
+    return null;
+  }, [activeExportId, projects]);
 
   // Release-level totals for the summary row.
   const releaseStats = useMemo(() => {
@@ -838,6 +867,7 @@ export function ProjectOrganizerScreen() {
       for (const { trackId, bounce } of staleBounces) {
         if (cancelled) return;
         waveformUpgradeIds.current.add(bounce.id);
+        const analysisJob = ++analysisJobRef.current;
         try {
           setAnalyzing(`${bounce.fileName} waveform`);
           const bytes = await invoke<ArrayBuffer>("read_organizer_audio", { path: bounce.sourcePath! });
@@ -868,7 +898,7 @@ export function ProjectOrganizerScreen() {
           if (!cancelled) setError(`Couldn't upgrade the waveform for ${bounce.fileName}. Use Replace to locate it again.`);
         } finally {
           waveformUpgradeIds.current.delete(bounce.id);
-          if (!cancelled) setAnalyzing(null);
+          if (analysisJobRef.current === analysisJob) setAnalyzing(null);
         }
       }
     })();
@@ -1160,6 +1190,7 @@ export function ProjectOrganizerScreen() {
   ) {
     if (!selected) return;
     setError(null);
+    const analysisJob = ++analysisJobRef.current;
     setAnalyzing(file.name);
     try {
       const analysis = await analyzeAudioFile(file);
@@ -1204,7 +1235,7 @@ export function ProjectOrganizerScreen() {
       setError(`Couldn't read ${file.name}.`);
       return null;
     } finally {
-      setAnalyzing(null);
+      if (analysisJobRef.current === analysisJob) setAnalyzing(null);
     }
   }
 
@@ -1445,6 +1476,75 @@ export function ProjectOrganizerScreen() {
     });
   }
 
+  const nowPlaying = showNowPlaying
+    && isPlaying
+    && activePlayback
+    && typeof document !== "undefined"
+    ? createPortal(
+        <aside className="organizer-now-playing" aria-label="Now playing">
+          {activePlayback.project.coverImageDataUrl ? (
+            <img
+              className="organizer-now-playing__cover"
+              src={activePlayback.project.coverImageDataUrl}
+              alt=""
+            />
+          ) : (
+            <span className="organizer-now-playing__cover organizer-now-playing__cover--empty" aria-hidden="true">
+              {String(activePlayback.trackIndex + 1).padStart(2, "0")}
+            </span>
+          )}
+          <button
+            type="button"
+            className="organizer-now-playing__play"
+            aria-label={`Pause ${activePlayback.track.title.trim() || activePlayback.bounce.fileName}`}
+            title="Pause"
+            onClick={() => togglePlay(activePlayback.bounce)}
+          >
+            ❚❚
+          </button>
+          <div className="organizer-now-playing__identity">
+            <strong>{activePlayback.track.title.trim() || activePlayback.bounce.fileName}</strong>
+            <span>
+              {activePlayback.project.name.trim() || "Untitled project"}
+              {" · "}
+              Version {versionLabel(activePlayback.bounceIndex)}
+            </span>
+          </div>
+          <div className="organizer-now-playing__timeline">
+            <input
+              type="range"
+              min="0"
+              max="1000"
+              step="1"
+              value={Math.round(progress * 1000)}
+              style={{
+                background: `linear-gradient(to right, #8ee6c7 0%, #8ee6c7 ${progress * 100}%, rgba(255, 255, 255, 0.14) ${progress * 100}%, rgba(255, 255, 255, 0.14) 100%)`,
+              }}
+              aria-label={`Seek ${activePlayback.track.title.trim() || activePlayback.bounce.fileName}`}
+              onChange={(event) => seekExport(activePlayback.bounce, Number(event.target.value) / 1000)}
+            />
+            <span>
+              {formatDuration(progress * activePlayback.bounce.durationSec)}
+              {" / "}
+              {formatDuration(activePlayback.bounce.durationSec)}
+            </span>
+          </div>
+          {onOpenOrganizer && (
+            <button
+              type="button"
+              className="organizer-now-playing__open"
+              aria-label="Open Organizer"
+              title="Open Organizer"
+              onClick={onOpenOrganizer}
+            >
+              ↗
+            </button>
+          )}
+        </aside>,
+        document.body,
+      )
+    : null;
+
   if (!storageReady) {
     return (
       <div className="organizer organizer--loading" aria-live="polite">
@@ -1461,6 +1561,7 @@ export function ProjectOrganizerScreen() {
   if (previewOpen && selected) {
     return (
       <>
+        {nowPlaying}
         <audio ref={audioRef} preload="none" onEnded={handleEnded} hidden />
         <ReleasePreview
           project={selected}
@@ -1481,8 +1582,10 @@ export function ProjectOrganizerScreen() {
   }
 
   return (
-    <div className={`organizer ${selected?.coverImageDataUrl ? "has-gutter-art" : ""}`}>
-      <audio ref={audioRef} preload="none" onEnded={handleEnded} hidden />
+    <>
+      {nowPlaying}
+      <div className={`organizer ${selected?.coverImageDataUrl ? "has-gutter-art" : ""}`}>
+        <audio ref={audioRef} preload="none" onEnded={handleEnded} hidden />
       <input
         ref={fileInputRef}
         type="file"
@@ -2167,6 +2270,7 @@ export function ProjectOrganizerScreen() {
           </div>
         </section>
       )}
-    </div>
+      </div>
+    </>
   );
 }

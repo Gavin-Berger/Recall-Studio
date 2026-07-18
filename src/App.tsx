@@ -375,7 +375,12 @@ function App() {
         />
       }
       timeline={<SchemaTimeline sessionId={effectiveSessionId} session={currentSession} />}
-      organizer={<ProjectOrganizerScreen />}
+      organizer={
+        <ProjectOrganizerScreen
+          showNowPlaying={surface !== "organizer"}
+          onOpenOrganizer={() => setSurface("organizer")}
+        />
+      }
       notes={<NotesScreen />}
       glossary={<ProductionCheatSheet />}
     />

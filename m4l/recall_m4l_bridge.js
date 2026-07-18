@@ -1,7 +1,7 @@
 // recall_m4l_bridge.js
 //
 // Recall Studio - Max for Live bridge
-// v0.4.2: performance-safe delta capture + selected-track focus collector.
+// v0.20.0: single-probe parameter polling + bounded focused-device caches.
 //
 // Product goal:
 // Capture meaningful Ableton session activity without constantly transmitting
@@ -43,7 +43,7 @@ outlets = 2;
 var PROTOCOL = "recall.v2";
 var SOURCE = "max_for_live";
 var DEVICE_ID = "recall-m4l-bridge-dev";
-var BRIDGE_VERSION = "0.17.0";
+var BRIDGE_VERSION = "0.20.0";
 
 // Canonical v2 flat fields. emit() lifts any of these from its `fields` arg up
 // to the TOP LEVEL of the packet, because the Rust normalizer reads canonical
@@ -135,6 +135,13 @@ var PARAMETER_POLL_IDLE_MS = 1200;
 // Keep polling HOT for this long after the last observed change, so multi-part
 // gestures (grab, listen, grab again) stay at full resolution end to end.
 var PARAMETER_HOT_HOLD_MS = 4000;
+// Focus/navigation debounce. A burst of clicks changes selected_track /
+// selected_device faster than a producer can mean any of them. Wait for the
+// selection to hold still this long before paying the expensive rebuild + full
+// reseed of the focused device, so clicking THROUGH devices no longer pins the
+// poller HOT and storms LiveAPI construction on Live's main thread. Once the
+// selection lands and holds, seeding + ride capture behave exactly as before.
+var FOCUS_DEBOUNCE_MS = 300;
 // Per tick we read at most this many parameter VALUES (one cheap read each), then
 // advance a round-robin cursor. A 1000+ param plugin is therefore swept over a few
 // ticks instead of in one heavy tick — bounding per-tick cost regardless of how
@@ -148,6 +155,14 @@ var PARAMETER_POLL_CHUNK = 256;
 var PARAMETER_POLL_BUDGET_MS = 3;
 // Absolute ceiling on parameters considered for one device (pathological guard).
 var MAX_POLL_PARAMETERS_PER_DEVICE = 4096;
+// Slow-changing focused-device metadata does not need to be read on every hot
+// parameter tick. Parameter values remain full cadence; only count/name refreshes
+// are throttled, cutting several LiveAPI gets from the steady-state hot path.
+var PARAMETER_CONTEXT_REFRESH_MS = 3000;
+// Gesture baselines are plain JS data, but retaining every parameter for every
+// device ever focused grows without bound in long sessions. Keep a small LRU;
+// revisiting an evicted device simply seeds it silently again.
+var PARAMETER_DEVICE_CACHE_LIMIT = 8;
 // A knob ride is emitted as ONE settled event once its value has stopped changing
 // for this long. Decoupled from the poll/round-robin cadence (wall-clock based) so
 // chunking never splits a gesture. ~one comfortable pause after letting go.
@@ -195,6 +210,26 @@ var structureScanCursor = 0;
 var FOCUS_SKIP_TICKS_WHILE_PLAYING = 2;
 var focusTicksSkippedWhilePlaying = 0;
 
+// Windows may deprioritize Max's scheduler while Live is backgrounded. When the
+// scheduler wakes, several overdue Tasks can otherwise enter LiveAPI back to
+// back and briefly pin Live's main thread. Detect that wall-clock gap and give
+// each scanner a separate recovery slot. No missed interval is replayed.
+var SCHEDULER_GAP_MS = 5000;
+var schedulerLastTickAt = 0;
+var schedulerRecoveryStartedAt = 0;
+var SCHEDULER_RECOVERY_OFFSETS = {
+    heartbeat: 75,
+    transport: 350,
+    parameter: 750,
+    initial_context: 950,
+    focus: 1350,
+    initial_focus: 1650,
+    structure: 2200,
+    live_set: 2850,
+    initial_live_set: 3150,
+    baseline: 3600
+};
+
 // Hard ceiling on a single emitted event. A snapshot that serializes larger
 // than this is dropped, not sent. Why: pushing an oversized symbol out the
 // outlet into [udpsend] can natively crash Max (and take Ableton with it).
@@ -229,6 +264,36 @@ var initialContextTask = new Task(initial_context_tick, this);
 var initialFocusTask = new Task(initial_focus_tick, this);
 var initialLiveSetTask = new Task(initial_live_set_tick, this);
 var baselineTask = new Task(baseline_tick, this);
+
+function scheduler_tick_ready(kind, task) {
+    var now = (new Date()).getTime();
+    var gap = schedulerLastTickAt > 0 ? now - schedulerLastTickAt : 0;
+    schedulerLastTickAt = now;
+
+    if (gap >= SCHEDULER_GAP_MS) {
+        schedulerRecoveryStartedAt = now;
+
+        // These cheap handles may point at stale selection objects after Live
+        // regains focus. Preserve the device/parameter caches and gesture
+        // baselines; their existing id checks will rebuild only what is dead.
+        paramLiveSetViewApi = null;
+        paramSelectedTrackViewApi = null;
+
+        debug("scheduler resumed after " + gap + "ms; staggering LiveAPI scans");
+    }
+
+    if (schedulerRecoveryStartedAt > 0) {
+        var offset = SCHEDULER_RECOVERY_OFFSETS[kind] || 0;
+        var readyAt = schedulerRecoveryStartedAt + offset;
+        if (now < readyAt) {
+            task.cancel();
+            task.schedule(Math.max(50, readyAt - now));
+            return false;
+        }
+    }
+
+    return true;
+}
 
 // Fingerprint cache.
 var lastTransportSummaryFingerprint = "";
@@ -279,6 +344,8 @@ function start_bridge() {
     }
 
     bridgeRunning = true;
+    schedulerLastTickAt = (new Date()).getTime();
+    schedulerRecoveryStartedAt = 0;
 
     if (!deviceLoadedSent) {
         emit("device_loaded", "Max for Live Bridge Loaded", "Recall Studio Max for Live bridge initialized.", {
@@ -311,7 +378,7 @@ function start_bridge() {
     focusTask.schedule(FOCUS_INTERVAL_MS);
     // The dedicated parameter poller runs independently of (and faster than) the
     // focus scan, so a tweak on the open device is caught even mid-playback.
-    parameterTask.schedule(PARAMETER_POLL_INTERVAL_MS);
+    parameterTask.schedule(PARAMETER_POLL_HOT_MS);
     // Offset the structure scan from the focus scan so they don't fire on the
     // same tick and stack their LiveAPI work.
     structureTask.schedule(STRUCTURE_INTERVAL_MS + 2000);
@@ -339,6 +406,9 @@ function initial_context_tick() {
     if (!bridgeRunning) {
         return;
     }
+    if (!scheduler_tick_ready("initial_context", initialContextTask)) {
+        return;
+    }
 
     if (captureTransport) {
         try {
@@ -353,6 +423,9 @@ function initial_focus_tick() {
     if (!bridgeRunning) {
         return;
     }
+    if (!scheduler_tick_ready("initial_focus", initialFocusTask)) {
+        return;
+    }
 
     if (captureFocus) {
         try {
@@ -365,6 +438,9 @@ function initial_focus_tick() {
 
 function initial_live_set_tick() {
     if (!bridgeRunning) {
+        return;
+    }
+    if (!scheduler_tick_ready("initial_live_set", initialLiveSetTask)) {
         return;
     }
 
@@ -382,6 +458,9 @@ function initial_live_set_tick() {
 // down. Shared by the automatic first-meet baseline and the manual recapture.
 function baseline_tick() {
     if (!bridgeRunning) {
+        return;
+    }
+    if (!scheduler_tick_ready("baseline", baselineTask)) {
         return;
     }
     try {
@@ -426,6 +505,8 @@ function stop_bridge() {
     }
 
     bridgeRunning = false;
+    schedulerLastTickAt = 0;
+    schedulerRecoveryStartedAt = 0;
 
     heartbeatTask.cancel();
     transportTask.cancel();
@@ -464,6 +545,9 @@ function heartbeat() {
 
 function heartbeat_tick() {
     if (!bridgeRunning) {
+        return;
+    }
+    if (!scheduler_tick_ready("heartbeat", heartbeatTask)) {
         return;
     }
 
@@ -532,6 +616,9 @@ function transport_tick() {
     if (!bridgeRunning) {
         return;
     }
+    if (!scheduler_tick_ready("transport", transportTask)) {
+        return;
+    }
 
     if (captureTransport) {
         try {
@@ -546,6 +633,9 @@ function transport_tick() {
 
 function focus_tick() {
     if (!bridgeRunning) {
+        return;
+    }
+    if (!scheduler_tick_ready("focus", focusTask)) {
         return;
     }
 
@@ -576,6 +666,9 @@ function focus_tick() {
 
 function structure_tick() {
     if (!bridgeRunning) {
+        return;
+    }
+    if (!scheduler_tick_ready("structure", structureTask)) {
         return;
     }
 
@@ -733,6 +826,9 @@ function scan_bus_tracks() {
 
 function live_set_tick() {
     if (!bridgeRunning) {
+        return;
+    }
+    if (!scheduler_tick_ready("live_set", liveSetTask)) {
         return;
     }
 
@@ -1817,6 +1913,17 @@ var paramHotIndices = {};         // index -> true
 // Poll HOT until this wall-clock time; bumped by any observed change, a focus
 // move, or an unfinished first sweep of a new device.
 var paramPollHotUntil = 0;
+var paramContextRefreshAt = 0;
+var paramDeviceRecency = [];
+
+// Focus-change debounce state (see FOCUS_DEBOUNCE_MS). committedFocusIdentity is
+// the "trackId:deviceId" the poller is actually seeding/sampling. A probe result
+// that differs from it must hold steady for FOCUS_DEBOUNCE_MS before we commit —
+// so a click-through never triggers the rebuild/reseed below.
+var committedFocusIdentity = null;
+var paramPendingKey = null;
+var paramPendingSince = 0;
+var paramSelectedTrackViewApi = null;
 
 function reset_param_api_cache(paramCount) {
     paramApiByIndex = [];
@@ -1825,8 +1932,32 @@ function reset_param_api_cache(paramCount) {
     paramApiCachedCount = paramCount;
 }
 
+function touch_param_device_cache(deviceKey) {
+    var next = [];
+    for (var i = 0; i < paramDeviceRecency.length; i++) {
+        if (paramDeviceRecency[i] !== deviceKey) {
+            next.push(paramDeviceRecency[i]);
+        }
+    }
+    next.push(deviceKey);
+    paramDeviceRecency = next;
+
+    while (paramDeviceRecency.length > PARAMETER_DEVICE_CACHE_LIMIT) {
+        var evictedKey = paramDeviceRecency.shift();
+        if (!evictedKey || evictedKey === deviceKey) {
+            continue;
+        }
+        delete paramGestureByDevice[evictedKey];
+        delete paramPollContextByKey[evictedKey];
+        delete paramPollCursorByKey[evictedKey];
+    }
+}
+
 function parameter_tick() {
     if (!bridgeRunning) {
+        return;
+    }
+    if (!scheduler_tick_ready("parameter", parameterTask)) {
         return;
     }
 
@@ -1860,16 +1991,20 @@ function param_live_set_view() {
 // and ZERO LiveAPI constructions. The full path walk — including the device-id
 // → chain-index lookup loop — only runs when focus actually moves or a cached
 // object dies.
-function resolve_focused_device_location() {
+function resolve_focused_device_location(focusProbe) {
     var view = param_live_set_view();
     if (!view) {
         paramFocusCache = null;
+        paramContextRefreshAt = 0;
         return null;
     }
 
-    var selectedTrackId = normalize_id(get_prop(view, "selected_track", null));
+    var selectedTrackId = focusProbe
+        ? focusProbe.trackId
+        : normalize_id(get_prop(view, "selected_track", null));
     if (!selectedTrackId) {
         paramFocusCache = null;
+        paramContextRefreshAt = 0;
         return null;
     }
 
@@ -1882,23 +2017,35 @@ function resolve_focused_device_location() {
             trackView && Number(trackView.id) !== 0 &&
             deviceApi && Number(deviceApi.id) !== 0
         ) {
-            var selectedDeviceId = normalize_id(get_prop(trackView, "selected_device", null));
+            var selectedDeviceId = focusProbe
+                ? focusProbe.deviceId
+                : normalize_id(get_prop(trackView, "selected_device", null));
             if (selectedDeviceId === cache.selectedDeviceId) {
-                // Focus unchanged and the device is alive. Refresh the volatile
-                // bits: param count (a VST "Configure" can grow it) and names
-                // (renames must never leave a settled event with a stale label).
-                loc.paramCount = get_count(deviceApi, "parameters", loc.paramCount);
-                loc.trackName = value_to_string(get_prop(loc.trackApi, "name", null)) || loc.trackName;
-                loc.deviceName = value_to_string(get_prop(deviceApi, "name", null)) || loc.deviceName;
+                // Focus unchanged and the device is alive. Count/names change
+                // rarely, so refresh them on a slow clock instead of adding three
+                // LiveAPI reads to every hot parameter tick.
+                var now = (new Date()).getTime();
+                if (now >= paramContextRefreshAt) {
+                    loc.paramCount = get_count(deviceApi, "parameters", loc.paramCount);
+                    loc.trackName = value_to_string(get_prop(loc.trackApi, "name", null)) || loc.trackName;
+                    loc.deviceName = value_to_string(get_prop(deviceApi, "name", null)) || loc.deviceName;
+                    paramContextRefreshAt = now + PARAMETER_CONTEXT_REFRESH_MS;
+                }
                 return loc;
             }
         }
     }
 
-    var built = build_focused_device_location(selectedTrackId);
+    var built = build_focused_device_location(
+        selectedTrackId,
+        focusProbe ? focusProbe.deviceId : undefined
+    );
     paramFocusCache = built
         ? { selectedTrackId: selectedTrackId, selectedDeviceId: built.selectedDeviceId, loc: built }
         : null;
+    paramContextRefreshAt = built
+        ? (new Date()).getTime() + PARAMETER_CONTEXT_REFRESH_MS
+        : 0;
     return built;
 }
 
@@ -1906,7 +2053,7 @@ function resolve_focused_device_location() {
 // track's view.selected_device, falling back to the first device so an open
 // instrument is still tracked even when no device is explicitly appointed.
 // Only called on focus change — the result (with its live objects) is cached.
-function build_focused_device_location(selectedTrackId) {
+function build_focused_device_location(selectedTrackId, selectedDeviceIdHint) {
     var trackIndex = find_track_index_by_id(selectedTrackId);
     if (trackIndex < 0) {
         return null;
@@ -1924,7 +2071,10 @@ function build_focused_device_location(selectedTrackId) {
     }
 
     var view = safe_path(trackPath + " view");
-    var selectedDeviceId = view ? normalize_id(get_prop(view, "selected_device", null)) : null;
+    var selectedDeviceId = selectedDeviceIdHint;
+    if (selectedDeviceId === undefined) {
+        selectedDeviceId = view ? normalize_id(get_prop(view, "selected_device", null)) : null;
+    }
 
     var deviceIndex = -1;
     if (selectedDeviceId) {
@@ -2047,12 +2197,77 @@ function sample_focused_param(loc, gestures, index, now) {
     }
 }
 
+// Cheap identity of what's focused — the selected track's id plus its selected
+// device's id — read through canonical dynamic paths ("live_set view
+// selected_track view"), so it costs a couple of reads and at most one cached
+// LiveAPI. It deliberately does NOT pay the track-index / device-lookup loops the
+// full rebuild pays. The resolved ids are passed into the full resolver too, so
+// steady-state polling does not read selected_track/selected_device a second time.
+function probe_focused_identity() {
+    var view = param_live_set_view();
+    if (!view) {
+        return null;
+    }
+    var trackId = normalize_id(get_prop(view, "selected_track", null));
+    if (!trackId) {
+        return null;
+    }
+    var deviceId = null;
+    var cache = paramFocusCache;
+    if (
+        cache && cache.selectedTrackId === trackId && cache.loc &&
+        cache.loc.trackViewApi && Number(cache.loc.trackViewApi.id) !== 0
+    ) {
+        // Still on the committed device's track: read selected_device off that
+        // already-validated track view — no path resolution, and reliable.
+        deviceId = normalize_id(get_prop(cache.loc.trackViewApi, "selected_device", null));
+    } else {
+        // Different track (or no cache yet): the dynamic path follows the
+        // selection, so this handle auto-tracks whichever track is selected.
+        var tv = paramSelectedTrackViewApi;
+        if (!(tv && Number(tv.id) !== 0)) {
+            tv = safe_path("live_set view selected_track view");
+            paramSelectedTrackViewApi = tv;
+        }
+        deviceId = tv ? normalize_id(get_prop(tv, "selected_device", null)) : null;
+    }
+    return {
+        key: trackId + ":" + (deviceId === null ? "-" : deviceId),
+        trackId: trackId,
+        deviceId: deviceId
+    };
+}
+
 // Sample the focused device's parameter values. Active rides are sampled every
 // tick (full resolution no matter the plugin size); the rest of the device is
 // swept round-robin, bounded by BOTH a count chunk and a wall-clock budget so a
 // plugin with slow parameter reads can never spike the scheduler tick.
 function poll_focused_device_parameters() {
-    var loc = resolve_focused_device_location();
+    // Debounce focus changes before doing any expensive work. While the selection
+    // is still moving (a click-through), do nothing but re-check soon — never
+    // rebuild or reseed. Only once the same track:device has held still for
+    // FOCUS_DEBOUNCE_MS do we commit and fall through to the (single) rebuild.
+    var nowProbe = (new Date()).getTime();
+    var focusProbe = probe_focused_identity();
+    var identity = focusProbe ? focusProbe.key : null;
+    if (identity !== committedFocusIdentity) {
+        if (identity !== paramPendingKey) {
+            paramPendingKey = identity;
+            paramPendingSince = nowProbe;
+        }
+        if (nowProbe - paramPendingSince < FOCUS_DEBOUNCE_MS) {
+            // Keep the cadence responsive so landing on a device feels instant once
+            // clicking stops — these settle ticks do no LiveAPI-heavy work.
+            if (paramPollHotUntil < nowProbe + PARAMETER_POLL_HOT_MS) {
+                paramPollHotUntil = nowProbe + PARAMETER_POLL_HOT_MS;
+            }
+            return;
+        }
+        committedFocusIdentity = identity;
+    }
+    paramPendingKey = null;
+
+    var loc = resolve_focused_device_location(focusProbe);
 
     if (!loc) {
         // Nothing focused (or the track/device vanished): flush any open gesture
@@ -2077,6 +2292,7 @@ function poll_focused_device_parameters() {
             flush_pending_param_gestures(lastPolledDeviceKey);
         }
         reset_param_api_cache(loc.paramCount);
+        touch_param_device_cache(deviceKey);
         paramPollHotUntil = now + PARAMETER_HOT_HOLD_MS;
     } else if (paramApiCachedCount !== loc.paramCount) {
         // Same device but the chain shape changed underneath us (e.g. a VST
@@ -2085,11 +2301,19 @@ function poll_focused_device_parameters() {
     }
     lastPolledDeviceKey = deviceKey;
 
-    paramPollContextByKey[deviceKey] = {
-        devicePath: loc.devicePath,
-        deviceName: loc.deviceName,
-        trackName: loc.trackName
-    };
+    var pollContext = paramPollContextByKey[deviceKey];
+    if (
+        !pollContext ||
+        pollContext.devicePath !== loc.devicePath ||
+        pollContext.deviceName !== loc.deviceName ||
+        pollContext.trackName !== loc.trackName
+    ) {
+        paramPollContextByKey[deviceKey] = {
+            devicePath: loc.devicePath,
+            deviceName: loc.deviceName,
+            trackName: loc.trackName
+        };
+    }
 
     var gestures = paramGestureByDevice[deviceKey];
     if (gestures === undefined) {
@@ -2744,6 +2968,7 @@ function session_snapshot() {
 function safe_mode() {
     captureTransport = false;
     captureFocus = false;
+    captureParameterMoves = false;
     captureStructure = false;
     captureLiveSet = false;
     debug("SAFE MODE: all LiveAPI scans disabled (heartbeat only)");
@@ -2752,6 +2977,7 @@ function safe_mode() {
 function full_capture() {
     captureTransport = true;
     captureFocus = true;
+    captureParameterMoves = true;
     captureStructure = true;
     captureLiveSet = true;
     debug("FULL CAPTURE: all LiveAPI scans enabled");
@@ -2797,9 +3023,13 @@ function capture_parameter_moves(value) {
 function parameter_poll_interval(value) {
     var ms = Number(value);
     if (!isNaN(ms) && ms >= 50) {
-        PARAMETER_POLL_INTERVAL_MS = ms;
+        PARAMETER_POLL_HOT_MS = ms;
+        PARAMETER_POLL_IDLE_MS = Math.max(ms, ms * 4);
     }
-    debug("parameter_poll_interval = " + PARAMETER_POLL_INTERVAL_MS);
+    debug(
+        "parameter_poll_interval hot=" + PARAMETER_POLL_HOT_MS +
+        "ms idle=" + PARAMETER_POLL_IDLE_MS + "ms"
+    );
 }
 
 function deep_snapshot() {

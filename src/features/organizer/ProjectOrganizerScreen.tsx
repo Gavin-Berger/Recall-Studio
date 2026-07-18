@@ -1496,16 +1496,18 @@ export function ProjectOrganizerScreen({
           <button
             type="button"
             className="organizer-now-playing__play"
-            aria-label={`Pause ${activePlayback.track.title.trim() || activePlayback.bounce.fileName}`}
+            aria-label={`Pause ${activePlayback.bounce.fileName}`}
             title="Pause"
             onClick={() => togglePlay(activePlayback.bounce)}
           >
             ❚❚
           </button>
           <div className="organizer-now-playing__identity">
-            <strong>{activePlayback.track.title.trim() || activePlayback.bounce.fileName}</strong>
+            <strong title={activePlayback.bounce.fileName}>{activePlayback.bounce.fileName}</strong>
             <span>
               {activePlayback.project.name.trim() || "Untitled project"}
+              {" · "}
+              Track {String(activePlayback.trackIndex + 1).padStart(2, "0")}
               {" · "}
               Version {versionLabel(activePlayback.bounceIndex)}
             </span>
@@ -1520,7 +1522,7 @@ export function ProjectOrganizerScreen({
               style={{
                 background: `linear-gradient(to right, #8ee6c7 0%, #8ee6c7 ${progress * 100}%, rgba(255, 255, 255, 0.14) ${progress * 100}%, rgba(255, 255, 255, 0.14) 100%)`,
               }}
-              aria-label={`Seek ${activePlayback.track.title.trim() || activePlayback.bounce.fileName}`}
+              aria-label={`Seek ${activePlayback.bounce.fileName}`}
               onChange={(event) => seekExport(activePlayback.bounce, Number(event.target.value) / 1000)}
             />
             <span>

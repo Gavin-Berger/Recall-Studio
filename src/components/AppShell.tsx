@@ -101,21 +101,27 @@ export function AppShell({
         </nav>
 
         <div className="recall-frame__content">
-          {surface === "projects" ? (
-            <div className="home-surface">{projects}</div>
-          ) : surface === "versions" ? (
-            <div className="home-surface">{versions}</div>
-          ) : surface === "recap" ? (
-            <div className="home-surface">{recap}</div>
-          ) : surface === "organizer" ? (
-            <div className="home-surface">{organizer}</div>
-          ) : surface === "notes" ? (
-            <div className="home-surface">{notes}</div>
-          ) : surface === "glossary" ? (
-            <div className="document-surface">{glossary}</div>
-          ) : (
-            <div className="schema-surface">{timeline}</div>
-          )}
+          <div
+            key={surface}
+            className={`recall-surface-stage recall-surface-stage--${surface}`}
+            data-surface={surface}
+          >
+            {surface === "projects" ? (
+              <div className="home-surface">{projects}</div>
+            ) : surface === "versions" ? (
+              <div className="home-surface">{versions}</div>
+            ) : surface === "recap" ? (
+              <div className="home-surface">{recap}</div>
+            ) : surface === "organizer" ? (
+              <div className="home-surface">{organizer}</div>
+            ) : surface === "notes" ? (
+              <div className="home-surface">{notes}</div>
+            ) : surface === "glossary" ? (
+              <div className="document-surface">{glossary}</div>
+            ) : (
+              <div className="schema-surface">{timeline}</div>
+            )}
+          </div>
         </div>
       </div>
     </main>

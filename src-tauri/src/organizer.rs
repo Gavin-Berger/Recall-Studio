@@ -48,7 +48,11 @@ pub struct OrganizerBounce {
     pub id: String,
     #[serde(rename = "fileName", default)]
     pub file_name: String,
-    #[serde(rename = "sourcePath", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "sourcePath",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub source_path: Option<String>,
     #[serde(rename = "fileSizeBytes", default)]
     pub file_size_bytes: i64,
@@ -77,8 +81,32 @@ pub struct OrganizerBounce {
     pub integrated_lufs: Option<f64>,
     #[serde(rename = "dynamicRangeLu", default)]
     pub dynamic_range_lu: Option<f64>,
+    #[serde(rename = "maxMomentaryLufs", default)]
+    pub max_momentary_lufs: Option<f64>,
+    #[serde(rename = "maxMomentaryTimeSec", default)]
+    pub max_momentary_time_sec: Option<f64>,
+    #[serde(rename = "maxShortTermLufs", default)]
+    pub max_short_term_lufs: Option<f64>,
+    #[serde(rename = "maxShortTermTimeSec", default)]
+    pub max_short_term_time_sec: Option<f64>,
     #[serde(rename = "peakDb", default)]
     pub peak_db: f64,
+    #[serde(rename = "samplePeakDb", default)]
+    pub sample_peak_db: Option<f64>,
+    #[serde(rename = "clippedSampleCount", default)]
+    pub clipped_sample_count: Option<i64>,
+    #[serde(rename = "dcOffsetDb", default)]
+    pub dc_offset_db: Option<f64>,
+    #[serde(rename = "stereoCorrelation", default)]
+    pub stereo_correlation: Option<f64>,
+    #[serde(rename = "stereoBalanceDb", default)]
+    pub stereo_balance_db: Option<f64>,
+    #[serde(rename = "bitDepth", default)]
+    pub bit_depth: Option<i64>,
+    #[serde(rename = "leadingSilenceSec", default)]
+    pub leading_silence_sec: Option<f64>,
+    #[serde(rename = "trailingSilenceSec", default)]
+    pub trailing_silence_sec: Option<f64>,
     #[serde(rename = "peakKind", default, skip_serializing_if = "Option::is_none")]
     pub peak_kind: Option<String>,
     #[serde(
@@ -179,7 +207,19 @@ pub fn initialize_schema(connection: &Connection) -> rusqlite::Result<()> {
             channel_count INTEGER NOT NULL DEFAULT 0,
             integrated_lufs REAL,
             dynamic_range_lu REAL,
+            max_momentary_lufs REAL,
+            max_momentary_time_sec REAL,
+            max_short_term_lufs REAL,
+            max_short_term_time_sec REAL,
             peak_db REAL NOT NULL DEFAULT 0,
+            sample_peak_db REAL,
+            clipped_sample_count INTEGER,
+            dc_offset_db REAL,
+            stereo_correlation REAL,
+            stereo_balance_db REAL,
+            bit_depth INTEGER,
+            leading_silence_sec REAL,
+            trailing_silence_sec REAL,
             peak_kind TEXT,
             analysis_version INTEGER,
             volume REAL NOT NULL DEFAULT 1,
@@ -206,7 +246,39 @@ pub fn initialize_schema(connection: &Connection) -> rusqlite::Result<()> {
         CREATE INDEX IF NOT EXISTS idx_organizer_comments_bounce
         ON organizer_comments(bounce_id);
         ",
-    )
+    )?;
+    ensure_bounce_metric_columns(connection)
+}
+
+fn ensure_bounce_metric_columns(connection: &Connection) -> rusqlite::Result<()> {
+    let existing = {
+        let mut statement = connection.prepare("PRAGMA table_info(organizer_bounces)")?;
+        let columns = statement
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<Result<std::collections::HashSet<_>, _>>()?;
+        columns
+    };
+    for (name, sql_type) in [
+        ("max_momentary_lufs", "REAL"),
+        ("max_momentary_time_sec", "REAL"),
+        ("max_short_term_lufs", "REAL"),
+        ("max_short_term_time_sec", "REAL"),
+        ("sample_peak_db", "REAL"),
+        ("clipped_sample_count", "INTEGER"),
+        ("dc_offset_db", "REAL"),
+        ("stereo_correlation", "REAL"),
+        ("stereo_balance_db", "REAL"),
+        ("bit_depth", "INTEGER"),
+        ("leading_silence_sec", "REAL"),
+        ("trailing_silence_sec", "REAL"),
+    ] {
+        if !existing.contains(name) {
+            connection.execute_batch(&format!(
+                "ALTER TABLE organizer_bounces ADD COLUMN {name} {sql_type};"
+            ))?;
+        }
+    }
+    Ok(())
 }
 
 // --- Asset files (waveform cache + cover art) ------------------------------
@@ -247,7 +319,10 @@ fn resolve_in_dir(dir: &Path, name: &str) -> Result<PathBuf, String> {
         || name.contains('/')
         || name.contains('\\')
         || name.contains("..")
-        || Path::new(name).file_name().map(|f| f != name).unwrap_or(true)
+        || Path::new(name)
+            .file_name()
+            .map(|f| f != name)
+            .unwrap_or(true)
     {
         return Err(format!("Unsafe cache filename: {name}"));
     }
@@ -260,6 +335,12 @@ fn atomic_write(dir: &Path, name: &str, bytes: &[u8]) -> Result<(), String> {
     std::fs::create_dir_all(dir)
         .map_err(|error| format!("Failed to create cache directory: {error}"))?;
     let target = resolve_in_dir(dir, name)?;
+    if std::fs::read(&target)
+        .map(|existing| existing == bytes)
+        .unwrap_or(false)
+    {
+        return Ok(());
+    }
     let temp = dir.join(format!(".tmp-{}-{}", std::process::id(), name));
     std::fs::write(&temp, bytes).map_err(|error| format!("Failed to write cache file: {error}"))?;
     std::fs::rename(&temp, &target).map_err(|error| {
@@ -405,8 +486,14 @@ fn load_bounces(
     let mut statement = connection
         .prepare(
             "SELECT id, file_name, source_path, file_size_bytes, duration_sec, sample_rate,
-                    channel_count, integrated_lufs, dynamic_range_lu, peak_db, peak_kind,
-                    analysis_version, volume, peaks, waveform_path, waveform_points, added_at_ms
+                    channel_count, integrated_lufs, dynamic_range_lu,
+                    max_momentary_lufs, max_momentary_time_sec,
+                    max_short_term_lufs, max_short_term_time_sec,
+                    peak_db, sample_peak_db, clipped_sample_count, dc_offset_db,
+                    stereo_correlation, stereo_balance_db, bit_depth,
+                    leading_silence_sec, trailing_silence_sec,
+                    peak_kind, analysis_version, volume, peaks, waveform_path,
+                    waveform_points, added_at_ms
              FROM organizer_bounces
              WHERE track_id = ?1
              ORDER BY position ASC",
@@ -425,14 +512,26 @@ fn load_bounces(
                 row.get::<_, i64>(6)?,
                 row.get::<_, Option<f64>>(7)?,
                 row.get::<_, Option<f64>>(8)?,
-                row.get::<_, f64>(9)?,
-                row.get::<_, Option<String>>(10)?,
-                row.get::<_, Option<i64>>(11)?,
-                row.get::<_, f64>(12)?,
-                row.get::<_, Option<String>>(13)?,
-                row.get::<_, Option<String>>(14)?,
+                row.get::<_, Option<f64>>(9)?,
+                row.get::<_, Option<f64>>(10)?,
+                row.get::<_, Option<f64>>(11)?,
+                row.get::<_, Option<f64>>(12)?,
+                row.get::<_, f64>(13)?,
+                row.get::<_, Option<f64>>(14)?,
                 row.get::<_, Option<i64>>(15)?,
-                row.get::<_, i64>(16)?,
+                row.get::<_, Option<f64>>(16)?,
+                row.get::<_, Option<f64>>(17)?,
+                row.get::<_, Option<f64>>(18)?,
+                row.get::<_, Option<i64>>(19)?,
+                row.get::<_, Option<f64>>(20)?,
+                row.get::<_, Option<f64>>(21)?,
+                row.get::<_, Option<String>>(22)?,
+                row.get::<_, Option<i64>>(23)?,
+                row.get::<_, f64>(24)?,
+                row.get::<_, Option<String>>(25)?,
+                row.get::<_, Option<String>>(26)?,
+                row.get::<_, Option<i64>>(27)?,
+                row.get::<_, i64>(28)?,
             ))
         })
         .map_err(|error| format!("Failed to read organizer bounces: {error}"))?
@@ -451,7 +550,19 @@ fn load_bounces(
             channel_count,
             integrated_lufs,
             dynamic_range_lu,
+            max_momentary_lufs,
+            max_momentary_time_sec,
+            max_short_term_lufs,
+            max_short_term_time_sec,
             peak_db,
+            sample_peak_db,
+            clipped_sample_count,
+            dc_offset_db,
+            stereo_correlation,
+            stereo_balance_db,
+            bit_depth,
+            leading_silence_sec,
+            trailing_silence_sec,
             peak_kind,
             analysis_version,
             volume,
@@ -490,7 +601,19 @@ fn load_bounces(
             waveform_points,
             integrated_lufs,
             dynamic_range_lu,
+            max_momentary_lufs,
+            max_momentary_time_sec,
+            max_short_term_lufs,
+            max_short_term_time_sec,
             peak_db,
+            sample_peak_db,
+            clipped_sample_count,
+            dc_offset_db,
+            stereo_correlation,
+            stereo_balance_db,
+            bit_depth,
+            leading_silence_sec,
+            trailing_silence_sec,
             peak_kind,
             analysis_version,
             volume,
@@ -501,7 +624,10 @@ fn load_bounces(
     Ok(bounces)
 }
 
-fn load_comments(connection: &Connection, bounce_id: &str) -> Result<Vec<OrganizerComment>, String> {
+fn load_comments(
+    connection: &Connection,
+    bounce_id: &str,
+) -> Result<Vec<OrganizerComment>, String> {
     let mut statement = connection
         .prepare(
             "SELECT id, time_sec, text, created_at_ms
@@ -524,6 +650,29 @@ fn load_comments(connection: &Connection, bounce_id: &str) -> Result<Vec<Organiz
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| format!("Failed to collect organizer comments: {error}"))?;
     Ok(comments)
+}
+
+/// Map of bounce id → stored waveform cache filename for one project's bounces.
+fn existing_waveform_paths(
+    connection: &Connection,
+    project_id: &str,
+) -> Result<std::collections::HashMap<String, String>, String> {
+    let mut statement = connection
+        .prepare(
+            "SELECT b.id, b.waveform_path
+             FROM organizer_bounces b
+             JOIN organizer_tracks t ON t.id = b.track_id
+             WHERE t.project_id = ?1 AND b.waveform_path IS NOT NULL",
+        )
+        .map_err(|error| format!("Failed to prepare existing waveform query: {error}"))?;
+    let rows = statement
+        .query_map(params![project_id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(|error| format!("Failed to read existing waveforms: {error}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("Failed to collect existing waveforms: {error}"))?;
+    Ok(rows.into_iter().collect())
 }
 
 /// Save a whole project atomically. Assets are written to files first (so a
@@ -550,9 +699,14 @@ pub fn save_project(
         _ => None,
     };
 
-    // waveform filename per bounce id, written now so paths are known at insert.
-    let mut waveform_names: std::collections::HashMap<String, String> =
-        std::collections::HashMap::new();
+    // Waveform paths already stored for this project's bounces. A save that
+    // arrives without channels (a transient cache miss on load, or a
+    // metadata-only edit) must keep the existing link, not null it.
+    let existing_waveforms = existing_waveform_paths(connection, &project.id)?;
+
+    // Write a waveform cache file for any bounce that carries channels; every
+    // other bounce keeps whatever path it already had.
+    let mut waveform_names: std::collections::HashMap<String, String> = existing_waveforms;
     for track in &project.tracks {
         for bounce in &track.bounces {
             if let Some(channels) = bounce.waveform_channels.as_ref() {
@@ -647,11 +801,18 @@ pub fn save_project(
                     "INSERT INTO organizer_bounces (
                         id, track_id, position, file_name, source_path, file_size_bytes,
                         duration_sec, sample_rate, channel_count, integrated_lufs,
-                        dynamic_range_lu, peak_db, peak_kind, analysis_version, volume,
-                        peaks, waveform_path, waveform_points, waveform_cache_version, added_at_ms
+                        dynamic_range_lu, max_momentary_lufs, max_momentary_time_sec,
+                        max_short_term_lufs, max_short_term_time_sec, peak_db,
+                        sample_peak_db, clipped_sample_count, dc_offset_db,
+                        stereo_correlation, stereo_balance_db, bit_depth,
+                        leading_silence_sec, trailing_silence_sec,
+                        peak_kind, analysis_version, volume, peaks, waveform_path,
+                        waveform_points, waveform_cache_version, added_at_ms
                      ) VALUES (
                         ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
-                        ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20
+                        ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20,
+                        ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30,
+                        ?31, ?32
                      )",
                     params![
                         bounce.id,
@@ -665,7 +826,19 @@ pub fn save_project(
                         bounce.channel_count,
                         bounce.integrated_lufs,
                         bounce.dynamic_range_lu,
+                        bounce.max_momentary_lufs,
+                        bounce.max_momentary_time_sec,
+                        bounce.max_short_term_lufs,
+                        bounce.max_short_term_time_sec,
                         bounce.peak_db,
+                        bounce.sample_peak_db,
+                        bounce.clipped_sample_count,
+                        bounce.dc_offset_db,
+                        bounce.stereo_correlation,
+                        bounce.stereo_balance_db,
+                        bounce.bit_depth,
+                        bounce.leading_silence_sec,
+                        bounce.trailing_silence_sec,
                         bounce.peak_kind,
                         bounce.analysis_version,
                         bounce.volume,
@@ -800,9 +973,21 @@ mod tests {
             waveform_points: Some(2),
             integrated_lufs: Some(-9.5),
             dynamic_range_lu: Some(7.2),
+            max_momentary_lufs: Some(-6.8),
+            max_momentary_time_sec: Some(42.0),
+            max_short_term_lufs: Some(-7.4),
+            max_short_term_time_sec: Some(40.5),
             peak_db: -0.3,
+            sample_peak_db: Some(-0.5),
+            clipped_sample_count: Some(0),
+            dc_offset_db: Some(-82.0),
+            stereo_correlation: Some(0.72),
+            stereo_balance_db: Some(-0.2),
+            bit_depth: Some(24),
+            leading_silence_sec: Some(0.1),
+            trailing_silence_sec: Some(0.3),
             peak_kind: Some("true".to_string()),
-            analysis_version: Some(3),
+            analysis_version: Some(4),
             volume: 0.8,
             added_at_ms: 1000,
             timed_comments: comments,
@@ -866,11 +1051,17 @@ mod tests {
         assert_eq!(p.name, "Perseus EP");
         assert_eq!(p.artist, "Inspected");
         assert_eq!(p.release_type, "ep");
-        assert_eq!(p.cover_image_data_url.as_deref(), Some("data:image/webp;base64,Zm9v"));
+        assert_eq!(
+            p.cover_image_data_url.as_deref(),
+            Some("data:image/webp;base64,Zm9v")
+        );
         assert_eq!(p.tracks.len(), 2);
         assert_eq!(p.tracks[0].title, "Intro");
         assert_eq!(p.tracks[0].als_file.as_ref().unwrap().name, "intro.als");
         assert_eq!(p.tracks[0].bounces[0].integrated_lufs, Some(-9.5));
+        assert_eq!(p.tracks[0].bounces[0].max_short_term_lufs, Some(-7.4));
+        assert_eq!(p.tracks[0].bounces[0].sample_peak_db, Some(-0.5));
+        assert_eq!(p.tracks[0].bounces[0].bit_depth, Some(24));
         assert_eq!(p.tracks[0].bounces[0].peaks, vec![0.1, 0.5, 0.9]);
         assert_eq!(
             p.tracks[0].bounces[0].waveform_channels.as_ref().unwrap(),
@@ -879,6 +1070,38 @@ mod tests {
         assert_eq!(p.tracks[0].bounces[0].timed_comments.len(), 1);
         assert_eq!(p.tracks[0].bounces[0].timed_comments[0].text, "drop here");
         std::fs::remove_dir_all(&assets).ok();
+    }
+
+    #[test]
+    fn upgrades_an_existing_bounce_table_with_nullable_metrics() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE organizer_bounces (
+                    id TEXT PRIMARY KEY,
+                    track_id TEXT NOT NULL,
+                    dynamic_range_lu REAL,
+                    peak_db REAL NOT NULL DEFAULT 0
+                );",
+            )
+            .unwrap();
+
+        initialize_schema(&connection).unwrap();
+
+        let columns = {
+            let mut statement = connection
+                .prepare("PRAGMA table_info(organizer_bounces)")
+                .unwrap();
+            statement
+                .query_map([], |row| row.get::<_, String>(1))
+                .unwrap()
+                .collect::<Result<std::collections::HashSet<_>, _>>()
+                .unwrap()
+        };
+        assert!(columns.contains("max_short_term_lufs"));
+        assert!(columns.contains("sample_peak_db"));
+        assert!(columns.contains("stereo_correlation"));
+        assert!(columns.contains("bit_depth"));
     }
 
     #[test]
@@ -921,6 +1144,33 @@ mod tests {
             .unwrap();
         assert_eq!(track_count, 1);
         assert_eq!(bounce_count, 1);
+        std::fs::remove_dir_all(&assets).ok();
+    }
+
+    #[test]
+    fn metadata_save_without_waveform_payload_preserves_cached_waveform() {
+        let mut db = memory_db();
+        let assets = temp_assets();
+        let mut project = sample_project("org-waveform-preserve");
+        save_project(&mut db, &project, &assets).unwrap();
+
+        project.name = "Metadata edit".to_string();
+        for track in &mut project.tracks {
+            for bounce in &mut track.bounces {
+                bounce.waveform_channels = None;
+            }
+        }
+        save_project(&mut db, &project, &assets).unwrap();
+
+        let loaded = list_projects(&db, &assets).unwrap();
+        assert_eq!(loaded[0].name, "Metadata edit");
+        assert_eq!(
+            loaded[0].tracks[0].bounces[0]
+                .waveform_channels
+                .as_ref()
+                .unwrap(),
+            &vec!["AAAA".to_string(), "BBBB".to_string()]
+        );
         std::fs::remove_dir_all(&assets).ok();
     }
 

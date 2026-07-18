@@ -43,9 +43,21 @@ export type AudioAnalysis = {
   // Loudness range (LRA) in LU — the statistical spread of short-term loudness,
   // i.e. dynamic range. Null when the bounce is too short (< ~3s) to measure.
   dynamicRangeLu: number | null;
+  maxMomentaryLufs: number | null;
+  maxMomentaryTimeSec: number | null;
+  maxShortTermLufs: number | null;
+  maxShortTermTimeSec: number | null;
   // True peak in dBTP (BS.1770-5): oversampled so inter-sample peaks above 0
   // dBFS are caught, not just the loudest stored sample.
   truePeakDb: number;
+  samplePeakDb: number;
+  clippedSampleCount: number;
+  dcOffsetDb: number | null;
+  stereoCorrelation: number | null;
+  stereoBalanceDb: number | null;
+  bitDepth: number | null;
+  leadingSilenceSec: number;
+  trailingSilenceSec: number;
 };
 
 // --- K-weighting filters (BS.1770 stages 1 & 2) ---
@@ -121,7 +133,7 @@ const SEGMENTS_PER_SHORT_TERM = 30; // 3s window for loudness range
 const REL_GATE_INTEGRATED = 10; // LU below the abs-gated mean
 const REL_GATE_LRA = 20; // LU below the abs-gated mean
 
-type Block = { loudness: number; powers: number[] };
+type Block = { loudness: number; powers: number[]; startSec: number };
 
 // Loudness of a block from its per-channel mean-square powers (channel weights
 // all 1 for mono/stereo).
@@ -169,7 +181,7 @@ function blocksFromSegments(
       for (let s = start; s < start + segsPerBlock; s++) sum += seg[s];
       return sum / windowSamples;
     });
-    blocks.push({ loudness: blockLoudness(powers), powers });
+    blocks.push({ loudness: blockLoudness(powers), powers, startSec: start * STEP_SEC });
   }
   return blocks;
 }
@@ -244,6 +256,19 @@ export function loudnessRange(channels: Float32Array[], fs: number): number | nu
   return lraFromBlocks(blocksFromSegments(segByChannel, segLen, SEGMENTS_PER_SHORT_TERM));
 }
 
+function maximumBlockLoudness(
+  blocks: Block[],
+): { loudness: number; timeSec: number } | null {
+  let maximum: Block | null = null;
+  for (const block of blocks) {
+    if (!Number.isFinite(block.loudness)) continue;
+    if (maximum === null || block.loudness > maximum.loudness) maximum = block;
+  }
+  return maximum === null
+    ? null
+    : { loudness: maximum.loudness, timeSec: maximum.startSec };
+}
+
 // --- Waveform envelope + peak ---
 
 export function mixToMono(channels: Float32Array[]): Float32Array {
@@ -267,6 +292,123 @@ export function samplePeak(channels: Float32Array[]): number {
     }
   }
   return peak;
+}
+
+export type SignalMetrics = {
+  samplePeakAmplitude: number;
+  clippedSampleCount: number;
+  dcOffsetDb: number | null;
+  stereoCorrelation: number | null;
+  stereoBalanceDb: number | null;
+  leadingSilenceSec: number;
+  trailingSilenceSec: number;
+};
+
+const SILENCE_THRESHOLD_AMPLITUDE = 0.001; // -60 dBFS.
+
+export function signalMetrics(channels: Float32Array[], fs: number): SignalMetrics {
+  if (channels.length === 0 || fs <= 0) {
+    return {
+      samplePeakAmplitude: 0,
+      clippedSampleCount: 0,
+      dcOffsetDb: null,
+      stereoCorrelation: null,
+      stereoBalanceDb: null,
+      leadingSilenceSec: 0,
+      trailingSilenceSec: 0,
+    };
+  }
+
+  const length = Math.min(...channels.map((channel) => channel.length));
+  const sums = new Float64Array(channels.length);
+  let samplePeakAmplitude = 0;
+  let clippedSampleCount = 0;
+  let firstAudible = length;
+  let lastAudible = -1;
+  let leftPower = 0;
+  let rightPower = 0;
+  let crossPower = 0;
+
+  for (let index = 0; index < length; index++) {
+    let audible = false;
+    for (let channelIndex = 0; channelIndex < channels.length; channelIndex++) {
+      const value = channels[channelIndex][index];
+      const absolute = Math.abs(value);
+      sums[channelIndex] += value;
+      if (absolute > samplePeakAmplitude) samplePeakAmplitude = absolute;
+      if (absolute >= 1) clippedSampleCount++;
+      if (absolute > SILENCE_THRESHOLD_AMPLITUDE) audible = true;
+    }
+    if (audible) {
+      if (firstAudible === length) firstAudible = index;
+      lastAudible = index;
+    }
+    if (channels.length === 2) {
+      const left = channels[0][index];
+      const right = channels[1][index];
+      leftPower += left * left;
+      rightPower += right * right;
+      crossPower += left * right;
+    }
+  }
+
+  const largestDc = length === 0
+    ? 0
+    : sums.reduce((largest, sum) => Math.max(largest, Math.abs(sum / length)), 0);
+  const stereoDenominator = Math.sqrt(leftPower * rightPower);
+  const stereoCorrelation = channels.length === 2 && stereoDenominator > 0
+    ? Math.max(-1, Math.min(1, crossPower / stereoDenominator))
+    : null;
+  const stereoBalanceDb = channels.length === 2 && leftPower > 0 && rightPower > 0
+    ? 10 * Math.log10(leftPower / rightPower)
+    : null;
+  const leadingSilenceSec = firstAudible === length ? length / fs : firstAudible / fs;
+  const trailingSilenceSec = lastAudible < 0 ? length / fs : (length - 1 - lastAudible) / fs;
+
+  return {
+    samplePeakAmplitude,
+    clippedSampleCount,
+    dcOffsetDb: largestDc > 0 ? toDb(largestDc) : null,
+    stereoCorrelation,
+    stereoBalanceDb,
+    leadingSilenceSec,
+    trailingSilenceSec,
+  };
+}
+
+export function wavBitDepth(bytes: ArrayBuffer): number | null {
+  if (bytes.byteLength < 36) return null;
+  const view = new DataView(bytes);
+  const ascii = (offset: number, length: number) => {
+    let value = "";
+    for (let index = 0; index < length; index++) {
+      value += String.fromCharCode(view.getUint8(offset + index));
+    }
+    return value;
+  };
+  const container = ascii(0, 4);
+  if ((container !== "RIFF" && container !== "RF64") || ascii(8, 4) !== "WAVE") return null;
+
+  let offset = 12;
+  while (offset + 8 <= view.byteLength) {
+    const chunkId = ascii(offset, 4);
+    const chunkSize = view.getUint32(offset + 4, true);
+    const payload = offset + 8;
+    if (chunkId === "fmt " && chunkSize >= 16 && payload + chunkSize <= view.byteLength) {
+      const format = view.getUint16(payload, true);
+      const containerBits = view.getUint16(payload + 14, true);
+      if (format !== 1 && format !== 3 && format !== 0xfffe) return null;
+      if (format === 0xfffe && chunkSize >= 40) {
+        const validBits = view.getUint16(payload + 18, true);
+        return validBits > 0 ? validBits : containerBits || null;
+      }
+      return containerBits || null;
+    }
+    const next = payload + chunkSize + (chunkSize % 2);
+    if (next <= offset) break;
+    offset = next;
+  }
+  return null;
 }
 
 // True-peak meter (BS.1770-5). Oversample so peaks that fall *between* stored
@@ -306,9 +448,13 @@ function buildPolyphase(factor: number): Float64Array[] {
   return phases;
 }
 
-export function truePeak(channels: Float32Array[], fs: number): number {
+export function truePeak(
+  channels: Float32Array[],
+  fs: number,
+  knownSamplePeak = samplePeak(channels),
+): number {
   const factor = truePeakFactor(fs);
-  let peak = samplePeak(channels); // the stored samples are phase 0
+  let peak = knownSamplePeak; // the stored samples are phase 0
   if (factor === 1 || channels.length === 0) return peak;
 
   const phases = factor === 4 && fs === 48000
@@ -439,7 +585,8 @@ export async function analyzeAudioFile(file: File, bucketCount = 480): Promise<A
   }
   const fs = buffer.sampleRate;
 
-  const peakAmp = truePeak(channels, fs);
+  const measuredSignal = signalMetrics(channels, fs);
+  const peakAmp = truePeak(channels, fs, measuredSignal.samplePeakAmplitude);
   const mono = mixToMono(channels);
   const peaks = bucketPeaks(mono, bucketCount);
   const channelWaveforms = channels.slice(0, 2).map((channel) => waveformEnvelope(channel, 65536));
@@ -458,6 +605,18 @@ export async function analyzeAudioFile(file: File, bucketCount = 480): Promise<A
     segCount >= SEGMENTS_PER_SHORT_TERM
       ? lraFromBlocks(blocksFromSegments(segByChannel, segLen, SEGMENTS_PER_SHORT_TERM))
       : null;
+  const momentaryMaximum =
+    segCount >= SEGMENTS_PER_MOMENTARY
+      ? maximumBlockLoudness(
+          blocksFromSegments(segByChannel, segLen, SEGMENTS_PER_MOMENTARY),
+        )
+      : null;
+  const shortTermMaximum =
+    segCount >= SEGMENTS_PER_SHORT_TERM
+      ? maximumBlockLoudness(
+          blocksFromSegments(segByChannel, segLen, SEGMENTS_PER_SHORT_TERM),
+        )
+      : null;
 
   return {
     durationSec: buffer.duration,
@@ -468,6 +627,18 @@ export async function analyzeAudioFile(file: File, bucketCount = 480): Promise<A
     waveformPoints: channelWaveforms[0]?.min.length ?? 0,
     integratedLufs,
     dynamicRangeLu,
+    maxMomentaryLufs: momentaryMaximum?.loudness ?? null,
+    maxMomentaryTimeSec: momentaryMaximum?.timeSec ?? null,
+    maxShortTermLufs: shortTermMaximum?.loudness ?? null,
+    maxShortTermTimeSec: shortTermMaximum?.timeSec ?? null,
     truePeakDb: Number.isFinite(peakDb) ? peakDb : -Infinity,
+    samplePeakDb: toDb(measuredSignal.samplePeakAmplitude),
+    clippedSampleCount: measuredSignal.clippedSampleCount,
+    dcOffsetDb: measuredSignal.dcOffsetDb,
+    stereoCorrelation: measuredSignal.stereoCorrelation,
+    stereoBalanceDb: measuredSignal.stereoBalanceDb,
+    bitDepth: wavBitDepth(bytes),
+    leadingSilenceSec: measuredSignal.leadingSilenceSec,
+    trailingSilenceSec: measuredSignal.trailingSilenceSec,
   };
 }

@@ -1,3 +1,92 @@
+/* Recall's motion language: quick response, soft arrival, and longer live-state
+   movement. Transforms never carry layout, so animation cannot shift controls. */
+:root {
+  --motion-instant: 90ms;
+  --motion-response: 160ms;
+  --motion-arrive: 280ms;
+  --motion-cascade: 38ms;
+  --motion-live: 1800ms;
+  --ease-response: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --ease-arrive: cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes recall-surface-arrive {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.997);
+    filter: blur(2px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+    filter: blur(0);
+  }
+}
+
+@keyframes recall-rise {
+  from {
+    opacity: 0;
+    transform: translateY(7px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes recall-live-pulse {
+  0%,
+  100% {
+    opacity: 0.72;
+    transform: scale(0.82);
+    box-shadow: 0 0 0 0 rgba(90, 180, 160, 0.32);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1);
+    box-shadow: 0 0 0 5px rgba(90, 180, 160, 0);
+  }
+}
+
+@keyframes recall-meter-flow {
+  0%,
+  100% {
+    transform: scaleY(0.72);
+    opacity: 0.62;
+  }
+  45% {
+    transform: scaleY(1);
+    opacity: 1;
+  }
+}
+
+.recall-surface-stage {
+  min-width: 0;
+  min-height: 100%;
+  animation: recall-surface-arrive var(--motion-arrive) var(--ease-arrive) both;
+  transform-origin: 50% 28%;
+}
+
+button,
+[role="button"],
+input,
+textarea,
+select {
+  transition:
+    border-color var(--motion-response) var(--ease-response),
+    background-color var(--motion-response) var(--ease-response),
+    color var(--motion-response) var(--ease-response),
+    box-shadow var(--motion-response) var(--ease-response),
+    opacity var(--motion-response) var(--ease-response),
+    transform var(--motion-response) var(--ease-response);
+}
+
+button:active:not(:disabled),
+[role="button"]:active {
+  transform: translateY(1px) scale(0.985);
+  transition-duration: var(--motion-instant);
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

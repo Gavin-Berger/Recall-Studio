@@ -15,6 +15,51 @@
   padding-bottom: 24px;
 }
 
+.schema-surface .tl-bar,
+.schema-surface .tl-pulse,
+.schema-surface .tl-legend,
+.schema-surface .tl-arrange,
+.schema-surface .tl-dock,
+.schema-surface .tl-keep,
+.schema-surface .tl-recap {
+  animation: recall-rise var(--motion-arrive) var(--ease-arrive) both;
+}
+
+.schema-surface .tl-pulse { animation-delay: 35ms; }
+.schema-surface .tl-legend { animation-delay: 55ms; }
+.schema-surface .tl-arrange { animation-delay: 75ms; }
+.schema-surface .tl-dock { animation-delay: 95ms; }
+.schema-surface .tl-keep { animation-delay: 115ms; }
+.schema-surface .tl-recap { animation-delay: 135ms; }
+
+.tl-lane,
+.tl-hdr,
+.tl-ci,
+.tl-card,
+.tl-pill {
+  transition:
+    border-color var(--motion-response) var(--ease-response),
+    background-color var(--motion-response) var(--ease-response),
+    color var(--motion-response) var(--ease-response),
+    box-shadow var(--motion-response) var(--ease-response),
+    opacity var(--motion-response) var(--ease-response),
+    transform var(--motion-response) var(--ease-response);
+}
+
+.tl-lane:hover,
+.tl-hdr:hover {
+  transform: translateX(2px);
+}
+
+.tl-card:hover {
+  transform: translateY(-3px);
+}
+
+.tl-ci--group:hover,
+.tl-pill:hover {
+  transform: translateX(2px);
+}
+
 .schema-surface > .schema-timeline {
   flex: 1;
   min-height: 0;

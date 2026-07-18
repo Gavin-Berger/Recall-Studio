@@ -40,7 +40,19 @@ export type NativeBounce = {
   waveformPoints?: number;
   integratedLufs: number | null;
   dynamicRangeLu: number | null;
+  maxMomentaryLufs?: number | null;
+  maxMomentaryTimeSec?: number | null;
+  maxShortTermLufs?: number | null;
+  maxShortTermTimeSec?: number | null;
   peakDb: number;
+  samplePeakDb?: number | null;
+  clippedSampleCount?: number | null;
+  dcOffsetDb?: number | null;
+  stereoCorrelation?: number | null;
+  stereoBalanceDb?: number | null;
+  bitDepth?: number | null;
+  leadingSilenceSec?: number | null;
+  trailingSilenceSec?: number | null;
   peakKind?: "sample" | "true";
   analysisVersion?: number;
   volume: number;
@@ -138,7 +150,19 @@ function mapBounce(raw: unknown): NativeBounce | null {
     waveformPoints: typeof r.waveformPoints === "number" ? r.waveformPoints : undefined,
     integratedLufs: optNum(r.integratedLufs),
     dynamicRangeLu: optNum(r.dynamicRangeLu),
+    maxMomentaryLufs: optNum(r.maxMomentaryLufs),
+    maxMomentaryTimeSec: optNum(r.maxMomentaryTimeSec),
+    maxShortTermLufs: optNum(r.maxShortTermLufs),
+    maxShortTermTimeSec: optNum(r.maxShortTermTimeSec),
     peakDb: num(r.peakDb),
+    samplePeakDb: optNum(r.samplePeakDb),
+    clippedSampleCount: optNum(r.clippedSampleCount),
+    dcOffsetDb: optNum(r.dcOffsetDb),
+    stereoCorrelation: optNum(r.stereoCorrelation),
+    stereoBalanceDb: optNum(r.stereoBalanceDb),
+    bitDepth: optNum(r.bitDepth),
+    leadingSilenceSec: optNum(r.leadingSilenceSec),
+    trailingSilenceSec: optNum(r.trailingSilenceSec),
     peakKind,
     analysisVersion: typeof r.analysisVersion === "number" ? r.analysisVersion : undefined,
     volume: typeof r.volume === "number" ? Math.min(1, Math.max(0, r.volume)) : 1,

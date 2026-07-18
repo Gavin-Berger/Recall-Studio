@@ -7,9 +7,11 @@ import {
   loudnessRange,
   packWaveformEnvelope,
   samplePeak,
+  signalMetrics,
   toDb,
   truePeak,
   unpackWaveformEnvelope,
+  wavBitDepth,
   waveformEnvelope,
 } from "./audio";
 
@@ -194,5 +196,65 @@ describe("samplePeak / toDb", () => {
   it("maps full scale to 0 dBFS and half to about -6 dBFS", () => {
     expect(toDb(1)).toBeCloseTo(0, 6);
     expect(toDb(0.5)).toBeCloseTo(-6.02, 1);
+  });
+});
+
+describe("signalMetrics", () => {
+  it("measures clipping, DC offset, silence, and stereo relationships from samples", () => {
+    const left = new Float32Array([0, 0, 0.25, 1, 0.25, 0]);
+    const right = new Float32Array([0, 0, 0.25, 1, 0.25, 0]);
+    const metrics = signalMetrics([left, right], 2);
+
+    expect(metrics.samplePeakAmplitude).toBe(1);
+    expect(metrics.clippedSampleCount).toBe(2);
+    expect(metrics.leadingSilenceSec).toBe(1);
+    expect(metrics.trailingSilenceSec).toBe(0.5);
+    expect(metrics.stereoCorrelation).toBeCloseTo(1, 6);
+    expect(metrics.stereoBalanceDb).toBeCloseTo(0, 6);
+    expect(metrics.dcOffsetDb).toBeCloseTo(toDb(0.25), 5);
+  });
+
+  it("leaves stereo-only values unavailable for mono audio", () => {
+    const metrics = signalMetrics([new Float32Array([0.2, -0.2])], FS);
+    expect(metrics.stereoCorrelation).toBeNull();
+    expect(metrics.stereoBalanceDb).toBeNull();
+  });
+
+  it("reports negative correlation for opposite-polarity stereo", () => {
+    const left = new Float32Array([0.5, -0.25, 0.75]);
+    const right = new Float32Array([-0.5, 0.25, -0.75]);
+    expect(signalMetrics([left, right], FS).stereoCorrelation).toBeCloseTo(-1, 6);
+  });
+});
+
+describe("wavBitDepth", () => {
+  function pcmWav(bits: number, format = 1): ArrayBuffer {
+    const bytes = new ArrayBuffer(44);
+    const view = new DataView(bytes);
+    const write = (offset: number, value: string) => {
+      for (let index = 0; index < value.length; index++) {
+        view.setUint8(offset + index, value.charCodeAt(index));
+      }
+    };
+    write(0, "RIFF");
+    view.setUint32(4, 36, true);
+    write(8, "WAVE");
+    write(12, "fmt ");
+    view.setUint32(16, 16, true);
+    view.setUint16(20, format, true);
+    view.setUint16(22, 2, true);
+    view.setUint32(24, 48000, true);
+    view.setUint16(34, bits, true);
+    write(36, "data");
+    return bytes;
+  }
+
+  it("reads PCM and float WAV container bit depth", () => {
+    expect(wavBitDepth(pcmWav(24))).toBe(24);
+    expect(wavBitDepth(pcmWav(32, 3))).toBe(32);
+  });
+
+  it("does not guess bit depth for non-WAV data", () => {
+    expect(wavBitDepth(new ArrayBuffer(64))).toBeNull();
   });
 });

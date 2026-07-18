@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { commentsCrossed, normalizeProject } from "./ProjectOrganizerScreen";
+import {
+  commentsCrossed,
+  masteringFlags,
+  normalizeProject,
+  producerDynamicRangeDb,
+  projectForStorage,
+  spotifyNormalPreview,
+} from "./ProjectOrganizerScreen";
 
 const bounceA = {
   id: "bounce-a",
@@ -56,6 +63,28 @@ describe("organizer project migration", () => {
     expect(project?.tracks[0].bounces[0].volume).toBe(0.64);
     expect(project?.tracks[0].bounces[1].volume).toBe(1);
   });
+
+  it("dehydrates compatibility projections and can omit persisted waveform payloads", () => {
+    const project = normalizeProject({
+      id: "project-native",
+      name: "Native",
+      tracks: [{
+        id: "track-native",
+        title: "Song",
+        alsFile: null,
+        bounces: [{ ...bounceA, waveformChannels: ["left", "right"], waveformPoints: 2 }],
+        finalBounceId: "bounce-a",
+      }],
+    })!;
+
+    const stored = projectForStorage(project, () => false);
+
+    expect(stored.tracks[0].bounces[0].waveformChannels).toBeUndefined();
+    expect(stored.tracks[0].bounces[0].timedComments).toHaveLength(1);
+    expect("bounce" in stored.tracks[0]).toBe(false);
+    expect("exports" in stored).toBe(false);
+    expect("alsFiles" in stored).toBe(false);
+  });
 });
 
 describe("timed comment playback cues", () => {
@@ -71,5 +100,59 @@ describe("timed comment playback cues", () => {
 
   it("does not fire comments when the playhead moves backward", () => {
     expect(commentsCrossed(comments, 110, 80)).toEqual([]);
+  });
+});
+
+describe("producer dynamic range", () => {
+  it("reports peak-to-loudness ratio in dB", () => {
+    expect(producerDynamicRangeDb(-6.9, 0.2)).toBeCloseTo(7.1, 6);
+    expect(producerDynamicRangeDb(-10, -1)).toBe(9);
+  });
+
+  it("does not invent a value when either measurement is unavailable", () => {
+    expect(producerDynamicRangeDb(null, -1)).toBeNull();
+    expect(producerDynamicRangeDb(-10, Number.NEGATIVE_INFINITY)).toBeNull();
+  });
+});
+
+describe("mastering interpretation", () => {
+  it("calculates Spotify Normal attenuation without altering source measurements", () => {
+    expect(spotifyNormalPreview(-6.9, 0.2)).toEqual({
+      requestedGainDb: -7.1,
+      appliedGainDb: -7.1,
+      estimatedLufs: -14,
+      estimatedTruePeakDb: -6.8999999999999995,
+      headroomLimited: false,
+    });
+  });
+
+  it("limits positive preview gain to one dB of true-peak headroom", () => {
+    const preview = spotifyNormalPreview(-20, -3)!;
+    expect(preview.requestedGainDb).toBe(6);
+    expect(preview.appliedGainDb).toBe(2);
+    expect(preview.estimatedLufs).toBe(-18);
+    expect(preview.estimatedTruePeakDb).toBe(-1);
+    expect(preview.headroomLimited).toBe(true);
+  });
+
+  it("flags measured conditions without manufacturing missing measurements", () => {
+    const flags = masteringFlags({
+      ...bounceA,
+      peakKind: "true",
+      peakDb: 0.2,
+      clippedSampleCount: 12,
+      stereoCorrelation: -0.1,
+    });
+    expect(flags.map((flag) => flag.text)).toEqual(expect.arrayContaining([
+      "True peak exceeds 0 dBTP",
+      "12 decoded samples at or above full scale",
+      "Negative stereo correlation may cancel in mono",
+    ]));
+    expect(masteringFlags({
+      ...bounceA,
+      integratedLufs: null,
+      peakDb: -2,
+      peakKind: "true",
+    })).toHaveLength(0);
   });
 });

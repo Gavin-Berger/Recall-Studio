@@ -52,9 +52,21 @@ const legacyTracksProject = {
           waveformPoints: 2,
           integratedLufs: -9.1,
           dynamicRangeLu: 7.5,
+          maxMomentaryLufs: -6.2,
+          maxMomentaryTimeSec: 38.4,
+          maxShortTermLufs: -7.1,
+          maxShortTermTimeSec: 37.2,
           peakDb: -0.4,
+          samplePeakDb: -0.7,
+          clippedSampleCount: 0,
+          dcOffsetDb: -88,
+          stereoCorrelation: 0.81,
+          stereoBalanceDb: -0.15,
+          bitDepth: 24,
+          leadingSilenceSec: 0.12,
+          trailingSilenceSec: 0.42,
           peakKind: "true",
-          analysisVersion: 3,
+          analysisVersion: 4,
           volume: 0.8,
           added_at_ms: 1000,
           timedComments: [
@@ -112,7 +124,12 @@ describe("mapLegacyToNative", () => {
     const b1 = t1.bounces[0];
     expect(b1.integratedLufs).toBe(-9.1);
     expect(b1.dynamicRangeLu).toBe(7.5);
+    expect(b1.maxMomentaryLufs).toBe(-6.2);
+    expect(b1.maxShortTermTimeSec).toBe(37.2);
     expect(b1.peakDb).toBe(-0.4);
+    expect(b1.samplePeakDb).toBe(-0.7);
+    expect(b1.stereoCorrelation).toBe(0.81);
+    expect(b1.bitDepth).toBe(24);
     expect(b1.peakKind).toBe("true");
     expect(b1.volume).toBe(0.8);
     expect(b1.sourcePath).toBe("C:/music/intro v1.wav");

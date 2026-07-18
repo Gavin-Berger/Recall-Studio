@@ -24,9 +24,9 @@ tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 rusqlite = { version = "0.39.0", features = ["bundled"] }
+crc32fast = "1"
 # std::net::UdpSocket exposes no SO_RCVBUF setter, and the OS default (~64KB on
 # Windows) is what makes a project-load snapshot burst lose packets in the kernel
 # before our code ever sees them. socket2 is the boring, proven way to size it —
 # it is what tokio/mio use underneath.
 socket2 = "0.5"
-

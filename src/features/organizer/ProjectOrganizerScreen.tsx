@@ -1,7 +1,22 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke, isTauri } from "@tauri-apps/api/core";
-import { open } from "@tauri-apps/plugin-dialog";
-import { analyzeAudioFile } from "./audio";
+import { open, save } from "@tauri-apps/plugin-dialog";
+import { analyzeAudioFile, type AudioAnalysis } from "./audio";
+import {
+  organizerRepository,
+  runLegacyMigration,
+  type NativeProject,
+  type OrganizerRepository,
+} from "./repository";
+import { ReleasePreview } from "./ReleasePreview";
+import {
+  buildReleaseCommentsText,
+  buildReleasePreviewHtml,
+  portableCoverAsset,
+  portablePreviewFolderName,
+  portableTrackFileName,
+  selectReleasePreviewTracks,
+} from "./previewExport";
 import { Waveform } from "./Waveform";
 
 // The Project Organizer: a place to lay out a release as the thing you ship — a
@@ -10,9 +25,9 @@ import { Waveform } from "./Waveform";
 // holds many sets, because this is about organization (an EP is several songs),
 // not linking one file.
 //
-// Storage tier: localStorage, same as the producer notebook (NotesScreen). The
-// derived analysis (waveform envelope + LUFS) and the producer-selected audio
-// path persist. Audio bytes are loaded on demand when a track's player opens.
+// Structured data persists through the native organizer repository (SQLite in
+// Tauri, IndexedDB in browser development). Large waveform and cover assets are
+// dehydrated by the native backend into app-data files.
 
 type ReleaseType = "album" | "ep" | "single";
 
@@ -62,7 +77,19 @@ type ExportBounce = {
   waveformPoints?: number;
   integratedLufs: number | null;
   dynamicRangeLu: number | null;
+  maxMomentaryLufs?: number | null;
+  maxMomentaryTimeSec?: number | null;
+  maxShortTermLufs?: number | null;
+  maxShortTermTimeSec?: number | null;
   peakDb: number;
+  samplePeakDb?: number | null;
+  clippedSampleCount?: number | null;
+  dcOffsetDb?: number | null;
+  stereoCorrelation?: number | null;
+  stereoBalanceDb?: number | null;
+  bitDepth?: number | null;
+  leadingSilenceSec?: number | null;
+  trailingSilenceSec?: number | null;
   // Older saved entries are sample peak; newly analyzed entries are true peak.
   peakKind?: "sample" | "true";
   analysisVersion?: number;
@@ -82,7 +109,7 @@ type OrganizerTrack = {
   bounce: ExportBounce | null;
 };
 
-type OrganizerProject = {
+export type OrganizerProject = {
   id: string;
   name: string;
   artist: string;
@@ -99,12 +126,32 @@ type OrganizerProject = {
   updated_at_ms: number;
 };
 
-const STORAGE_KEY = "recall-studio.organizer.v1";
-
 function normalizeBounceVolume(bounce: ExportBounce): ExportBounce {
   return {
     ...bounce,
     volume: typeof bounce.volume === "number" ? clampVolume(bounce.volume) : 1,
+  };
+}
+
+function measuredBounceFields(analysis: AudioAnalysis) {
+  return {
+    integratedLufs: analysis.integratedLufs,
+    dynamicRangeLu: analysis.dynamicRangeLu,
+    maxMomentaryLufs: analysis.maxMomentaryLufs,
+    maxMomentaryTimeSec: analysis.maxMomentaryTimeSec,
+    maxShortTermLufs: analysis.maxShortTermLufs,
+    maxShortTermTimeSec: analysis.maxShortTermTimeSec,
+    peakDb: analysis.truePeakDb,
+    samplePeakDb: analysis.samplePeakDb,
+    clippedSampleCount: analysis.clippedSampleCount,
+    dcOffsetDb: analysis.dcOffsetDb,
+    stereoCorrelation: analysis.stereoCorrelation,
+    stereoBalanceDb: analysis.stereoBalanceDb,
+    bitDepth: analysis.bitDepth,
+    leadingSilenceSec: analysis.leadingSilenceSec,
+    trailingSilenceSec: analysis.trailingSilenceSec,
+    peakKind: "true" as const,
+    analysisVersion: 4,
   };
 }
 
@@ -215,24 +262,60 @@ export function normalizeProject(raw: unknown): OrganizerProject | null {
   };
 }
 
-function loadProjects(): OrganizerProject[] {
-  try {
-    const raw = window.localStorage.getItem(STORAGE_KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    return parsed.map(normalizeProject).filter((p): p is OrganizerProject => p !== null);
-  } catch {
-    return [];
-  }
-}
-
-function persistProjects(projects: OrganizerProject[]) {
-  try {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(projects));
-  } catch {
-    // Storage can be full or unavailable; the in-memory copy still works.
-  }
+export function projectForStorage(
+  project: OrganizerProject,
+  includeWaveform: (bounceId: string) => boolean = () => true,
+): NativeProject {
+  return {
+    id: project.id,
+    name: project.name,
+    artist: project.artist,
+    releaseDate: project.releaseDate,
+    notes: project.notes,
+    releaseType: project.releaseType,
+    coverImageDataUrl: project.coverImageDataUrl,
+    tracks: project.tracks.map((track) => ({
+      id: track.id,
+      title: track.title,
+      comment: track.comment,
+      alsFile: track.alsFile,
+      finalBounceId: track.finalBounceId,
+      bounces: track.bounces.map((bounce) => ({
+        id: bounce.id,
+        fileName: bounce.fileName,
+        sourcePath: bounce.sourcePath,
+        fileSizeBytes: bounce.fileSizeBytes,
+        durationSec: bounce.durationSec,
+        sampleRate: bounce.sampleRate,
+        channelCount: bounce.channelCount,
+        peaks: bounce.peaks,
+        waveformChannels: includeWaveform(bounce.id) ? bounce.waveformChannels : undefined,
+        waveformPoints: bounce.waveformPoints,
+        integratedLufs: bounce.integratedLufs,
+        dynamicRangeLu: bounce.dynamicRangeLu,
+        maxMomentaryLufs: bounce.maxMomentaryLufs,
+        maxMomentaryTimeSec: bounce.maxMomentaryTimeSec,
+        maxShortTermLufs: bounce.maxShortTermLufs,
+        maxShortTermTimeSec: bounce.maxShortTermTimeSec,
+        peakDb: bounce.peakDb,
+        samplePeakDb: bounce.samplePeakDb,
+        clippedSampleCount: bounce.clippedSampleCount,
+        dcOffsetDb: bounce.dcOffsetDb,
+        stereoCorrelation: bounce.stereoCorrelation,
+        stereoBalanceDb: bounce.stereoBalanceDb,
+        bitDepth: bounce.bitDepth,
+        leadingSilenceSec: bounce.leadingSilenceSec,
+        trailingSilenceSec: bounce.trailingSilenceSec,
+        peakKind: bounce.peakKind,
+        analysisVersion: bounce.analysisVersion,
+        volume: clampVolume(bounce.volume ?? 1),
+        added_at_ms: bounce.added_at_ms,
+        timedComments: bounce.timedComments ?? [],
+      })),
+    })),
+    created_at_ms: project.created_at_ms,
+    updated_at_ms: project.updated_at_ms,
+  };
 }
 
 function basename(path: string): string {
@@ -263,8 +346,97 @@ function formatLufs(lufs: number | null): string {
   return lufs === null ? "—" : `${lufs.toFixed(1)} LUFS`;
 }
 
-function formatLra(lra: number | null | undefined): string {
-  return lra == null ? "—" : `${lra.toFixed(1)} LU`;
+export function producerDynamicRangeDb(
+  integratedLufs: number | null | undefined,
+  peakDb: number | null | undefined,
+): number | null {
+  if (
+    integratedLufs == null
+    || peakDb == null
+    || !Number.isFinite(integratedLufs)
+    || !Number.isFinite(peakDb)
+  ) {
+    return null;
+  }
+  return peakDb - integratedLufs;
+}
+
+function formatDynamicRange(value: number | null): string {
+  return value == null ? "—" : `${value.toFixed(1)} dB`;
+}
+
+function formatLoudnessRange(value: number | null | undefined): string {
+  return value == null ? "—" : `${value.toFixed(1)} LU`;
+}
+
+export type MasteringFlag = {
+  severity: "critical" | "warning" | "note";
+  text: string;
+};
+
+export function masteringFlags(bounce: ExportBounce): MasteringFlag[] {
+  const flags: MasteringFlag[] = [];
+  if (bounce.peakKind === "true" && Number.isFinite(bounce.peakDb)) {
+    if (bounce.peakDb >= 0) {
+      flags.push({ severity: "critical", text: "True peak exceeds 0 dBTP" });
+    } else if (bounce.peakDb > -1) {
+      flags.push({ severity: "warning", text: "Less than 1 dB true-peak headroom" });
+    }
+    if (bounce.integratedLufs != null && bounce.integratedLufs > -14 && bounce.peakDb > -2) {
+      flags.push({ severity: "warning", text: "Limited headroom for lossy streaming encodes" });
+    }
+  }
+  if ((bounce.clippedSampleCount ?? 0) > 0) {
+    flags.push({
+      severity: "critical",
+      text: `${bounce.clippedSampleCount!.toLocaleString()} decoded samples at or above full scale`,
+    });
+  }
+  if (bounce.stereoCorrelation != null && bounce.stereoCorrelation < 0) {
+    flags.push({ severity: "warning", text: "Negative stereo correlation may cancel in mono" });
+  }
+  if (bounce.stereoBalanceDb != null && Math.abs(bounce.stereoBalanceDb) > 1) {
+    flags.push({ severity: "note", text: "Average left/right level differs by more than 1 dB" });
+  }
+  if (bounce.dcOffsetDb != null && bounce.dcOffsetDb > -60) {
+    flags.push({ severity: "note", text: "DC offset is above -60 dBFS" });
+  }
+  if ((bounce.leadingSilenceSec ?? 0) > 2) {
+    flags.push({ severity: "note", text: "More than 2 seconds of leading audio below -60 dBFS" });
+  }
+  if ((bounce.trailingSilenceSec ?? 0) > 2) {
+    flags.push({ severity: "note", text: "More than 2 seconds of trailing audio below -60 dBFS" });
+  }
+  return flags;
+}
+
+export function spotifyNormalPreview(
+  integratedLufs: number | null | undefined,
+  truePeakDb: number | null | undefined,
+) {
+  if (
+    integratedLufs == null
+    || truePeakDb == null
+    || !Number.isFinite(integratedLufs)
+    || !Number.isFinite(truePeakDb)
+  ) {
+    return null;
+  }
+  const requestedGainDb = -14 - integratedLufs;
+  const appliedGainDb = requestedGainDb > 0
+    ? Math.min(requestedGainDb, -1 - truePeakDb)
+    : requestedGainDb;
+  return {
+    requestedGainDb,
+    appliedGainDb,
+    estimatedLufs: integratedLufs + appliedGainDb,
+    estimatedTruePeakDb: truePeakDb + appliedGainDb,
+    headroomLimited: appliedGainDb < requestedGainDb,
+  };
+}
+
+function formatSignedDb(value: number): string {
+  return `${value >= 0 ? "+" : ""}${value.toFixed(1)} dB`;
 }
 
 // Unique enough for a batch added in the same millisecond.
@@ -360,8 +532,14 @@ async function prepareCoverImage(file: File): Promise<string> {
 }
 
 export function ProjectOrganizerScreen() {
-  const [projects, setProjects] = useState<OrganizerProject[]>(loadProjects);
-  const [selectedId, setSelectedId] = useState<string | null>(() => loadProjects()[0]?.id ?? null);
+  const repository = useMemo<OrganizerRepository>(() => organizerRepository(), []);
+  const nativeStorage = useMemo(() => isTauri(), []);
+  const [projects, setProjects] = useState<OrganizerProject[]>([]);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [storageReady, setStorageReady] = useState(false);
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const [previewExporting, setPreviewExporting] = useState(false);
+  const [previewExportStatus, setPreviewExportStatus] = useState<string | null>(null);
   const [activeExportId, setActiveExportId] = useState<string | null>(null);
   const [progress, setProgress] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
@@ -387,12 +565,20 @@ export function ProjectOrganizerScreen() {
   const playbackCursorRef = useRef<{ exportId: string | null; timeSec: number }>({ exportId: null, timeSec: 0 });
   const commentAttentionTimers = useRef<Map<string, number>>(new Map());
   const waveformUpgradeIds = useRef<Set<string>>(new Set());
+  const dirtyWaveformIds = useRef<Set<string>>(new Set());
+  const persistedRevisions = useRef<Map<string, number>>(new Map());
+  const saveTimers = useRef<Map<string, number>>(new Map());
+  const saveQueues = useRef<Map<string, Promise<void>>>(new Map());
 
   const ordered = useMemo(
     () => [...projects].sort((a, b) => b.updated_at_ms - a.updated_at_ms),
     [projects],
   );
   const selected = ordered.find((p) => p.id === selectedId) ?? ordered[0] ?? null;
+  const previewTracks = useMemo(
+    () => selected ? selectReleasePreviewTracks(selected) : [],
+    [selected],
+  );
 
   // Release-level totals for the summary row.
   const releaseStats = useMemo(() => {
@@ -409,12 +595,116 @@ export function ProjectOrganizerScreen() {
       .map((e) => e.integratedLufs)
       .filter((v): v is number => v != null);
     const loudnessSpan = lufs.length > 0 ? { min: Math.min(...lufs), max: Math.max(...lufs) } : null;
-    return { trackCount, completedCount: bounces.length, totalSec, loudnessSpan };
+    const plr = bounces
+      .map((bounce) => producerDynamicRangeDb(bounce.integratedLufs, bounce.peakDb))
+      .filter((value): value is number => value != null);
+    const plrSpan = plr.length > 0 ? { min: Math.min(...plr), max: Math.max(...plr) } : null;
+    const truePeaks = bounces
+      .filter((bounce) => bounce.peakKind === "true" && Number.isFinite(bounce.peakDb))
+      .map((bounce) => bounce.peakDb);
+    const sampleRates = new Set(bounces.map((bounce) => bounce.sampleRate));
+    const channelCounts = new Set(bounces.map((bounce) => bounce.channelCount));
+    const knownBitDepths = new Set(
+      bounces
+        .map((bounce) => bounce.bitDepth)
+        .filter((value): value is number => value != null),
+    );
+    return {
+      trackCount,
+      completedCount: bounces.length,
+      totalSec,
+      loudnessSpan,
+      plrSpan,
+      maximumTruePeak: truePeaks.length > 0 ? Math.max(...truePeaks) : null,
+      clippedSampleCount: bounces.reduce(
+        (total, bounce) => total + (bounce.clippedSampleCount ?? 0),
+        0,
+      ),
+      formatsMatch:
+        sampleRates.size <= 1
+        && channelCounts.size <= 1
+        && knownBitDepths.size <= 1,
+    };
   }, [selected]);
 
   useEffect(() => {
-    persistProjects(projects);
-  }, [projects]);
+    let cancelled = false;
+    void (async () => {
+      let migrationError: string | null = null;
+      try {
+        await runLegacyMigration(repository, window.localStorage);
+      } catch (migrationFailure) {
+        migrationError = `Organizer migration needs attention: ${String(migrationFailure)}`;
+      }
+
+      try {
+        const stored = await repository.load();
+        if (cancelled) return;
+        const hydrated = stored
+          .map(normalizeProject)
+          .filter((project): project is OrganizerProject => project !== null);
+        persistedRevisions.current = new Map(
+          hydrated.map((project) => [project.id, project.updated_at_ms]),
+        );
+        setProjects(hydrated);
+        setSelectedId(hydrated[0]?.id ?? null);
+        if (migrationError) setError(migrationError);
+      } catch (loadFailure) {
+        if (!cancelled) {
+          setError(`Couldn't load Organizer storage: ${String(loadFailure)}`);
+        }
+      } finally {
+        if (!cancelled) setStorageReady(true);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [repository]);
+
+  useEffect(() => {
+    setPreviewOpen(false);
+    setPreviewExportStatus(null);
+  }, [selected?.id]);
+
+  useEffect(() => {
+    if (!storageReady) return;
+    for (const project of projects) {
+      if (persistedRevisions.current.get(project.id) === project.updated_at_ms) continue;
+      const existingTimer = saveTimers.current.get(project.id);
+      if (existingTimer !== undefined) window.clearTimeout(existingTimer);
+      const timer = window.setTimeout(() => {
+        saveTimers.current.delete(project.id);
+        const projectWaveforms = new Set(
+          project.tracks
+            .flatMap((track) => track.bounces)
+            .filter((bounce) => dirtyWaveformIds.current.has(bounce.id))
+            .map((bounce) => bounce.id),
+        );
+        const payload = projectForStorage(
+          project,
+          (bounceId) => !nativeStorage || projectWaveforms.has(bounceId),
+        );
+        const previous = saveQueues.current.get(project.id) ?? Promise.resolve();
+        const operation = previous
+          .catch(() => undefined)
+          .then(() => repository.save(payload));
+        saveQueues.current.set(project.id, operation);
+        void operation
+          .then(() => {
+            if (saveQueues.current.get(project.id) === operation) {
+              saveQueues.current.delete(project.id);
+            }
+            persistedRevisions.current.set(project.id, project.updated_at_ms);
+            for (const bounceId of projectWaveforms) dirtyWaveformIds.current.delete(bounceId);
+          })
+          .catch((saveFailure) => {
+            setError(`Couldn't save ${project.name.trim() || "Untitled project"}: ${String(saveFailure)}`);
+          });
+      }, 300);
+      saveTimers.current.set(project.id, timer);
+    }
+  }, [nativeStorage, projects, repository, storageReady]);
 
   useEffect(() => {
     if (!activeExportId) return;
@@ -525,7 +815,9 @@ export function ProjectOrganizerScreen() {
   const mutateProject = useCallback(
     (id: string, patch: (p: OrganizerProject) => OrganizerProject) => {
       setProjects((prev) =>
-        prev.map((p) => (p.id === id ? { ...patch(p), updated_at_ms: Date.now() } : p)),
+        prev.map((p) => (p.id === id
+          ? { ...patch(p), updated_at_ms: Math.max(Date.now(), p.updated_at_ms + 1) }
+          : p)),
       );
     },
     [],
@@ -537,7 +829,7 @@ export function ProjectOrganizerScreen() {
       .filter((track) => expandedTrackIds.has(track.id))
       .flatMap((track) => track.bounces.map((bounce) => ({ trackId: track.id, bounce })))
       .filter(({ bounce }) => bounce.sourcePath
-        && (!bounce.waveformChannels?.length || (bounce.analysisVersion ?? 0) < 3)
+        && (!bounce.waveformChannels?.length || (bounce.analysisVersion ?? 0) < 4)
         && !waveformUpgradeIds.current.has(bounce.id));
     if (staleBounces.length === 0) return;
     let cancelled = false;
@@ -556,6 +848,7 @@ export function ProjectOrganizerScreen() {
           }
           const analysis = await analyzeAudioFile(file);
           if (cancelled) return;
+          dirtyWaveformIds.current.add(bounce.id);
           mutateProject(selected.id, (project) => ({
             ...project,
             tracks: project.tracks.map((candidate) => {
@@ -565,7 +858,7 @@ export function ProjectOrganizerScreen() {
                     ...current,
                     waveformChannels: analysis.waveformChannels,
                     waveformPoints: analysis.waveformPoints,
-                    analysisVersion: 3,
+                    ...measuredBounceFields(analysis),
                   }
                 : current);
               return withTrackBounces(candidate, bounces);
@@ -752,12 +1045,26 @@ export function ProjectOrganizerScreen() {
     }));
   }
 
-  function handleDeleteProject(project: OrganizerProject) {
+  async function handleDeleteProject(project: OrganizerProject) {
     const label = project.name.trim() || "Untitled project";
     if (!window.confirm(`Delete "${label}" and its exports? This can't be undone.`)) return;
+    const saveTimer = saveTimers.current.get(project.id);
+    if (saveTimer !== undefined) {
+      window.clearTimeout(saveTimer);
+      saveTimers.current.delete(project.id);
+    }
+    try {
+      await saveQueues.current.get(project.id)?.catch(() => undefined);
+      await repository.remove(project.id);
+    } catch (deleteFailure) {
+      setError(`Couldn't delete ${label}: ${String(deleteFailure)}`);
+      return;
+    }
     for (const track of project.tracks) {
       for (const bounce of track.bounces) releaseBounce(bounce);
     }
+    persistedRevisions.current.delete(project.id);
+    saveQueues.current.delete(project.id);
     setProjects((prev) => prev.filter((p) => p.id !== project.id));
     if (selectedId === project.id) setSelectedId(null);
   }
@@ -870,15 +1177,12 @@ export function ProjectOrganizerScreen() {
         peaks: analysis.peaks,
         waveformChannels: analysis.waveformChannels,
         waveformPoints: analysis.waveformPoints,
-        integratedLufs: analysis.integratedLufs,
-        dynamicRangeLu: analysis.dynamicRangeLu,
-        peakDb: analysis.truePeakDb,
-        peakKind: "true",
-        analysisVersion: 3,
+        ...measuredBounceFields(analysis),
         added_at_ms: Date.now(),
         timedComments: previous?.timedComments ?? [],
         volume: previous?.volume ?? 1,
       };
+      dirtyWaveformIds.current.add(bounce.id);
       if (previous) releaseBounce(previous);
       urls.current.set(bounce.id, URL.createObjectURL(file));
       mutateProject(selected.id, (project) => ({
@@ -1073,6 +1377,56 @@ export function ProjectOrganizerScreen() {
     stopRaf();
   }
 
+  async function handleExportPreview() {
+    if (!selected || previewTracks.length === 0) return;
+    if (!isTauri()) {
+      setPreviewExportStatus("Portable export is available in the Recall desktop app.");
+      return;
+    }
+    const missingSources = previewTracks.filter((track) => !track.bounce.sourcePath);
+    if (missingSources.length > 0) {
+      setPreviewExportStatus(
+        `${missingSources.length} final mix${missingSources.length === 1 ? "" : "es"} must be located before export.`,
+      );
+      return;
+    }
+
+    const outputPath = await save({
+      title: "Save release package",
+      defaultPath: `${portablePreviewFolderName(selected.name)}.zip`,
+      filters: [{ name: "ZIP archive", extensions: ["zip"] }],
+    });
+    if (typeof outputPath !== "string") return;
+
+    const portableTracks = previewTracks.map((track, index) => ({
+      title: track.title,
+      durationSec: track.bounce.durationSec,
+      audioFileName: portableTrackFileName(index, track.title, track.bounce.fileName),
+    }));
+    const cover = portableCoverAsset(selected.coverImageDataUrl);
+    const comments = buildReleaseCommentsText(selected, previewTracks);
+    const html = buildReleasePreviewHtml(selected, portableTracks, cover?.fileName);
+    setPreviewExporting(true);
+    setPreviewExportStatus(null);
+    try {
+      const exportedPath = await invoke<string>("export_organizer_preview", {
+        outputPath,
+        html,
+        comments,
+        cover,
+        files: previewTracks.map((track, index) => ({
+          sourcePath: track.bounce.sourcePath!,
+          outputName: portableTracks[index].audioFileName,
+        })),
+      });
+      setPreviewExportStatus(`Exported to ${exportedPath}`);
+    } catch (exportFailure) {
+      setPreviewExportStatus(`Export failed: ${String(exportFailure)}`);
+    } finally {
+      setPreviewExporting(false);
+    }
+  }
+
   function toggleTrackPlayer(trackId: string) {
     const closing = expandedTrackIds.has(trackId);
     const closingActiveTrack = closing && selected?.tracks
@@ -1089,6 +1443,41 @@ export function ProjectOrganizerScreen() {
       else next.add(trackId);
       return next;
     });
+  }
+
+  if (!storageReady) {
+    return (
+      <div className="organizer organizer--loading" aria-live="polite">
+        <section className="organizer__detail organizer__detail--empty">
+          <div className="organizer__blank">
+            <strong>Opening Organizer…</strong>
+            <p>Loading projects and mix-review assets from native storage.</p>
+          </div>
+        </section>
+      </div>
+    );
+  }
+
+  if (previewOpen && selected) {
+    return (
+      <>
+        <audio ref={audioRef} preload="none" onEnded={handleEnded} hidden />
+        <ReleasePreview
+          project={selected}
+          tracks={previewTracks}
+          activeBounceId={activeExportId}
+          isPlaying={isPlaying}
+          progress={progress}
+          incompleteTrackCount={selected.tracks.length - previewTracks.length}
+          exporting={previewExporting}
+          exportStatus={previewExportStatus}
+          onBack={() => setPreviewOpen(false)}
+          onExport={() => void handleExportPreview()}
+          onPlay={(track) => void handleMixPlay(track.trackId, track.bounce)}
+          onSeek={(track, fraction) => seekExport(track.bounce, fraction)}
+        />
+      </>
+    );
   }
 
   return (
@@ -1173,13 +1562,25 @@ export function ProjectOrganizerScreen() {
               aria-label="Project name"
               onChange={(event) => handleRename(event.target.value)}
             />
-            <button
-              type="button"
-              className="px-btn px-btn--danger"
-              onClick={() => handleDeleteProject(selected)}
-            >
-              Delete
-            </button>
+            <div className="organizer__detail-actions">
+              <button
+                type="button"
+                className="px-btn"
+                onClick={() => {
+                  setPreviewExportStatus(null);
+                  setPreviewOpen(true);
+                }}
+              >
+                Preview release
+              </button>
+              <button
+                type="button"
+                className="px-btn px-btn--danger"
+                onClick={() => void handleDeleteProject(selected)}
+              >
+                Delete
+              </button>
+            </div>
           </div>
 
           {error && <p className="organizer__error">{error}</p>}
@@ -1255,6 +1656,37 @@ export function ProjectOrganizerScreen() {
             </div>
           </div>
 
+          {releaseStats && releaseStats.completedCount > 0 && (
+            <section className="organizer__mastering-overview" aria-label="Release mastering consistency">
+              <div>
+                <span className="organizer__field-label">Release consistency</span>
+                <strong>{releaseStats.completedCount} selected mix{releaseStats.completedCount === 1 ? "" : "es"}</strong>
+              </div>
+              <dl>
+                <div>
+                  <dt>LUFS span</dt>
+                  <dd>{releaseStats.loudnessSpan ? `${releaseStats.loudnessSpan.min.toFixed(1)} to ${releaseStats.loudnessSpan.max.toFixed(1)}` : "Unavailable"}</dd>
+                </div>
+                <div>
+                  <dt>PLR span</dt>
+                  <dd>{releaseStats.plrSpan ? `${releaseStats.plrSpan.min.toFixed(1)} to ${releaseStats.plrSpan.max.toFixed(1)} dB` : "Unavailable"}</dd>
+                </div>
+                <div>
+                  <dt>Highest true peak</dt>
+                  <dd>{releaseStats.maximumTruePeak == null ? "Unavailable" : formatDb(releaseStats.maximumTruePeak, "dBTP")}</dd>
+                </div>
+                <div>
+                  <dt>Full-scale samples</dt>
+                  <dd className={releaseStats.clippedSampleCount > 0 ? "is-warning" : undefined}>{releaseStats.clippedSampleCount.toLocaleString()}</dd>
+                </div>
+                <div>
+                  <dt>Delivery format</dt>
+                  <dd className={!releaseStats.formatsMatch ? "is-warning" : undefined}>{releaseStats.formatsMatch ? "Consistent" : "Mismatch"}</dd>
+                </div>
+              </dl>
+            </section>
+          )}
+
           <div className="organizer__tracklist-head">
             <span className="organizer__field-label">Tracklist</span>
             <button type="button" className="px-btn px-btn--primary" onClick={handleAddTrack}>Add track</button>
@@ -1325,6 +1757,8 @@ export function ProjectOrganizerScreen() {
                       ? timedComments.find((comment) => comment.timeSec > playbackTime)
                       : undefined;
                     const secondsUntilNextComment = nextComment ? nextComment.timeSec - playbackTime : null;
+                    const flags = masteringFlags(exp);
+                    const spotifyPreview = spotifyNormalPreview(exp.integratedLufs, exp.peakDb);
                     const commentEmphasis = (comment: TimedComment) => {
                       if (!active || comment.timeSec <= playbackTime) return 1;
                       return Math.max(0, 1 - (comment.timeSec - playbackTime) / 20);
@@ -1392,10 +1826,64 @@ export function ProjectOrganizerScreen() {
                             <dl className="organizer__stats">
                               <div className="organizer__stat"><dt>Length</dt><dd>{formatDuration(exp.durationSec)}</dd></div>
                               <div className="organizer__stat"><dt>Integrated</dt><dd>{formatLufs(exp.integratedLufs)}</dd></div>
-                              <div className="organizer__stat"><dt>Dynamic range</dt><dd className={exp.dynamicRangeLu == null ? "organizer__stat-empty" : undefined}>{exp.dynamicRangeLu == null ? "Not long enough" : formatLra(exp.dynamicRangeLu)}</dd></div>
+                              <div className="organizer__stat">
+                                <dt title="Peak-to-loudness ratio: peak level minus integrated LUFS.">
+                                  Dynamics (PLR)
+                                </dt>
+                                <dd className={producerDynamicRangeDb(exp.integratedLufs, exp.peakDb) == null ? "organizer__stat-empty" : undefined}>
+                                  {formatDynamicRange(producerDynamicRangeDb(exp.integratedLufs, exp.peakDb))}
+                                </dd>
+                              </div>
+                              <div className="organizer__stat">
+                                <dt title="EBU R128 loudness range: the statistical spread of short-term loudness across the track.">
+                                  Loudness range (LRA)
+                                </dt>
+                                <dd className={exp.dynamicRangeLu == null ? "organizer__stat-empty" : undefined}>
+                                  {exp.dynamicRangeLu == null ? "Not long enough" : formatLoudnessRange(exp.dynamicRangeLu)}
+                                </dd>
+                              </div>
                               <div className="organizer__stat"><dt>{exp.peakKind === "true" ? "True peak" : "Sample peak"}</dt><dd>{formatDb(exp.peakDb, exp.peakKind === "true" ? "dBTP" : "dBFS")}</dd></div>
-                              <div className="organizer__stat"><dt>Format</dt><dd>{Math.round(exp.sampleRate / 100) / 10} kHz · {exp.channelCount === 1 ? "mono" : exp.channelCount === 2 ? "stereo" : `${exp.channelCount}ch`}</dd></div>
+                              <div className="organizer__stat"><dt>Format</dt><dd>{Math.round(exp.sampleRate / 100) / 10} kHz · {exp.bitDepth == null ? "" : `${exp.bitDepth}-bit · `}{exp.channelCount === 1 ? "mono" : exp.channelCount === 2 ? "stereo" : `${exp.channelCount}ch`}</dd></div>
                             </dl>
+                            <details className="organizer__mastering-details">
+                              <summary>
+                                <span>Mastering details</span>
+                                {flags.length > 0 && <span className="organizer__mastering-count">{flags.length} item{flags.length === 1 ? "" : "s"} to review</span>}
+                              </summary>
+                              {flags.length > 0 && (
+                                <ul className="organizer__mastering-flags">
+                                  {flags.map((flag) => (
+                                    <li key={`${flag.severity}-${flag.text}`} className={`is-${flag.severity}`}>{flag.text}</li>
+                                  ))}
+                                </ul>
+                              )}
+                              <dl className="organizer__mastering-grid">
+                                <div><dt>Max momentary</dt><dd>{exp.maxMomentaryLufs == null ? "Unavailable" : `${exp.maxMomentaryLufs.toFixed(1)} LUFS${exp.maxMomentaryTimeSec == null ? "" : ` at ${formatDuration(exp.maxMomentaryTimeSec)}`}`}</dd></div>
+                                <div><dt>Max short-term</dt><dd>{exp.maxShortTermLufs == null ? "Unavailable" : `${exp.maxShortTermLufs.toFixed(1)} LUFS${exp.maxShortTermTimeSec == null ? "" : ` at ${formatDuration(exp.maxShortTermTimeSec)}`}`}</dd></div>
+                                <div><dt>Sample peak</dt><dd>{exp.samplePeakDb == null ? "Unavailable" : formatDb(exp.samplePeakDb, "dBFS")}</dd></div>
+                                <div><dt>Full-scale samples</dt><dd>{exp.clippedSampleCount == null ? "Unavailable" : exp.clippedSampleCount.toLocaleString()}</dd></div>
+                                <div><dt>DC offset</dt><dd>{exp.dcOffsetDb == null ? "Unavailable" : formatDb(exp.dcOffsetDb, "dBFS")}</dd></div>
+                                <div><dt>Stereo correlation</dt><dd>{exp.stereoCorrelation == null ? "Unavailable" : exp.stereoCorrelation.toFixed(3)}</dd></div>
+                                <div><dt>L/R balance</dt><dd>{exp.stereoBalanceDb == null ? "Unavailable" : `${formatSignedDb(exp.stereoBalanceDb)} ${exp.stereoBalanceDb > 0 ? "L" : exp.stereoBalanceDb < 0 ? "R" : ""}`}</dd></div>
+                                <div><dt>Source depth</dt><dd>{exp.bitDepth == null ? "Unavailable" : `${exp.bitDepth}-bit`}</dd></div>
+                                <div><dt>Leading below -60 dBFS</dt><dd>{exp.leadingSilenceSec == null ? "Unavailable" : `${exp.leadingSilenceSec.toFixed(2)} s`}</dd></div>
+                                <div><dt>Trailing below -60 dBFS</dt><dd>{exp.trailingSilenceSec == null ? "Unavailable" : `${exp.trailingSilenceSec.toFixed(2)} s`}</dd></div>
+                              </dl>
+                              <div className="organizer__streaming-preview">
+                                <span className="organizer__field-label">Spotify Normal estimate</span>
+                                {spotifyPreview ? (
+                                  <dl>
+                                    <div><dt>Playback gain</dt><dd>{formatSignedDb(spotifyPreview.appliedGainDb)}</dd></div>
+                                    <div><dt>Estimated loudness</dt><dd>{spotifyPreview.estimatedLufs.toFixed(1)} LUFS</dd></div>
+                                    <div><dt>Estimated true peak</dt><dd>{formatDb(spotifyPreview.estimatedTruePeakDb, "dBTP")}</dd></div>
+                                    <div><dt>Gain limited by headroom</dt><dd>{spotifyPreview.headroomLimited ? "Yes" : "No"}</dd></div>
+                                  </dl>
+                                ) : (
+                                  <p>Unavailable until integrated loudness and true peak are measured.</p>
+                                )}
+                                <small>Playback-policy estimate, not a measured property of the source or a delivery guarantee.</small>
+                              </div>
+                            </details>
                             <div className="organizer__timed-comments">
                               <form className="organizer__timed-comment-form" onSubmit={(event) => { event.preventDefault(); addTimedComment(track.id, exp); }}>
                                 <label>
@@ -1619,16 +2107,33 @@ export function ProjectOrganizerScreen() {
                         <dd>{formatLufs(exp.integratedLufs)}</dd>
                       </div>
                       <div className="organizer__stat">
-                        <dt title="Loudness range (LRA)">Dynamic range</dt>
+                        <dt title="Peak-to-loudness ratio: peak level minus integrated LUFS.">
+                          Dynamics (PLR)
+                        </dt>
+                        {producerDynamicRangeDb(exp.integratedLufs, exp.peakDb) == null ? (
+                          <dd
+                            className="organizer__stat-empty"
+                            title="Integrated loudness or peak measurement is unavailable."
+                          >
+                            Unavailable
+                          </dd>
+                        ) : (
+                          <dd>{formatDynamicRange(producerDynamicRangeDb(exp.integratedLufs, exp.peakDb))}</dd>
+                        )}
+                      </div>
+                      <div className="organizer__stat">
+                        <dt title="EBU R128 loudness range: the statistical spread of short-term loudness across the track.">
+                          Loudness range (LRA)
+                        </dt>
                         {exp.dynamicRangeLu == null ? (
                           <dd
                             className="organizer__stat-empty"
-                            title="Bounce is under ~3s — too short to measure loudness range."
+                            title="Bounce is under approximately 3 seconds, so loudness range cannot be measured."
                           >
                             Not long enough
                           </dd>
                         ) : (
-                          <dd>{formatLra(exp.dynamicRangeLu)}</dd>
+                          <dd>{formatLoudnessRange(exp.dynamicRangeLu)}</dd>
                         )}
                       </div>
                       <div className="organizer__stat">

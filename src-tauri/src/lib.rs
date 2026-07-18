@@ -12,6 +12,7 @@ use metrics::{BridgeMetrics, BridgeMetricsSnapshot};
 use protocol::RecallEvent;
 use schema_projection::{CreativeMoment, CreativeMomentTarget, ParameterChange, ProjectSchema};
 use session::{SavedProject, SavedSession, SavedSessionMetadata, SessionState, SessionStatus};
+use std::io::{Read, Seek, Write};
 use std::sync::{Arc, Mutex};
 use storage::{initialize_database, SessionCuration, StorageState, StorageStatus};
 use tauri::{Manager, State};
@@ -43,13 +44,450 @@ fn read_organizer_audio(path: String) -> Result<tauri::ipc::Response, String> {
         .and_then(|value| value.to_str())
         .unwrap_or_default()
         .to_ascii_lowercase();
-    const AUDIO_EXTENSIONS: &[&str] = &["wav", "wave", "aif", "aiff", "flac", "mp3", "m4a", "aac", "ogg"];
+    const AUDIO_EXTENSIONS: &[&str] = &[
+        "wav", "wave", "aif", "aiff", "flac", "mp3", "m4a", "aac", "ogg",
+    ];
     if !AUDIO_EXTENSIONS.contains(&extension.as_str()) {
         return Err("That file is not a supported audio export.".into());
     }
-    let bytes = std::fs::read(source)
-        .map_err(|error| format!("Failed to read audio export: {}", error))?;
+    let bytes =
+        std::fs::read(source).map_err(|error| format!("Failed to read audio export: {}", error))?;
     Ok(tauri::ipc::Response::new(bytes))
+}
+
+#[derive(serde::Deserialize)]
+struct OrganizerPreviewFile {
+    #[serde(rename = "sourcePath")]
+    source_path: String,
+    #[serde(rename = "outputName")]
+    output_name: String,
+}
+
+#[derive(serde::Deserialize)]
+struct OrganizerPreviewAsset {
+    #[serde(rename = "fileName")]
+    file_name: String,
+    bytes: Vec<u8>,
+}
+
+fn safe_preview_leaf(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 120
+        && !value.contains("..")
+        && !value.contains('/')
+        && !value.contains('\\')
+        && std::path::Path::new(value)
+            .file_name()
+            .map(|name| name == value)
+            .unwrap_or(false)
+}
+
+enum PreviewZipSource {
+    Bytes(Vec<u8>),
+    File(std::path::PathBuf),
+}
+
+struct PreviewZipEntry {
+    name: String,
+    source: PreviewZipSource,
+}
+
+fn preview_zip_metadata(source: &PreviewZipSource) -> Result<(u32, u32), String> {
+    let mut hasher = crc32fast::Hasher::new();
+    let size = match source {
+        PreviewZipSource::Bytes(bytes) => {
+            hasher.update(bytes);
+            bytes.len() as u64
+        }
+        PreviewZipSource::File(path) => {
+            let mut file = std::fs::File::open(path)
+                .map_err(|error| format!("Failed to open {}: {error}", path.display()))?;
+            let mut buffer = [0_u8; 64 * 1024];
+            let mut total = 0_u64;
+            loop {
+                let read = file
+                    .read(&mut buffer)
+                    .map_err(|error| format!("Failed to read {}: {error}", path.display()))?;
+                if read == 0 {
+                    break;
+                }
+                hasher.update(&buffer[..read]);
+                total += read as u64;
+            }
+            total
+        }
+    };
+    let size = u32::try_from(size)
+        .map_err(|_| "A release asset exceeds the 4 GB portable ZIP limit.".to_string())?;
+    Ok((hasher.finalize(), size))
+}
+
+fn write_preview_zip(path: &std::path::Path, entries: Vec<PreviewZipEntry>) -> Result<(), String> {
+    struct CentralEntry {
+        name: Vec<u8>,
+        crc: u32,
+        size: u32,
+        offset: u32,
+    }
+
+    if entries.len() > u16::MAX as usize {
+        return Err("The release contains too many files for a portable ZIP.".into());
+    }
+    let mut output = std::fs::File::create(path)
+        .map_err(|error| format!("Failed to create release package: {error}"))?;
+    let mut central = Vec::with_capacity(entries.len());
+
+    for entry in entries {
+        let name = entry.name.into_bytes();
+        let name_len = u16::try_from(name.len())
+            .map_err(|_| "A packaged filename is too long.".to_string())?;
+        let offset = u32::try_from(
+            output
+                .stream_position()
+                .map_err(|error| format!("Failed to build release package: {error}"))?,
+        )
+        .map_err(|_| "The release package exceeds the portable ZIP limit.".to_string())?;
+        let (crc, size) = preview_zip_metadata(&entry.source)?;
+
+        output
+            .write_all(&0x04034b50_u32.to_le_bytes())
+            .map_err(|e| e.to_string())?;
+        output
+            .write_all(&20_u16.to_le_bytes())
+            .map_err(|e| e.to_string())?;
+        output
+            .write_all(&0x0800_u16.to_le_bytes())
+            .map_err(|e| e.to_string())?;
+        output
+            .write_all(&0_u16.to_le_bytes())
+            .map_err(|e| e.to_string())?;
+        output
+            .write_all(&0_u16.to_le_bytes())
+            .map_err(|e| e.to_string())?;
+        output
+            .write_all(&33_u16.to_le_bytes())
+            .map_err(|e| e.to_string())?;
+        output
+            .write_all(&crc.to_le_bytes())
+            .map_err(|e| e.to_string())?;
+        output
+            .write_all(&size.to_le_bytes())
+            .map_err(|e| e.to_string())?;
+        output
+            .write_all(&size.to_le_bytes())
+            .map_err(|e| e.to_string())?;
+        output
+            .write_all(&name_len.to_le_bytes())
+            .map_err(|e| e.to_string())?;
+        output
+            .write_all(&0_u16.to_le_bytes())
+            .map_err(|e| e.to_string())?;
+        output.write_all(&name).map_err(|e| e.to_string())?;
+        match entry.source {
+            PreviewZipSource::Bytes(bytes) => {
+                output.write_all(&bytes).map_err(|e| e.to_string())?;
+            }
+            PreviewZipSource::File(source) => {
+                let mut input = std::fs::File::open(&source)
+                    .map_err(|error| format!("Failed to reopen {}: {error}", source.display()))?;
+                std::io::copy(&mut input, &mut output)
+                    .map_err(|error| format!("Failed to package {}: {error}", source.display()))?;
+            }
+        }
+        central.push(CentralEntry {
+            name,
+            crc,
+            size,
+            offset,
+        });
+    }
+
+    let central_offset = u32::try_from(
+        output
+            .stream_position()
+            .map_err(|error| format!("Failed to build release package: {error}"))?,
+    )
+    .map_err(|_| "The release package exceeds the portable ZIP limit.".to_string())?;
+    for entry in &central {
+        let name_len = entry.name.len() as u16;
+        output
+            .write_all(&0x02014b50_u32.to_le_bytes())
+            .map_err(|e| e.to_string())?;
+        output
+            .write_all(&20_u16.to_le_bytes())
+            .map_err(|e| e.to_string())?;
+        output
+            .write_all(&20_u16.to_le_bytes())
+            .map_err(|e| e.to_string())?;
+        output
+            .write_all(&0x0800_u16.to_le_bytes())
+            .map_err(|e| e.to_string())?;
+        output
+            .write_all(&0_u16.to_le_bytes())
+            .map_err(|e| e.to_string())?;
+        output
+            .write_all(&0_u16.to_le_bytes())
+            .map_err(|e| e.to_string())?;
+        output
+            .write_all(&33_u16.to_le_bytes())
+            .map_err(|e| e.to_string())?;
+        output
+            .write_all(&entry.crc.to_le_bytes())
+            .map_err(|e| e.to_string())?;
+        output
+            .write_all(&entry.size.to_le_bytes())
+            .map_err(|e| e.to_string())?;
+        output
+            .write_all(&entry.size.to_le_bytes())
+            .map_err(|e| e.to_string())?;
+        output
+            .write_all(&name_len.to_le_bytes())
+            .map_err(|e| e.to_string())?;
+        output
+            .write_all(&0_u16.to_le_bytes())
+            .map_err(|e| e.to_string())?;
+        output
+            .write_all(&0_u16.to_le_bytes())
+            .map_err(|e| e.to_string())?;
+        output
+            .write_all(&0_u16.to_le_bytes())
+            .map_err(|e| e.to_string())?;
+        output
+            .write_all(&0_u16.to_le_bytes())
+            .map_err(|e| e.to_string())?;
+        output
+            .write_all(&0_u32.to_le_bytes())
+            .map_err(|e| e.to_string())?;
+        output
+            .write_all(&entry.offset.to_le_bytes())
+            .map_err(|e| e.to_string())?;
+        output.write_all(&entry.name).map_err(|e| e.to_string())?;
+    }
+    let central_end = u32::try_from(
+        output
+            .stream_position()
+            .map_err(|error| format!("Failed to build release package: {error}"))?,
+    )
+    .map_err(|_| "The release package exceeds the portable ZIP limit.".to_string())?;
+    let count = central.len() as u16;
+    output
+        .write_all(&0x06054b50_u32.to_le_bytes())
+        .map_err(|e| e.to_string())?;
+    output
+        .write_all(&0_u16.to_le_bytes())
+        .map_err(|e| e.to_string())?;
+    output
+        .write_all(&0_u16.to_le_bytes())
+        .map_err(|e| e.to_string())?;
+    output
+        .write_all(&count.to_le_bytes())
+        .map_err(|e| e.to_string())?;
+    output
+        .write_all(&count.to_le_bytes())
+        .map_err(|e| e.to_string())?;
+    output
+        .write_all(&(central_end - central_offset).to_le_bytes())
+        .map_err(|e| e.to_string())?;
+    output
+        .write_all(&central_offset.to_le_bytes())
+        .map_err(|e| e.to_string())?;
+    output
+        .write_all(&0_u16.to_le_bytes())
+        .map_err(|e| e.to_string())?;
+    output
+        .sync_all()
+        .map_err(|e| format!("Failed to finish release package: {e}"))
+}
+
+/// Export one portable ZIP containing the listener page, comments, cover, and
+/// selected final audio. The output path comes from the native save dialog.
+#[tauri::command]
+fn export_organizer_preview(
+    output_path: String,
+    html: String,
+    comments: String,
+    cover: Option<OrganizerPreviewAsset>,
+    files: Vec<OrganizerPreviewFile>,
+) -> Result<String, String> {
+    let output_path = std::path::PathBuf::from(output_path);
+    if !output_path
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(|value| value.eq_ignore_ascii_case("zip"))
+        .unwrap_or(false)
+    {
+        return Err("The release package must be saved as a .zip file.".into());
+    }
+    if comments.len() > 1_000_000 {
+        return Err("The comments document is unexpectedly large.".into());
+    }
+    let mut entries = vec![
+        PreviewZipEntry {
+            name: "index.html".to_string(),
+            source: PreviewZipSource::Bytes(html.into_bytes()),
+        },
+        PreviewZipEntry {
+            name: "comments.txt".to_string(),
+            source: PreviewZipSource::Bytes(comments.into_bytes()),
+        },
+    ];
+
+    if let Some(cover) = cover {
+        if !safe_preview_leaf(&cover.file_name)
+            || !matches!(
+                std::path::Path::new(&cover.file_name)
+                    .extension()
+                    .and_then(|value| value.to_str())
+                    .map(str::to_ascii_lowercase)
+                    .as_deref(),
+                Some("webp" | "png" | "jpg" | "jpeg")
+            )
+        {
+            return Err("The cover filename is not safe or supported.".into());
+        }
+        if cover.bytes.len() > 10_000_000 {
+            return Err("The cover image is unexpectedly large.".into());
+        }
+        entries.push(PreviewZipEntry {
+            name: cover.file_name,
+            source: PreviewZipSource::Bytes(cover.bytes),
+        });
+    }
+
+    const AUDIO_EXTENSIONS: &[&str] = &[
+        "wav", "wave", "aif", "aiff", "flac", "mp3", "m4a", "aac", "ogg",
+    ];
+    for file in files {
+        if !safe_preview_leaf(&file.output_name) {
+            return Err(format!(
+                "Unsafe preview audio filename: {}",
+                file.output_name
+            ));
+        }
+        let source = std::path::Path::new(&file.source_path);
+        let extension = source
+            .extension()
+            .and_then(|value| value.to_str())
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        if !source.is_file() || !AUDIO_EXTENSIONS.contains(&extension.as_str()) {
+            return Err(format!(
+                "Audio source is missing or unsupported: {}",
+                file.source_path
+            ));
+        }
+        entries.push(PreviewZipEntry {
+            name: format!("audio/{}", file.output_name),
+            source: PreviewZipSource::File(source.to_path_buf()),
+        });
+    }
+
+    let parent = output_path
+        .parent()
+        .filter(|path| path.is_dir())
+        .ok_or_else(|| "Choose an existing location for the release package.".to_string())?;
+    let temp_path = parent.join(format!(
+        ".{}.tmp",
+        output_path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("recall-preview.zip")
+    ));
+    write_preview_zip(&temp_path, entries)?;
+    if output_path.exists() {
+        std::fs::remove_file(&output_path)
+            .map_err(|error| format!("Failed to replace the existing package: {error}"))?;
+    }
+    std::fs::rename(&temp_path, &output_path)
+        .map_err(|error| format!("Failed to finish release package: {error}"))?;
+    Ok(output_path.to_string_lossy().to_string())
+}
+
+#[cfg(test)]
+mod organizer_preview_tests {
+    use super::*;
+
+    fn temp_dir(label: &str) -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "recall-{label}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&path).unwrap();
+        path
+    }
+
+    #[test]
+    fn preview_leaf_validation_rejects_path_escape() {
+        assert!(safe_preview_leaf("01-opening.wav"));
+        assert!(!safe_preview_leaf("../opening.wav"));
+        assert!(!safe_preview_leaf("audio/opening.wav"));
+        assert!(!safe_preview_leaf(""));
+    }
+
+    #[test]
+    fn exports_page_and_copies_audio_without_modifying_source() {
+        let destination = temp_dir("preview-export");
+        let source_dir = temp_dir("preview-source");
+        let source = source_dir.join("master.wav");
+        std::fs::write(&source, b"source-audio").unwrap();
+        let output = destination.join("perseus-preview.zip");
+
+        let exported = export_organizer_preview(
+            output.to_string_lossy().to_string(),
+            "<!doctype html><title>Perseus</title>".to_string(),
+            "Perseus\r\n\r\n01 - Opening\r\n".to_string(),
+            Some(OrganizerPreviewAsset {
+                file_name: "cover.webp".to_string(),
+                bytes: b"cover-art".to_vec(),
+            }),
+            vec![OrganizerPreviewFile {
+                source_path: source.to_string_lossy().to_string(),
+                output_name: "01-opening.wav".to_string(),
+            }],
+        )
+        .unwrap();
+
+        let exported = std::path::PathBuf::from(exported);
+        assert!(exported.is_file());
+        let archive = std::fs::read(&exported).unwrap();
+        assert!(archive.starts_with(&0x04034b50_u32.to_le_bytes()));
+        assert!(archive
+            .windows(b"index.html".len())
+            .any(|part| part == b"index.html"));
+        assert!(archive
+            .windows(b"comments.txt".len())
+            .any(|part| part == b"comments.txt"));
+        assert!(archive
+            .windows(b"cover.webp".len())
+            .any(|part| part == b"cover.webp"));
+        assert!(archive
+            .windows(b"audio/01-opening.wav".len())
+            .any(|part| part == b"audio/01-opening.wav"));
+        assert_eq!(std::fs::read(&source).unwrap(), b"source-audio");
+
+        export_organizer_preview(
+            output.to_string_lossy().to_string(),
+            "<!doctype html><title>Updated</title>".to_string(),
+            "Updated comments".to_string(),
+            None,
+            vec![OrganizerPreviewFile {
+                source_path: source.to_string_lossy().to_string(),
+                output_name: "01-opening.wav".to_string(),
+            }],
+        )
+        .unwrap();
+        let updated = std::fs::read(&exported).unwrap();
+        assert!(updated
+            .windows(b"Updated".len())
+            .any(|part| part == b"Updated"));
+
+        std::fs::remove_dir_all(destination).ok();
+        std::fs::remove_dir_all(source_dir).ok();
+    }
 }
 
 /// Load every organizer project (release) from native storage, with cover art
@@ -74,10 +512,7 @@ fn save_organizer_project(
 }
 
 #[tauri::command]
-fn delete_organizer_project(
-    state: State<'_, AppState>,
-    project_id: String,
-) -> Result<(), String> {
+fn delete_organizer_project(state: State<'_, AppState>, project_id: String) -> Result<(), String> {
     let storage = state.storage.lock().expect("Storage state lock failed");
     storage.delete_organizer_project(&project_id)
 }
@@ -457,8 +892,8 @@ fn discover_ableton_projects(root: &str) -> Result<Vec<(String, String)>, String
     // Prefer immediate subfolders that are Ableton projects — the common case is a
     // parent folder that holds many "<Song> Project" folders.
     let mut found = Vec::new();
-    let entries =
-        std::fs::read_dir(root_path).map_err(|error| format!("Failed to read folder: {}", error))?;
+    let entries = std::fs::read_dir(root_path)
+        .map_err(|error| format!("Failed to read folder: {}", error))?;
     for entry in entries {
         let entry = entry.map_err(|error| format!("Failed to read folder entry: {}", error))?;
         let path = entry.path();
@@ -511,8 +946,10 @@ fn connect_project_folder(
 
     // Scan every project that maps to a discovered folder so its versions appear as
     // takes immediately — covers both freshly-imported and already-known projects.
-    let discovered_folders: std::collections::HashSet<&str> =
-        discovered.iter().map(|(_, folder)| folder.as_str()).collect();
+    let discovered_folders: std::collections::HashSet<&str> = discovered
+        .iter()
+        .map(|(_, folder)| folder.as_str())
+        .collect();
     for project in storage.list_projects(false)? {
         if project
             .ableton_path
@@ -706,7 +1143,10 @@ fn open_take_for_open_file(
     ensure_project_exists(&state, project_id.as_deref())?;
 
     let open_als = {
-        let connection = state.connection.lock().expect("Connection state lock failed");
+        let connection = state
+            .connection
+            .lock()
+            .expect("Connection state lock failed");
         connection.open_als_path.clone()
     };
 
@@ -1049,6 +1489,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             write_text_file,
             read_organizer_audio,
+            export_organizer_preview,
             list_organizer_projects,
             save_organizer_project,
             delete_organizer_project,

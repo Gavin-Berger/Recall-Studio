@@ -9,6 +9,7 @@
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
+    "deploy:bridge": "node scripts/deploy-bridge.mjs",
     "tauri": "tauri"
   },
   "dependencies": {

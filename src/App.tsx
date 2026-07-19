@@ -211,6 +211,24 @@ function App() {
     }
   }
 
+  // End the running take and open a fresh one.
+  //
+  // Switching Ableton projects does NOT re-point a take: once a capture is bound
+  // to a project that binding is permanent (storage.rs only attaches project_id
+  // when it is still NULL). So a take started on one set keeps swallowing moves
+  // made in the next one. Ending it starts a capture with no project yet, which
+  // the next event from Ableton binds to the set that is actually open.
+  async function handleEndTake() {
+    try {
+      const status = await invoke<SessionStatus>("start_new_session");
+      await reloadLibrary();
+      setSelectedSessionId(status.session_id);
+    } catch (error) {
+      console.error("Failed to end take:", error);
+      throw error;
+    }
+  }
+
   // Intentionally start a fresh take, even when the project already has one going.
   async function handleNewTake(projectId?: string | null) {
     try {
@@ -344,6 +362,7 @@ function App() {
           onOpenVersions={handleOpenVersions}
           onStartCapture={handleStartCapture}
           onNewTake={handleNewTake}
+          onEndTake={handleEndTake}
           onOpenTimeline={handleOpenTimeline}
           onOpenRecap={handleOpenRecap}
           onRenameProject={handleRenameProject}

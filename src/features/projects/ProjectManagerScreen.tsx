@@ -24,6 +24,7 @@ type ProjectManagerScreenProps = {
   onOpenVersions: (projectId: string) => void;
   onStartCapture: (projectId?: string | null) => Promise<void>;
   onNewTake: (projectId?: string | null) => Promise<void>;
+  onEndTake: () => Promise<void>;
   onOpenTimeline: (sessionId: string) => void;
   onOpenRecap: (sessionId: string) => void;
   onRenameProject: (projectId: string, displayName: string) => Promise<void>;
@@ -57,6 +58,7 @@ export function ProjectManagerScreen({
   onOpenVersions,
   onStartCapture,
   onNewTake,
+  onEndTake,
   onOpenTimeline,
   onOpenRecap,
   onRenameProject,
@@ -254,6 +256,22 @@ export function ProjectManagerScreen({
               <FolderIcon />
               Connect Folder
             </button>
+            {/* Only meaningful while something is recording. Switching Ableton
+                projects does not move the running take, so this is how you close
+                it out and let the next one bind to the set that's open now. */}
+            {activeSession && (
+              <button
+                type="button"
+                className="home-action"
+                disabled={isBusy}
+                title={`Ends the take${
+                  activeAbletonName ? ` on ${activeAbletonName}` : ""
+                } and starts a fresh one for the set Ableton has open now.`}
+                onClick={() => void runAction("Ending take...", () => onEndTake())}
+              >
+                End take
+              </button>
+            )}
             <button
               type="button"
               className="home-action"

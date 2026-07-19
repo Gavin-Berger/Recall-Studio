@@ -15,6 +15,7 @@ import {
   SessionRecapScreen,
   StartupScreen,
 } from "./features";
+import { ReportDialog } from "./features/diagnostics/ReportDialog";
 import type { ConnectionStatus, SavedProject, SavedSessionMetadata, SessionStatus } from "./types";
 
 const BACKEND_CONNECTION_COMMAND = "get_connection_status";
@@ -50,6 +51,7 @@ function storeProducerName(name: string) {
 
 function App() {
   const [surface, setSurface] = useState<AppSurface>("projects");
+  const [reportOpen, setReportOpen] = useState(false);
   const [connection, setConnection] = useState<ConnectionStatus>({
     connected: false,
     last_heartbeat_ms: null,
@@ -322,10 +324,12 @@ function App() {
   }
 
   return (
+    <>
     <AppShell
       surface={surface}
       onChangeSurface={setSurface}
       connected={connection.connected}
+      onOpenReport={() => setReportOpen(true)}
       projects={
         <ProjectManagerScreen
           connection={connection}
@@ -384,6 +388,12 @@ function App() {
       notes={<NotesScreen />}
       glossary={<ProductionCheatSheet />}
     />
+    <ReportDialog
+      open={reportOpen}
+      onClose={() => setReportOpen(false)}
+      connection={connection}
+    />
+    </>
   );
 }
 

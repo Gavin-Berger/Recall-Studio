@@ -5836,3 +5836,148 @@
     transition: none;
   }
 }
+
+/* ── Problem report ────────────────────────────────────────────────────────
+   Always-reachable way to say "this broke". The report is shown in full before
+   the producer copies or saves it — nothing is transmitted from the app. */
+
+.recall-sidebar__report {
+  margin-top: auto;
+  padding: 8px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--faint-aa);
+  font-size: 0.72rem;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color var(--m-settle) var(--ease-arrive),
+    color var(--m-settle) var(--ease-arrive);
+}
+
+.recall-sidebar__report:hover {
+  border-color: rgba(99, 130, 255, 0.4);
+  color: var(--paper);
+}
+
+.report-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(6, 8, 14, 0.62);
+}
+
+.report-dialog {
+  width: min(760px, 100%);
+  max-height: min(84vh, 900px);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 20px 22px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel);
+  box-shadow: var(--shadow);
+  overflow-y: auto;
+}
+
+.report-dialog__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.report-dialog__head h2 {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 1.15rem;
+  color: var(--paper-strong);
+}
+
+.report-dialog__sub {
+  margin: 4px 0 0;
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
+.report-dialog__note {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.report-dialog__note textarea {
+  width: 100%;
+  resize: vertical;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: var(--radius-sm);
+  background: rgba(15, 18, 29, 0.55);
+  color: var(--paper);
+  font-family: var(--font-body);
+  font-size: 0.84rem;
+  line-height: 1.5;
+  padding: 8px 10px;
+}
+
+.report-dialog__note textarea:focus {
+  outline: none;
+  border-color: rgba(99, 130, 255, 0.6);
+}
+
+.report-dialog__preview {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-height: 0;
+}
+
+.report-dialog__preview pre {
+  margin: 0;
+  max-height: 320px;
+  overflow: auto;
+  padding: 12px 14px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-sm);
+  background: rgba(9, 12, 20, 0.66);
+  color: var(--paper);
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.report-dialog__status {
+  margin: 0;
+  font-size: 0.78rem;
+  color: var(--paper-strong);
+}
+
+.report-dialog__actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  padding-top: 4px;
+  border-top: 1px solid var(--line-soft);
+}
+
+.report-dialog__privacy {
+  margin: 0;
+  max-width: 44ch;
+  font-size: 0.72rem;
+  line-height: 1.45;
+  color: var(--faint-aa);
+}
+
+.report-dialog__buttons {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}

@@ -40,6 +40,7 @@ type AppShellProps = {
   organizer: ReactNode;
   notes: ReactNode;
   glossary: ReactNode;
+  onOpenReport: () => void;
 };
 
 export function AppShell({
@@ -53,6 +54,7 @@ export function AppShell({
   organizer,
   notes,
   glossary,
+  onOpenReport,
 }: AppShellProps) {
   return (
     <main className={`recall-app recall-app--${surface}`}>
@@ -89,6 +91,12 @@ export function AppShell({
               );
             })}
           </div>
+
+          {/* Always reachable: when something breaks, the way to report it must
+              not be buried inside the screen that broke. */}
+          <button type="button" className="recall-sidebar__report" onClick={onOpenReport}>
+            Report a problem
+          </button>
 
           <div
             className={`recall-sidebar__status ${

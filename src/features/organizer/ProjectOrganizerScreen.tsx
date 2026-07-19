@@ -10,6 +10,7 @@ import {
   type OrganizerRepository,
 } from "./repository";
 import { ReleasePreview } from "./ReleasePreview";
+import { recordError } from "../diagnostics/errorLog";
 import {
   buildReleaseCommentsText,
   buildReleasePreviewHtml,
@@ -555,7 +556,14 @@ export function ProjectOrganizerScreen({
   const [expandedTrackIds, setExpandedTrackIds] = useState<Set<string>>(() => new Set());
   const [, setPlaybackRevision] = useState(0);
   const [analyzing, setAnalyzing] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setErrorState] = useState<string | null>(null);
+  // Every error the Organizer shows also lands in the app-wide log, so a
+  // problem report still has the evidence after the banner is dismissed.
+  // Wrapping the setter here means every existing setError call is covered.
+  const setError = useCallback((message: string | null) => {
+    if (message) recordError("Organizer", message);
+    setErrorState(message);
+  }, []);
   const [draggedTrackId, setDraggedTrackId] = useState<string | null>(null);
   const [dragOverTrackId, setDragOverTrackId] = useState<string | null>(null);
   const [timedCommentDrafts, setTimedCommentDrafts] = useState<Record<string, string>>({});

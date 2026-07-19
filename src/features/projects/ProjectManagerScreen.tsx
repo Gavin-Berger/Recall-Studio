@@ -9,6 +9,7 @@ import { RecallMark } from "../../components/RecallMark";
 import { BridgeSetup } from "../home/BridgeSetup";
 import { formatSessionDate, formatSessionDuration } from "../sessionFormat";
 import { RelinkDialog, type AlsFileChoice } from "./RelinkDialog";
+import { detectTakeMismatch } from "./takeMismatch";
 import type { ConnectionStatus, SavedProject, SavedSessionMetadata } from "../../types/recall";
 
 type ProjectManagerScreenProps = {
@@ -82,6 +83,10 @@ export function ProjectManagerScreen({
   const isBusy = busyLabel !== null || loading;
   const activeSessionId = activeSession?.id ?? null;
   const activeAbletonName = activeSession?.project_name ?? null;
+  const takeMismatch = useMemo(
+    () => detectTakeMismatch(activeSession, projects),
+    [activeSession, projects],
+  );
 
   const allCaptures = useMemo(
     () => projects.flatMap((project) => project.captures).concat(unassignedSessions),
@@ -188,6 +193,31 @@ export function ProjectManagerScreen({
       </section>
 
       <BridgeStrip connection={connection} open={bridgeOpen} onToggle={() => setBridgeOpen((open) => !open)} />
+
+      {/* A take's project binding is permanent once set, so opening a different
+          set in Ableton silently files the new work under the old song. Say so,
+          and offer the one action that fixes it. */}
+      {takeMismatch && (
+        <div className="project-manager__mismatch" role="status">
+          <div className="project-manager__mismatch-text">
+            <strong>This take is recording into {takeMismatch.boundName}.</strong>
+            <span>
+              Ableton has {takeMismatch.openName} open — moves you make now are being saved under{" "}
+              {takeMismatch.boundName}.
+            </span>
+          </div>
+          <button
+            type="button"
+            className="home-action home-action--primary"
+            disabled={isBusy}
+            onClick={() =>
+              void runAction(`Starting a take for ${takeMismatch.openName}...`, () => onEndTake())
+            }
+          >
+            Start a take for {takeMismatch.openName}
+          </button>
+        </div>
+      )}
 
       {(loading || busyLabel || error || flash) && (
         <div className={`project-manager__notice ${error ? "project-manager__notice--error" : ""}`}>

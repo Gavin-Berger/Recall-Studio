@@ -186,6 +186,8 @@ The device's load chain (`live.thisdevice → deferlow → delay 1000 → js`) f
 | `heartbeat_tick` (~L311) | 2000 ms | nothing | `heartbeat` (health only) |
 | `transport_tick` (~L320) | 2000 ms | `live_set` transport + selection | `transport_play/stop`, `tempo_changed`, `track_selected`, `transport_snapshot` |
 | `focus_tick` (~L336) | 4000 ms | selected track → devices → clips | `device_*`, `clip_*`, focus snapshot |
+| `parameter_tick` | adaptive: 200 ms hot / 1200 ms idle | focused device parameter values | `parameter_changed` |
+| `structure_tick` | off by default | experimental numeric background track scan | `device_*`, `clip_*` when enabled |
 | `live_set_tick` (~L366) | off by default | every track/scene | `live_set_snapshot` |
 
 Notable runtime behavior:
@@ -194,11 +196,14 @@ Notable runtime behavior:
   instant transport stops. Rationale: leave the audio thread headroom.
 - **`captureLiveSet = false` by default** (~L82): the full-set walk is the heaviest single
   synchronous scan and the dominant native-crash trigger on large sets.
+- **`captureStructure = false` by default**: background numeric track reads have not proven
+  reliable in large real sets. Normal live capture follows the selected track and focused
+  device; whole-project discovery stays manual/deep capture.
 - **`MAX_*` limits** (~L85) cap how many tracks/devices/params/clips a single scan
   serializes.
-- **Capture toggles** (`captureTransport`, `captureFocus`, `captureLiveSet`) can be flipped
-  at runtime by sending messages into the `js` object — a `safe_mode` for isolating a crash
-  without editing the file.
+- **Capture toggles** (`captureTransport`, `captureFocus`, `captureParameterMoves`,
+  `captureStructure`, `captureLiveSet`) can be flipped at runtime by sending messages into
+  the `js` object for crash/performance isolation without editing the file.
 
 ---
 
@@ -299,9 +304,9 @@ duplicate-on-reload.
 4. **Two clocks.** `timestamp_ms` is set in JS (Max's clock) and only falls back to Rust's
    `now_ms()` if absent. Ordering trusts the JS clock — fine for a single local machine,
    worth stating explicitly.
-5. **`parameter_changed` is selected-track scoped.** The bridge reads bounded parameter values
-   during the focused-track scan, emits only settled before/after moves, and leaves
-   background-track parameters alone to avoid a full-set LiveAPI sweep.
+5. **`parameter_changed` is focused-device scoped.** The dedicated parameter poller reads the
+   currently focused device, emits only settled before/after moves, and leaves background
+   tracks alone. To track another track live, select it.
 6. **Normalization is the corruption surface.** Any LOM property that returns an unexpected
    shape (multi-element array, locale-formatted number) would be silently coerced or
    dropped by `get_prop`/`value_to_*`. Worth a targeted audit if a field ever looks wrong.

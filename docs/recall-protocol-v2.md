@@ -172,16 +172,15 @@ a known limit, not a broken promise.
 2. **Background-track automation is not captured.** Automation writing is read only on the
    **selected** track — reading every parameter on every track is the documented Ableton
    crash trigger. Automate a track you're not looking at and it won't be logged.
-3. **Live knob/fader moves are selected-track only.** The bridge polls the focused
-   track's bounded device/parameter set and emits settled `parameter_changed` moves
-   with before/after values and normalized percentages. Background tracks are not
-   parameter-scanned.
+3. **Live knob/fader moves are focused-device only.** The bridge polls the currently
+   focused device and emits settled `parameter_changed` moves with before/after values
+   and normalized percentages. Background tracks are not parameter-scanned.
 4. **Session View clip slots only — Arrangement timeline clips are not diffed yet.** Sample
    and clip detection watches Session View clip slots. Dropping a sample onto the
    **Arrangement** timeline may not register. (High-priority gap to close.)
-5. **Background-track adds have latency.** The all-track scan is round-robin (a few tracks
-   per tick), so a device/sample added to a non-focused track can take a few seconds — up to
-   a full sweep — to appear.
+5. **Background-track adds are not live-tracked.** To capture another track live, select it.
+   The old numeric-path structure scanner is disabled by default and kept only as a debug
+   toggle because it has not been reliable in large real sets.
 6. **No arrangement edits.** Split, crop, consolidate, warp, nudge, fades — LiveAPI doesn't
    expose these, so they aren't captured.
 7. **No MIDI note editing.** Adding/moving/velocity of individual notes isn't captured.
@@ -189,10 +188,11 @@ a known limit, not a broken promise.
 
 ## Parameter rate-limiting
 
-`parameter_changed` is auto-emitted only from the selected-track focus scan. The scan cadence
-is the rate limit: a continuous knob ride collapses to one settled event per scan, carrying
-`previous_parameter_value`, `parameter_value`, optional swept `parameter_value_min` /
-`parameter_value_max`, and normalized before/after percentages.
+`parameter_changed` is auto-emitted only from the dedicated focused-device parameter poller.
+The poller runs hot while a device is newly focused or moving, then backs off while idle. A
+continuous knob ride collapses to one settled event carrying `previous_parameter_value`,
+`parameter_value`, optional swept `parameter_value_min` / `parameter_value_max`, and
+normalized before/after percentages.
 
 Sending per-frame parameter events is still a hard no.
 

@@ -1,7 +1,7 @@
 // recall_m4l_bridge.js
 //
 // Recall Studio - Max for Live bridge
-// v0.20.0: single-probe parameter polling + bounded focused-device caches.
+// v0.20.1: selected/focused live capture; background structure scan debug-only.
 //
 // Product goal:
 // Capture meaningful Ableton session activity without constantly transmitting
@@ -43,7 +43,7 @@ outlets = 2;
 var PROTOCOL = "recall.v2";
 var SOURCE = "max_for_live";
 var DEVICE_ID = "recall-m4l-bridge-dev";
-var BRIDGE_VERSION = "0.20.0";
+var BRIDGE_VERSION = "0.20.1";
 
 // Canonical v2 flat fields. emit() lifts any of these from its `fields` arg up
 // to the TOP LEVEL of the packet, because the Rust normalizer reads canonical
@@ -95,12 +95,12 @@ var captureFocus = true;
 // is coalesced into one settled event. Gated so [capture_parameter_moves 0]
 // disables only this, not the whole focus scan.
 var captureParameterMoves = true;
-// Shallow round-robin scan across ALL tracks so device/sample/clip additions on
-// non-selected tracks are caught too. Cheap by design: it reuses the same bounded
-// name/clip collectors as the focus scan and does NO parameter reads (automation
-// stays confined to the selected track), so it carries none of the parameter-scan
-// crash risk. Disable with [capture_structure 0] if a huge set feels sticky.
-var captureStructure = true;
+// Experimental/debug only. In real Ableton sets, numeric background paths like
+// "live_set tracks 19" are not reliable enough to treat as live capture unless
+// the producer selects that track. Keep normal Recall capture focused on the
+// selected track + focused device; use [capture_structure 1] only when explicitly
+// testing the old background scanner.
+var captureStructure = false;
 // Off by default. The full live-set summary is the heaviest single scan: it
 // walks every track and serializes them in one packet. On large sets (40+
 // tracks, groups, many active plugins) running it synchronously while audio is
@@ -192,9 +192,10 @@ var TRANSPORT_INTERVAL_MS = 2000;
 var FOCUS_INTERVAL_MS = 4000;
 var AUTO_LIVE_SET_SNAPSHOT_INTERVAL_MS = 0;
 
-// All-track structure scan cadence. Only STRUCTURE_TRACKS_PER_TICK tracks are
-// scanned per tick (round-robin), so a large set is swept over several ticks and
-// no single tick is heavy. Throttled during playback like the focus scan.
+// Optional structure-scan cadence. This scanner is off by default because
+// background track reads have proven unreliable unless the track is selected.
+// When enabled for debugging, only STRUCTURE_TRACKS_PER_TICK tracks are scanned
+// per tick and playback throttling still applies.
 var STRUCTURE_INTERVAL_MS = 4000;
 var STRUCTURE_TRACKS_PER_TICK = 4;
 var STRUCTURE_SKIP_TICKS_WHILE_PLAYING = 2;
@@ -379,9 +380,10 @@ function start_bridge() {
     // The dedicated parameter poller runs independently of (and faster than) the
     // focus scan, so a tweak on the open device is caught even mid-playback.
     parameterTask.schedule(PARAMETER_POLL_HOT_MS);
-    // Offset the structure scan from the focus scan so they don't fire on the
-    // same tick and stack their LiveAPI work.
-    structureTask.schedule(STRUCTURE_INTERVAL_MS + 2000);
+    // Background structure capture is experimental and off by default. If it is
+    // enabled manually, offset it from the focus scan so their LiveAPI work does
+    // not stack on the same tick.
+    schedule_structure_scan(STRUCTURE_INTERVAL_MS + 2000);
 
     if (AUTO_LIVE_SET_SNAPSHOT_INTERVAL_MS > 0) {
         liveSetTask.schedule(AUTO_LIVE_SET_SNAPSHOT_INTERVAL_MS);
@@ -668,41 +670,47 @@ function structure_tick() {
     if (!bridgeRunning) {
         return;
     }
+    if (!captureStructure) {
+        return;
+    }
     if (!scheduler_tick_ready("structure", structureTask)) {
         return;
     }
 
-    if (captureStructure) {
-        // Throttle while playing like the focus scan; full cadence resumes the
-        // instant transport stops, so background edits made while paused are
-        // caught promptly.
-        var skipForPlayback =
-            lastPlayingState === true &&
-            structureTicksSkippedWhilePlaying < STRUCTURE_SKIP_TICKS_WHILE_PLAYING;
+    // Throttle while playing like the focus scan; full cadence resumes the
+    // instant transport stops.
+    var skipForPlayback =
+        lastPlayingState === true &&
+        structureTicksSkippedWhilePlaying < STRUCTURE_SKIP_TICKS_WHILE_PLAYING;
 
-        if (skipForPlayback) {
-            structureTicksSkippedWhilePlaying++;
-        } else {
-            structureTicksSkippedWhilePlaying = 0;
+    if (skipForPlayback) {
+        structureTicksSkippedWhilePlaying++;
+    } else {
+        structureTicksSkippedWhilePlaying = 0;
 
-            try {
-                scan_track_structure_batch();
-            } catch (error) {
-                debug("structure scan failed: " + error);
-            }
+        try {
+            scan_track_structure_batch();
+        } catch (error) {
+            debug("structure scan failed: " + error);
         }
     }
 
     structureTask.schedule(STRUCTURE_INTERVAL_MS);
 }
 
-// Round-robin shallow scan across all tracks so device/sample/clip additions on
-// NON-selected tracks are detected too. Only STRUCTURE_TRACKS_PER_TICK tracks are
-// scanned per tick to keep each tick tiny. Reuses the same bounded name/clip
-// collectors and the same per-track diff cache as the focus scan. Crucially it
-// does NOT call detect_automation_created (parameter reads) — automation stays
-// confined to the selected track — so this carries none of the parameter-scan
-// crash risk. The selected track is skipped here since the focus scan owns it.
+function schedule_structure_scan(delayMs) {
+    structureTask.cancel();
+    if (bridgeRunning && captureStructure) {
+        structureTask.schedule(delayMs);
+    }
+}
+
+// Optional round-robin shallow scan across numeric track paths. This is kept for
+// debugging only: in production the selected-track focus scan owns live capture,
+// because background track reads are not dependable in large real sets. This
+// path never calls detect_automation_created, so automation stays confined to
+// the selected track. The selected track is skipped here since the focus scan
+// owns it.
 function scan_track_structure_batch() {
     var liveSet = safe_path("live_set");
 
@@ -1528,10 +1536,9 @@ function find_track_index_by_id(trackId) {
 }
 
 // Build a focus snapshot for the track at the given index. This is the shared
-// per-track collector used by BOTH the selected-track focus scan and the
-// all-track structure scan. It reads only bounded structural data (track props,
-// device NAMES, clip presence + sample paths) — no device parameters — so it is
-// cheap and safe to run across many tracks.
+// per-track collector used by the selected-track focus scan and the optional
+// structure scanner. It reads only bounded structural data (track props, device
+// names, clip presence + sample paths) and no device parameters.
 function collect_track_focus_snapshot(trackIndex) {
     var track = safe_path("live_set tracks " + trackIndex);
 
@@ -1675,8 +1682,8 @@ function send_selected_track_focus_if_changed() {
     detect_focus_changes(snapshot);
 
     // Parameter scanning (automation creation + live value moves) reads device
-    // parameters — the expensive path — so it runs ONLY here, for the selected
-    // track, never in the all-track scan.
+    // parameters - the expensive path - so it runs ONLY here, for the selected
+    // track, never in the optional structure scanner.
     if (snapshot && snapshot.available && snapshot.id) {
         detect_automation_created(snapshot, String(snapshot.id), snapshot.name);
     }
@@ -1795,9 +1802,8 @@ function detect_focus_changes(snapshot) {
     // NOTE: automation detection (detect_automation_created) is intentionally NOT
     // called here. It reads device parameters, which is the expensive/crash-prone
     // path, so it must stay confined to the selected track. The caller
-    // (send_selected_track_focus_if_changed) invokes it directly. The all-track
-    // structure scan calls detect_focus_changes WITHOUT automation, keeping
-    // background-track scanning cheap.
+    // (send_selected_track_focus_if_changed) invokes it directly. The optional
+    // structure scan calls detect_focus_changes WITHOUT automation.
 }
 
 // Cache of paramId -> had_automation per track.
@@ -2971,6 +2977,7 @@ function safe_mode() {
     captureParameterMoves = false;
     captureStructure = false;
     captureLiveSet = false;
+    structureTask.cancel();
     debug("SAFE MODE: all LiveAPI scans disabled (heartbeat only)");
 }
 
@@ -2980,6 +2987,7 @@ function full_capture() {
     captureParameterMoves = true;
     captureStructure = true;
     captureLiveSet = true;
+    schedule_structure_scan(STRUCTURE_INTERVAL_MS + 2000);
     debug("FULL CAPTURE: all LiveAPI scans enabled");
 }
 
@@ -3010,6 +3018,8 @@ function recapture_set() {
 
 function capture_structure(value) {
     captureStructure = Number(value) === 1;
+    structureTicksSkippedWhilePlaying = 0;
+    schedule_structure_scan(STRUCTURE_INTERVAL_MS);
     debug("capture_structure = " + captureStructure);
 }
 

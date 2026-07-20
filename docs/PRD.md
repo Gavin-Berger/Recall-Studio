@@ -123,9 +123,10 @@ no assumption of technical skill beyond installing an app.
 
 - Max for Live device (RECALL.amxd) observes Live and streams **changes only** over
   local UDP (Recall Protocol v2); deep initial snapshot on load.
-- Coverage per the schema map ledger: tracks (audio/MIDI/return/group), devices,
-  parameters (incl. deep plugin params via focused-device polling), clips, transport,
-  tempo, project file path. VST preset opacity is a **documented limitation**, not a bug.
+- Live coverage follows the selected track and focused device: devices, parameters
+  (incl. deep plugin params via focused-device polling), clips, transport, tempo,
+  project file path. Whole-project track/device context is manual/deep capture, not
+  passive background tracking. VST preset opacity is a **documented limitation**, not a bug.
 - Bridge self-limits (adaptive, time-budgeted polling) so Live's UI thread is never
   the victim of capture.
 

@@ -54,6 +54,13 @@ RECONNECT_DELAY_SEC = 2.0
 # actually rides live near the top of the list.
 MAX_PARAMS_PER_DEVICE = 128
 
+# How long a parameter must sit still before its gesture counts as finished.
+# Listeners fire ~every 3ms during a ride, so emitting each one buries the
+# timeline in near-identical rows. 350ms is long enough to bridge the pauses
+# inside one continuous move, short enough that a move appears while the
+# producer still remembers making it.
+GESTURE_SETTLE_SEC = 0.35
+
 # Distinct from the bridge's "max_for_live" so events from the two capture tiers
 # are told apart in the database. The listener defaults source to max_for_live
 # when absent, so this must always be sent explicitly.
@@ -77,6 +84,9 @@ class Recall(ControlSurface):
         # Live's listener callback carries no value and no previous value, so the
         # before-side has to be remembered here.
         self._last_values = {}
+        # paramId -> in-flight gesture (start value, swept min/max, last sample
+        # and when it arrived). Settled by update_display, not by the callback.
+        self._gestures = {}
         self._moves_seen = 0
 
         with self.component_guard():
@@ -243,30 +253,38 @@ class Recall(ControlSurface):
         return {
             "id": str(device._live_ptr),
             "name": device.name,
-            "is_active": True,
+            "is_active": bool(device.is_active),
+            # Live's device type enum (1 instrument, 2 audio effect, 4 midi
+            # effect). The projection derives a device's chain ROLE from this,
+            # and without it every device — including instruments — was being
+            # classified as an audio effect.
+            "type": getattr(device, "type", None),
             "parameters": parameters,
         }
 
-    @staticmethod
-    def _track_type(track):
-        # Send the type explicitly rather than letting the projection infer it
-        # from the device list. Inference gets an audio track with no devices
-        # wrong, and "is this MIDI or audio" is something Live knows for certain.
-        try:
-            if track.is_foldable:
-                return "group"
-            return "midi" if track.has_midi_input else "audio"
-        except Exception:  # noqa: BLE001 - return/master tracks lack these
-            return "audio"
-
     def _serialize_track(self, track, index):
-        return {
+        # Send the RAW Live flags the projection actually reads (is_foldable,
+        # has_midi_input) rather than a pre-computed type string.
+        #
+        # A pre-computed "track_type" was sent before and silently ignored:
+        # derive_track_type in schema_projection.rs consumes these two flags and
+        # has no branch for a type string. The result was every MIDI track
+        # holding an instrument being labelled Audio. Return and master tracks
+        # genuinely lack these attributes, so they are omitted rather than
+        # guessed — the projection types those from their position anyway.
+        payload = {
             "id": str(track._live_ptr),
             "name": track.name,
             "index": index,
-            "track_type": self._track_type(track),
             "devices": [self._serialize_device(d) for d in track.devices],
         }
+
+        if hasattr(track, "is_foldable"):
+            payload["is_foldable"] = bool(track.is_foldable)
+        if hasattr(track, "has_midi_input"):
+            payload["has_midi_input"] = bool(track.has_midi_input)
+
+        return payload
 
     def _send_snapshot(self):
         """Emit the whole-set snapshot the app projects its schema from.
@@ -443,34 +461,111 @@ class Recall(ControlSurface):
 
             key = id(parameter)
             current = parameter.value
-            previous = self._last_values.get(key, current)
-            self._last_values[key] = current
+            now = time.time()
 
-            self._emit(
-                "parameter_changed",
-                {
-                    # Track identity, without which the app cannot attribute a
-                    # move to a lane — the timeline read "37 moves, 0 tracks
-                    # touched" while every lane sat empty.
-                    "track_name": track.name,
-                    "track_id": str(track._live_ptr),
-                    "device_name": device.name,
-                    "parameter_name": parameter.name,
-                    "parameter_value": current,
-                    "previous_parameter_value": previous,
-                    "parameter_value_percent": self._percent(parameter, current),
-                    "previous_parameter_value_percent": self._percent(parameter, previous),
-                    # Raw and unthinned ON PURPOSE for the spike: the point is to
-                    # measure how dense a knob ride really is before deciding how
-                    # to thin it. The M4L gesture state machine ports here once
-                    # that number is known.
-                    "moves_seen": self._moves_seen,
-                },
-            )
+            gesture = self._gestures.get(key)
+
+            if gesture is None:
+                # New gesture. Its "from" value is the last settled value we
+                # know, not the current one — otherwise the opening sample of a
+                # sweep becomes the start and the move reads as smaller than it
+                # was.
+                gesture = {
+                    "track": track,
+                    "device": device,
+                    "parameter": parameter,
+                    "start": self._last_values.get(key, current),
+                    "min": current,
+                    "max": current,
+                }
+                self._gestures[key] = gesture
+
+            gesture["last"] = current
+            gesture["at"] = now
+            gesture["min"] = min(gesture["min"], current)
+            gesture["max"] = max(gesture["max"], current)
 
         return _on_value
 
+    def update_display(self):
+        """Live calls this about every 100ms — used here to settle gestures.
+
+        A gesture cannot be closed from inside the value callback: the last
+        sample of a sweep looks exactly like every other one, and the fact that
+        matters (where the knob LANDED) is only knowable once nothing has moved
+        for a while. Live already drives this method on the main thread, so it
+        settles gestures without a timer or a second thread.
+        """
+        super().update_display()
+        self._flush_settled_gestures()
+
+    def _flush_settled_gestures(self, force=False):
+        if not self._gestures:
+            return
+
+        now = time.time()
+
+        for key in list(self._gestures.keys()):
+            gesture = self._gestures[key]
+
+            if not force and (now - gesture["at"]) < GESTURE_SETTLE_SEC:
+                continue
+
+            del self._gestures[key]
+            self._emit_settled(key, gesture)
+
+    def _emit_settled(self, key, gesture):
+        parameter = gesture["parameter"]
+        track = gesture["track"]
+        device = gesture["device"]
+        start = gesture["start"]
+        landed = gesture["last"]
+
+        self._last_values[key] = landed
+
+        # A gesture that returns to where it started is not a change. Riding a
+        # filter up and back down leaves the set exactly as it was, and logging
+        # it as a move would fill the timeline with decisions nobody made.
+        if start == landed:
+            return
+
+        try:
+            name = parameter.name
+            device_name = device.name
+            track_name = track.name
+            track_id = str(track._live_ptr)
+        except Exception:  # noqa: BLE001 - device or track deleted mid-gesture
+            return
+
+        self._emit(
+            "parameter_changed",
+            {
+                # Track identity, without which the app cannot attribute a move
+                # to a lane — the timeline read "37 moves, 0 tracks touched"
+                # while every lane sat empty.
+                "track_name": track_name,
+                "track_id": track_id,
+                "device_name": device_name,
+                "parameter_name": name,
+                "parameter_value": landed,
+                "previous_parameter_value": start,
+                "parameter_value_percent": self._percent(parameter, landed),
+                "previous_parameter_value_percent": self._percent(parameter, start),
+                # How far the knob travelled on the way, which is not recoverable
+                # from before/after alone: sweeping to the top and settling back
+                # near the start is a different act from nudging it slightly.
+                "parameter_value_min": gesture["min"],
+                "parameter_value_max": gesture["max"],
+            },
+        )
+
     def _clear_parameter_listeners(self):
+        # Close any in-flight gesture BEFORE dropping its listeners. Switching
+        # tracks mid-ride would otherwise discard the move entirely — and the
+        # tweak you make right before clicking away is exactly the one worth
+        # remembering.
+        self._flush_settled_gestures(force=True)
+
         for parameter, listener in self._parameter_listeners:
             try:
                 if parameter.value_has_listener(listener):
@@ -530,6 +625,9 @@ class Recall(ControlSurface):
         except Exception:  # noqa: BLE001
             pass
 
+        # Flush before the final event, so a move made seconds before quitting
+        # still lands.
+        self._flush_settled_gestures(force=True)
         self._emit("bridge_stopped", {"moves_seen": self._moves_seen})
 
         # Give the sender a moment to flush bridge_stopped before tearing it

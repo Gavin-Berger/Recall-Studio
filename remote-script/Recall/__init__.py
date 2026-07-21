@@ -52,6 +52,10 @@ class Recall(ControlSurface):
         self._parameter_listeners = []
         self._observed_device = None
         self._observed_track = None
+        # paramId -> last value seen, so each move can report what it moved FROM.
+        # Live's listener callback carries no value and no previous value, so the
+        # before-side has to be remembered here.
+        self._last_values = {}
         self._moves_seen = 0
 
         with self.component_guard():
@@ -156,11 +160,24 @@ class Recall(ControlSurface):
             "parameters": parameters,
         }
 
+    @staticmethod
+    def _track_type(track):
+        # Send the type explicitly rather than letting the projection infer it
+        # from the device list. Inference gets an audio track with no devices
+        # wrong, and "is this MIDI or audio" is something Live knows for certain.
+        try:
+            if track.is_foldable:
+                return "group"
+            return "midi" if track.has_midi_input else "audio"
+        except Exception:  # noqa: BLE001 - return/master tracks lack these
+            return "audio"
+
     def _serialize_track(self, track, index):
         return {
             "id": str(track._live_ptr),
             "name": track.name,
             "index": index,
+            "track_type": self._track_type(track),
             "devices": [self._serialize_device(d) for d in track.devices],
         }
 
@@ -264,7 +281,11 @@ class Recall(ControlSurface):
         self._observed_device = device
 
         for parameter in device.parameters:
-            listener = self._make_parameter_listener(device, parameter)
+            # Seed the last-known value so the FIRST move reports a real
+            # before-value instead of inventing one. Without this the opening
+            # move of every gesture reads as "changed from nothing".
+            self._last_values[id(parameter)] = parameter.value
+            listener = self._make_parameter_listener(track, device, parameter)
             parameter.add_value_listener(listener)
             self._parameter_listeners.append((parameter, listener))
 
@@ -277,17 +298,45 @@ class Recall(ControlSurface):
             },
         )
 
-    def _make_parameter_listener(self, device, parameter):
+    @staticmethod
+    def _percent(parameter, value):
+        """Position within the parameter's range, 0-100.
+
+        The app displays moves as "before → after" percentages, so a raw value
+        alone is not enough: 0.66 means nothing without knowing the range it
+        sits in. Guards a zero-width range, which shows up on switches and
+        single-option choosers.
+        """
+        span = parameter.max - parameter.min
+        if span <= 0:
+            return None
+        return round(((value - parameter.min) / span) * 100.0, 2)
+
+    def _make_parameter_listener(self, track, device, parameter):
         # Closure per parameter: Live's listener callbacks take no arguments, so
         # identity has to be captured here rather than looked up on fire.
         def _on_value():
             self._moves_seen += 1
+
+            key = id(parameter)
+            current = parameter.value
+            previous = self._last_values.get(key, current)
+            self._last_values[key] = current
+
             self._emit(
                 "parameter_changed",
                 {
+                    # Track identity, without which the app cannot attribute a
+                    # move to a lane — the timeline read "37 moves, 0 tracks
+                    # touched" while every lane sat empty.
+                    "track_name": track.name,
+                    "track_id": str(track._live_ptr),
                     "device_name": device.name,
                     "parameter_name": parameter.name,
-                    "parameter_value": parameter.value,
+                    "parameter_value": current,
+                    "previous_parameter_value": previous,
+                    "parameter_value_percent": self._percent(parameter, current),
+                    "previous_parameter_value_percent": self._percent(parameter, previous),
                     # Raw and unthinned ON PURPOSE for the spike: the point is to
                     # measure how dense a knob ride really is before deciding how
                     # to thin it. The M4L gesture state machine ports here once
@@ -307,6 +356,27 @@ class Recall(ControlSurface):
                 pass
         self._parameter_listeners = []
         self._observed_device = None
+        # Drop remembered values with the listeners. Keeping them would let a
+        # stale before-value attach to a different device that happens to reuse
+        # the same object id.
+        self._last_values = {}
+
+    def refresh_state(self):
+        """Live calls this when the open SET changes, among other times.
+
+        Without it, opening an existing project after Live is already running
+        captures nothing: the script snapshots on load, so a set opened later
+        never gets described, and its pre-existing tracks and devices stay
+        invisible. The listeners are re-pointed too, since the previous song's
+        objects are gone and the old registrations are dead.
+        """
+        super().refresh_state()
+
+        with self.component_guard():
+            self._clear_parameter_listeners()
+            self._clear_devices_listener()
+            self._on_selection_changed()
+            self._send_snapshot()
 
     # ── teardown ───────────────────────────────────────────────────────────
 

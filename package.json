@@ -10,6 +10,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "deploy:bridge": "node scripts/deploy-bridge.mjs",
+    "deploy:remote": "node scripts/deploy-remote-script.mjs",
     "tauri": "tauri"
   },
   "dependencies": {

@@ -1,7 +1,8 @@
 // recall_m4l_bridge.js
 //
 // Recall Studio - Max for Live bridge
-// v0.20.1: selected/focused live capture; background structure scan debug-only.
+// v0.21.3: baseline captures every track's device chain, not just its count.
+// baseline the whole set on every start so Main/returns are always registered.
 //
 // Product goal:
 // Capture meaningful Ableton session activity without constantly transmitting
@@ -43,7 +44,7 @@ outlets = 2;
 var PROTOCOL = "recall.v2";
 var SOURCE = "max_for_live";
 var DEVICE_ID = "recall-m4l-bridge-dev";
-var BRIDGE_VERSION = "0.20.1";
+var BRIDGE_VERSION = "0.21.3";
 
 // Canonical v2 flat fields. emit() lifts any of these from its `fields` arg up
 // to the TOP LEVEL of the packet, because the Rust normalizer reads canonical
@@ -95,6 +96,16 @@ var captureFocus = true;
 // is coalesced into one settled event. Gated so [capture_parameter_moves 0]
 // disables only this, not the whole focus scan.
 var captureParameterMoves = true;
+// The Main (master) bus and the return tracks. ON by default, and deliberately
+// NOT folded into captureStructure: that scanner is off because guessing numeric
+// track indices ("live_set tracks 19") reads stale/wrong data in real sets, but
+// "live_set master_track" and "live_set return_tracks N" are stable singleton
+// paths that always resolve. Cost is a handful of name reads (no parameters), and
+// Main is where mixdown/mastering work happens, so it has to be captured even
+// when the producer never selects it. Main is also SEEDED once at session start
+// (see seed_bus_tracks) so it exists on the timeline from the first scan rather
+// than only appearing once someone touches it.
+var captureBuses = true;
 // Experimental/debug only. In real Ableton sets, numeric background paths like
 // "live_set tracks 19" are not reliable enough to treat as live capture unless
 // the producer selects that track. Keep normal Recall capture focused on the
@@ -385,6 +396,14 @@ function start_bridge() {
     // not stack on the same tick.
     schedule_structure_scan(STRUCTURE_INTERVAL_MS + 2000);
 
+    // Clear the dedupe fingerprints so this start re-seeds whatever database is
+    // live. Dedupe is right while the bridge keeps running, wrong across a
+    // restart: if the database was reset under a still-open project the
+    // fingerprint still matched and the fresh database never learned the set
+    // exists.
+    lastBaselinedFingerprint = null;
+    lastLiveSetFingerprint = null;
+
     if (AUTO_LIVE_SET_SNAPSHOT_INTERVAL_MS > 0) {
         liveSetTask.schedule(AUTO_LIVE_SET_SNAPSHOT_INTERVAL_MS);
     }
@@ -396,6 +415,24 @@ function start_bridge() {
     initialContextTask.schedule(INITIAL_CONTEXT_DELAY_MS);
     initialFocusTask.schedule(INITIAL_CONTEXT_DELAY_MS + INITIAL_STAGGER_MS);
     initialLiveSetTask.schedule(INITIAL_CONTEXT_DELAY_MS + INITIAL_STAGGER_MS * 2);
+
+    // Baseline the whole set on EVERY start, not just on first meeting a project.
+    //
+    // WHY THIS IS NOT REDUNDANT with the two paths above:
+    //   - initial_live_set_tick is gated on captureLiveSet, which is false by
+    //     default, so it normally does nothing.
+    //   - the automatic baseline is scheduled only from
+    //     send_project_context_if_changed, which returns early when the set
+    //     reports no project name or path (unsaved set, unreadable path).
+    // On a default-config bridge with a pathless set that left NOTHING sending
+    // the whole-set snapshot — and that snapshot is the only carrier of
+    // master_track / return_tracks, so Main never got registered as a track no
+    // matter how many devices were added to it.
+    //
+    // baseline_tick is deliberately NOT gated on captureLiveSet: it is the
+    // "seed the set once, regardless of config" path. Scheduled last in the
+    // stagger so the heaviest traversal lands after the cheaper scans.
+    baselineTask.schedule(INITIAL_CONTEXT_DELAY_MS + INITIAL_STAGGER_MS * 3);
 
     debug("bridge started");
 }
@@ -569,10 +606,16 @@ function collect_project_context() {
         };
     }
 
-    var rawName = value_to_string(get_prop(liveSet, "name", null));
-    var rawPath = value_to_string(get_prop(liveSet, "file_path", null));
-    var nameFromPath = project_name_from_path(rawPath);
-    var projectName = rawName || nameFromPath;
+    // An UNSAVED set has no name and no file on disk, and the LOM signals that by
+    // returning the number 0 rather than an empty string. value_to_string turns
+    // that into the literal "0", which is a truthy non-empty string, so it sails
+    // through every emptiness check downstream and gets stored as the project's
+    // real name — the UI then reads "Ableton: 0". Map the sentinel back to null
+    // here, at the only place that knows 0 means "absent" rather than a name.
+    var rawName = lom_text_or_null(get_prop(liveSet, "name", null));
+    var rawPath = lom_text_or_null(get_prop(liveSet, "file_path", null));
+    var nameFromPath = rawPath ? project_name_from_path(rawPath) : null;
+    var projectName = rawName || nameFromPath || null;
 
     return {
         available: true,
@@ -663,6 +706,19 @@ function focus_tick() {
         }
     }
 
+    // Buses ride the focus tick, NOT the structure scanner. See captureBuses:
+    // their paths are stable singletons, so they carry none of the numeric-path
+    // unreliability that keeps captureStructure off. Runs even when the playback
+    // throttle skips the selected-track scan above — it is a handful of name
+    // reads, and mastering moves happen while the track is playing.
+    if (captureBuses) {
+        try {
+            scan_bus_tracks();
+        } catch (error) {
+            debug("bus scan failed: " + error);
+        }
+    }
+
     focusTask.schedule(FOCUS_INTERVAL_MS);
 }
 
@@ -718,11 +774,9 @@ function scan_track_structure_batch() {
         return;
     }
 
-    // The master and return tracks live OUTSIDE the regular `live_set tracks`
-    // list, so the round-robin below never sees them. Scan them each tick so
-    // adding a plugin to the master (mixdown/mastering) or a return (send FX) is
-    // captured — there are only a handful of buses, so this is cheap.
-    scan_bus_tracks();
+    // NOTE: buses are NOT scanned here anymore. They moved to focus_tick under
+    // captureBuses, because this scanner is off by default and Main must be
+    // captured regardless of whether anyone enables it.
 
     var trackCount = get_count(liveSet, "tracks", 0);
 
@@ -959,6 +1013,26 @@ function value_to_string(value) {
     }
 
     return String(value);
+}
+
+// Read a LOM property that is EITHER text or Live's "nothing here" sentinel.
+//
+// Live returns the number 0 (not "", not null) for text properties that have no
+// value — an unsaved set's name and file_path being the case that bit us. Passed
+// through value_to_string that becomes "0": non-empty, truthy, and indistinguish-
+// able downstream from a set genuinely named "0". Anything reading a LOM string
+// that can be absent should come through here rather than value_to_string.
+//
+// Only the bare sentinel is rejected. A path or name that merely CONTAINS a zero
+// ("Track 0", "C:/sets/0.als") is real text and passes through untouched.
+function lom_text_or_null(value) {
+    var text = value_to_string(value);
+
+    if (text === null || text === "" || text === "0") {
+        return null;
+    }
+
+    return text;
 }
 
 function value_to_number(value, fallbackValue) {
@@ -1361,6 +1435,22 @@ function collect_track_summaries(limit) {
         var canBeArmed = value_to_bool(get_prop(track, "can_be_armed", 0));
         var isFoldable = value_to_bool(get_prop(track, "is_foldable", 0));
 
+        // The device CHAIN, not just the count. Without this the baseline
+        // registers a track and nothing on it, so a track the producer never
+        // happens to select reads as empty in Recall while Ableton plainly shows
+        // a Saturator on it — the set looks half-captured for no reason the
+        // producer can see.
+        //
+        // Safe to do here specifically because this is the once-per-start
+        // baseline: names only, capped at MAX_FOCUS_DEVICES per track, and NO
+        // parameter reads — parameters are the expensive, crash-prone path and
+        // stay confined to the focused device.
+        var deviceCount = get_count(track, "devices", 0);
+        var devices = collect_focus_devices_for_path(
+            "live_set tracks " + i,
+            Math.min(deviceCount, MAX_FOCUS_DEVICES)
+        );
+
         tracks.push({
             index: i,
             id: normalize_id(track.id),
@@ -1373,7 +1463,9 @@ function collect_track_summaries(limit) {
             arm: canBeArmed ? value_to_bool(get_prop(track, "arm", 0)) : false,
             is_foldable: isFoldable,
             fold_state: isFoldable ? get_prop(track, "fold_state", null) : null,
-            device_count: get_count(track, "devices", 0),
+            device_count: deviceCount,
+            device_chain: build_device_chain(devices),
+            devices: devices,
             clip_slot_count: get_count(track, "clip_slots", 0)
         });
     }
@@ -2975,6 +3067,7 @@ function safe_mode() {
     captureTransport = false;
     captureFocus = false;
     captureParameterMoves = false;
+    captureBuses = false;
     captureStructure = false;
     captureLiveSet = false;
     structureTask.cancel();
@@ -2985,6 +3078,7 @@ function full_capture() {
     captureTransport = true;
     captureFocus = true;
     captureParameterMoves = true;
+    captureBuses = true;
     captureStructure = true;
     captureLiveSet = true;
     schedule_structure_scan(STRUCTURE_INTERVAL_MS + 2000);
@@ -3014,6 +3108,11 @@ function recapture_set() {
     lastBaselinedFingerprint = null;
     baselineTask.cancel();
     baselineTask.schedule(200);
+}
+
+function capture_buses(value) {
+    captureBuses = Number(value) === 1;
+    debug("capture_buses = " + captureBuses);
 }
 
 function capture_structure(value) {

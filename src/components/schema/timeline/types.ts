@@ -6,6 +6,11 @@ export type LoadStatus = "idle" | "loading" | "ready" | "error";
 export type ExportFormat = "md" | "txt" | "json" | "pdf";
 
 export const LIVE_REFRESH_DEBOUNCE_MS = 700;
+// Backstop for a live session when event pushes go missing (a suspended webview
+// drops them silently). Deliberately slow: pushes drive normal updates, and this
+// only bounds how long a miss can persist. Every tick rematerializes the schema,
+// so tightening it puts real work on the backend for no gain.
+export const LIVE_SAFETY_POLL_MS = 15_000;
 export const LIVE_REFRESH_EVENT_TYPES = new Set([
   "parameter_changed",
   "device_parameter_changed",

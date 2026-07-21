@@ -38,6 +38,7 @@ import {
   formatPercent,
   formatTakeTitle,
   LIVE_REFRESH_DEBOUNCE_MS,
+  LIVE_SAFETY_POLL_MS,
   LIVE_REFRESH_EVENT_TYPES,
   moveValueNode,
   moveWhatNode,
@@ -149,10 +150,37 @@ export function SchemaTimeline({
       }
     });
 
+    // SAFETY NET: refresh on a slow interval regardless of pushes.
+    //
+    // The listener above is the fast path, but it is push-only, and a push that
+    // never arrives leaves the timeline frozen FOREVER while events keep
+    // persisting to disk. That is what happens when the OS suspends the webview
+    // — alt-tab into a fullscreen game for a while and come back to a timeline
+    // that stopped at the moment you left, even though capture never stopped.
+    //
+    // The interval is slow (LIVE_SAFETY_POLL_MS) because it exists to bound how
+    // long a miss can last, not to drive normal updates. Pushes still do that.
+    const safetyPoll = window.setInterval(() => {
+      void load(true, true);
+    }, LIVE_SAFETY_POLL_MS);
+
+    // Refresh the moment the window comes back. Suspension is exactly when
+    // pushes get dropped, and regaining focus is the strongest available signal
+    // that we were gone — it makes recovery feel instant rather than making the
+    // producer wait out the poll interval.
+    const onWake = () => {
+      if (document.visibilityState === "visible") void load(true, true);
+    };
+    window.addEventListener("focus", onWake);
+    document.addEventListener("visibilitychange", onWake);
+
     return () => {
       disposed = true;
       if (refreshTimer !== null) window.clearTimeout(refreshTimer);
       if (unlisten) unlisten();
+      window.clearInterval(safetyPoll);
+      window.removeEventListener("focus", onWake);
+      document.removeEventListener("visibilitychange", onWake);
     };
   }, [sessionId, session?.ended_at_ms, load]);
 

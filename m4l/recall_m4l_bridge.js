@@ -1,7 +1,8 @@
 // recall_m4l_bridge.js
 //
 // Recall Studio - Max for Live bridge
-// v0.21.3: baseline captures every track's device chain, not just its count.
+// v0.22.0: structural changes trigger a fresh whole-set snapshot, so tracks and
+// devices added mid-session actually reach the app.
 // baseline the whole set on every start so Main/returns are always registered.
 //
 // Product goal:
@@ -44,7 +45,7 @@ outlets = 2;
 var PROTOCOL = "recall.v2";
 var SOURCE = "max_for_live";
 var DEVICE_ID = "recall-m4l-bridge-dev";
-var BRIDGE_VERSION = "0.21.3";
+var BRIDGE_VERSION = "0.22.0";
 
 // Canonical v2 flat fields. emit() lifts any of these from its `fields` arg up
 // to the TOP LEVEL of the packet, because the Rust normalizer reads canonical
@@ -276,6 +277,7 @@ var initialContextTask = new Task(initial_context_tick, this);
 var initialFocusTask = new Task(initial_focus_tick, this);
 var initialLiveSetTask = new Task(initial_live_set_tick, this);
 var baselineTask = new Task(baseline_tick, this);
+var resnapshotTask = new Task(resnapshot_tick, this);
 
 function scheduler_tick_ready(kind, task) {
     var now = (new Date()).getTime();
@@ -384,6 +386,7 @@ function start_bridge() {
     initialContextTask.cancel();
     initialFocusTask.cancel();
     initialLiveSetTask.cancel();
+    resnapshotTask.cancel();
 
     heartbeatTask.schedule(HEARTBEAT_INTERVAL_MS);
     transportTask.schedule(TRANSPORT_INTERVAL_MS);
@@ -495,6 +498,49 @@ function initial_live_set_tick() {
 // Fire one whole-set snapshot off the scheduler thread (never inline on the
 // message that triggered it), isolated so a heavy traversal can't take Max
 // down. Shared by the automatic first-meet baseline and the manual recapture.
+// Events that mean the set's STRUCTURE changed, so the last whole-set snapshot
+// no longer describes reality. Parameter moves are deliberately absent: they
+// change values inside a structure the snapshot already has right, and they are
+// far too frequent to trigger a full-set walk.
+var STRUCTURE_RESNAPSHOT_EVENTS = {
+    track_created: true,
+    track_deleted: true,
+    track_name_changed: true,
+    device_added: true,
+    device_removed: true,
+    device_chain_changed: true
+};
+
+// Long enough to swallow the burst that one human action produces — adding a
+// track fires a creation, a rename, and its device adds within a second or two —
+// so the full-set walk runs ONCE at the end rather than per event.
+var STRUCTURE_RESNAPSHOT_DEBOUNCE_MS = 2500;
+
+function schedule_structure_resnapshot() {
+    if (!bridgeRunning) {
+        return;
+    }
+
+    resnapshotTask.cancel();
+    resnapshotTask.schedule(STRUCTURE_RESNAPSHOT_DEBOUNCE_MS);
+}
+
+function resnapshot_tick() {
+    if (!bridgeRunning) {
+        return;
+    }
+
+    try {
+        // Not gated on captureLiveSet: this is the mechanism that keeps the
+        // app's view of the set truthful, not an optional extra scan. It is
+        // still fingerprint-deduped inside, so a burst that nets out to no real
+        // change sends nothing.
+        send_live_set_snapshot_if_changed();
+    } catch (error) {
+        debug("structure resnapshot failed: " + error);
+    }
+}
+
 function baseline_tick() {
     if (!bridgeRunning) {
         return;
@@ -556,6 +602,7 @@ function stop_bridge() {
     initialContextTask.cancel();
     initialFocusTask.cancel();
     initialLiveSetTask.cancel();
+    resnapshotTask.cancel();
 
     emit("bridge_stopped", "Ableton Bridge Stopped", "The Max for Live bridge stopped sending telemetry.", {
         status: "stopped"
@@ -3280,6 +3327,25 @@ function emit(eventType, title, description, payload, fields) {
 
     outlet(0, json);
     outlet(1, "sent " + eventType + " #" + sequence + " (" + json.length + " bytes)");
+
+    // A structural change invalidates the whole-set snapshot, so schedule a new
+    // one.
+    //
+    // WHY THIS IS LOAD-BEARING: the app's schema is projected from the LATEST
+    // live_set_snapshot alone. track_created / device_added are recorded in the
+    // event log but never build tracks. So before this, adding a track mid-
+    // session left it invisible until the next bridge restart — and pressing
+    // "Rescan set" could not help, because it rematerializes from that same
+    // stale snapshot. Recall would sit there insisting the set had 12 tracks
+    // while Ableton plainly showed 13.
+    //
+    // Debounced (see schedule_structure_resnapshot) because these events arrive
+    // in bursts: adding one track fires track_created plus a rename plus the
+    // device adds, and each of those alone would otherwise trigger a full-set
+    // walk.
+    if (STRUCTURE_RESNAPSHOT_EVENTS[eventType] === true) {
+        schedule_structure_resnapshot();
+    }
 }
 
 function debug(message) {

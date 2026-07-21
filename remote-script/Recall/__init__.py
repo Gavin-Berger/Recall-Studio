@@ -21,7 +21,9 @@ from __future__ import annotations
 
 import json
 import logging
+import queue
 import socket
+import threading
 import time
 
 from ableton.v2.control_surface import ControlSurface
@@ -33,8 +35,24 @@ logger = logging.getLogger(__name__)
 # Must match the Rust listener in src-tauri/src/udp_listener.rs, which binds
 # 127.0.0.1:9000 and accepts "recall.v2".
 RECALL_HOST = "127.0.0.1"
-RECALL_PORT = 9000
+# TCP, not the bridge's UDP 9000. A whole-set snapshot of a large project exceeds
+# UDP's 65,507-byte datagram ceiling and is dropped entire, with no error the
+# producer can see. TCP has no size limit and confirms delivery.
+RECALL_PORT = 9001
 PROTOCOL = "recall.v2"
+
+# Bound on the outbound queue. If the app is not running, events pile up here and
+# nowhere else; past this they are dropped OLDEST-first, so a long session with no
+# listener cannot grow memory without limit. Sized for a dense knob ride
+# (~350 events/sec) to survive several seconds of backlog.
+SEND_QUEUE_MAX = 2048
+RECONNECT_DELAY_SEC = 2.0
+
+# Ceiling on listeners registered per device. A wavetable synth can expose
+# thousands of parameters; registering all of them on every selection change is
+# the one place this design could get expensive. The parameters a producer
+# actually rides live near the top of the list.
+MAX_PARAMS_PER_DEVICE = 128
 
 # Distinct from the bridge's "max_for_live" so events from the two capture tiers
 # are told apart in the database. The listener defaults source to max_for_live
@@ -48,8 +66,11 @@ class Recall(ControlSurface):
 
     def __init__(self, c_instance):
         super().__init__(c_instance)
-        self._socket = None
+        self._queue = None
+        self._thread = None
+        self._stop = None
         self._parameter_listeners = []
+        self._device_listeners = []
         self._observed_device = None
         self._observed_track = None
         # paramId -> last value seen, so each move can report what it moved FROM.
@@ -78,24 +99,77 @@ class Recall(ControlSurface):
 
         logger.info(
             "Recall Studio control surface {} loaded (socket={})".format(
-                SCRIPT_VERSION, self._socket is not None
+                SCRIPT_VERSION, self._queue is not None
             )
         )
 
     # ── transport ──────────────────────────────────────────────────────────
 
     def _open_socket(self):
-        # Fire-and-forget UDP, same posture as the M4L bridge: capture must never
-        # block Live's thread waiting on a reader that may not exist.
-        try:
-            self._socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            self._socket.setblocking(False)
-        except Exception as error:  # noqa: BLE001 - any failure here kills the spike
-            self._socket = None
-            logger.info("Recall Studio: socket creation FAILED: {}".format(error))
+        """Start the background sender.
+
+        WHY A THREAD AND A QUEUE, when UDP needed neither: UDP was
+        fire-and-forget — a sendto that could not complete simply failed and we
+        moved on. TCP connects, blocks, retries and can stall on a slow reader,
+        and ALL of that would happen on Live's thread, which is the thread that
+        must never wait. So _emit only ever puts a string on a queue, and a
+        daemon thread owns the socket, the connecting, and the reconnecting.
+        """
+        self._queue = queue.Queue(maxsize=SEND_QUEUE_MAX)
+        self._stop = threading.Event()
+        self._thread = threading.Thread(
+            target=self._sender_loop, name="RecallSender", daemon=True
+        )
+        self._thread.start()
+
+    def _sender_loop(self):
+        sock = None
+
+        while not self._stop.is_set():
+            try:
+                if sock is None:
+                    sock = socket.create_connection(
+                        (RECALL_HOST, RECALL_PORT), timeout=2.0
+                    )
+                    logger.info("Recall Studio: connected to app")
+
+                try:
+                    line = self._queue.get(timeout=0.5)
+                except queue.Empty:
+                    continue
+
+                sock.sendall(line)
+
+            except Exception:  # noqa: BLE001
+                # App closed, not started yet, or the connection dropped. None of
+                # these are errors from Live's point of view — the producer may
+                # simply not have opened Recall. Close, wait, and retry forever.
+                if sock is not None:
+                    try:
+                        sock.close()
+                    except Exception:  # noqa: BLE001
+                        pass
+                    sock = None
+
+                self._stop.wait(RECONNECT_DELAY_SEC)
+
+        # Flush whatever is still queued before closing. disconnect() emits
+        # bridge_stopped and then immediately signals stop, so without this drain
+        # the last event of every session would be the one guaranteed to be lost.
+        if sock is not None:
+            try:
+                while True:
+                    sock.sendall(self._queue.get_nowait())
+            except Exception:  # noqa: BLE001 - empty queue or dead socket, both fine
+                pass
+
+            try:
+                sock.close()
+            except Exception:  # noqa: BLE001
+                pass
 
     def _emit(self, event_type, payload=None):
-        if self._socket is None:
+        if self._queue is None:
             return
 
         event = {
@@ -107,12 +181,25 @@ class Recall(ControlSurface):
         }
 
         try:
-            self._socket.sendto(
-                json.dumps(event).encode("utf-8"), (RECALL_HOST, RECALL_PORT)
-            )
+            # Newline-delimited JSON: TCP is a stream with no message boundaries,
+            # so the receiver splits on newlines. Safe because json.dumps escapes
+            # any newline inside a string value.
+            line = (json.dumps(event) + "\n").encode("utf-8")
         except Exception as error:  # noqa: BLE001
-            # Never let a send failure surface into Live.
-            logger.info("Recall Studio: send failed ({}): {}".format(event_type, error))
+            logger.info("Recall Studio: serialize failed ({}): {}".format(event_type, error))
+            return
+
+        try:
+            self._queue.put_nowait(line)
+        except queue.Full:
+            # Drop the OLDEST event, not this one. A full queue means nothing is
+            # reading, and in that state the most recent state of the set is far
+            # more useful than the start of a backlog nobody consumed.
+            try:
+                self._queue.get_nowait()
+                self._queue.put_nowait(line)
+            except Exception:  # noqa: BLE001
+                pass
 
     # ── the actual experiment ──────────────────────────────────────────────
 
@@ -209,6 +296,7 @@ class Recall(ControlSurface):
     def _on_tempo_changed(self):
         self._emit("tempo_changed", {"bpm": self.song.tempo})
 
+
     def _on_tracks_changed(self):
         self._emit(
             "track_list_changed",
@@ -277,26 +365,61 @@ class Recall(ControlSurface):
             )
             return
 
-        device = track.devices[0]
-        self._observed_device = device
+        # EVERY device on the track, not just devices[0].
+        #
+        # Watching only the first device meant a tweak to the second plugin in a
+        # chain vanished — and producers work down a chain, not on slot one. The
+        # scope that matters for safety is the TRACK (never the whole set), so
+        # widening within the selected track costs listener registrations and no
+        # traversal.
+        parameter_count = 0
 
-        for parameter in device.parameters:
-            # Seed the last-known value so the FIRST move reports a real
-            # before-value instead of inventing one. Without this the opening
-            # move of every gesture reads as "changed from nothing".
-            self._last_values[id(parameter)] = parameter.value
-            listener = self._make_parameter_listener(track, device, parameter)
-            parameter.add_value_listener(listener)
-            self._parameter_listeners.append((parameter, listener))
+        for device in track.devices:
+            # Skip parameter-less devices and guard racks, whose parameter lists
+            # can be enormous; MAX_PARAMS_PER_DEVICE keeps one Serum from
+            # registering thousands of listeners in a single pass.
+            for parameter in device.parameters[:MAX_PARAMS_PER_DEVICE]:
+                # Seed the last-known value so the FIRST move reports a real
+                # before-value instead of inventing one. Without this the opening
+                # move of every gesture reads as "changed from nothing".
+                self._last_values[id(parameter)] = parameter.value
+                listener = self._make_parameter_listener(track, device, parameter)
+                parameter.add_value_listener(listener)
+                self._parameter_listeners.append((parameter, listener))
+                parameter_count += 1
+
+            # Device on/off. Bypassing a plugin is a real production decision and
+            # was previously invisible.
+            toggle = self._make_device_toggle_listener(track, device)
+            device.add_is_active_listener(toggle)
+            self._device_listeners.append((device, toggle))
+
+        self._observed_device = track.devices[0]
 
         self._emit(
             "focus_changed",
             {
                 "track_name": track.name,
-                "device_name": device.name,
-                "parameter_count": len(device.parameters),
+                "device_name": track.devices[0].name,
+                "device_count": len(track.devices),
+                "device_chain": [d.name for d in track.devices],
+                "parameter_count": parameter_count,
             },
         )
+
+    def _make_device_toggle_listener(self, track, device):
+        def _on_toggle():
+            self._emit(
+                "device_toggled",
+                {
+                    "track_name": track.name,
+                    "track_id": str(track._live_ptr),
+                    "device_name": device.name,
+                    "is_active": bool(device.is_active),
+                },
+            )
+
+        return _on_toggle
 
     @staticmethod
     def _percent(parameter, value):
@@ -354,7 +477,15 @@ class Recall(ControlSurface):
                     parameter.remove_value_listener(listener)
             except Exception:  # noqa: BLE001 - device may already be gone
                 pass
+        for device, listener in self._device_listeners:
+            try:
+                if device.is_active_has_listener(listener):
+                    device.remove_is_active_listener(listener)
+            except Exception:  # noqa: BLE001 - device may already be gone
+                pass
+
         self._parameter_listeners = []
+        self._device_listeners = []
         self._observed_device = None
         # Drop remembered values with the listeners. Keeping them would let a
         # stale before-value attach to a different device that happens to reuse
@@ -401,12 +532,16 @@ class Recall(ControlSurface):
 
         self._emit("bridge_stopped", {"moves_seen": self._moves_seen})
 
-        if self._socket is not None:
-            try:
-                self._socket.close()
-            except Exception:  # noqa: BLE001
-                pass
-            self._socket = None
+        # Give the sender a moment to flush bridge_stopped before tearing it
+        # down, but never block Live's quit on it — a daemon thread dies with the
+        # process regardless, so the join is a courtesy with a hard ceiling.
+        if self._stop is not None:
+            self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=1.0)
+
+        self._queue = None
+        self._thread = None
 
         super().disconnect()
 

@@ -10,7 +10,8 @@ use serde_json::{json, Map, Value};
 use socket2::{Domain, Protocol, Socket, Type};
 use std::{
     collections::HashMap,
-    net::{SocketAddr, UdpSocket},
+    io::{BufRead, BufReader},
+    net::{SocketAddr, TcpListener, UdpSocket},
     panic::{catch_unwind, AssertUnwindSafe},
     sync::{
         mpsc::{sync_channel, SyncSender, TrySendError},
@@ -22,6 +23,10 @@ use std::{
 use tauri::{AppHandle, Emitter};
 
 const VERBOSE_UDP_LOGGING: bool = false;
+
+// Separate port from the UDP listener's 9000, so both transports can run at
+// once and a client picks its transport by which port it connects to.
+const TCP_LISTEN_ADDR: &str = "127.0.0.1:9001";
 
 // Receive buffer must exceed the bridge's MAX_EVENT_BYTES (8192) so a large but
 // legal snapshot is never truncated mid-JSON into an unparseable packet.
@@ -905,6 +910,26 @@ pub fn start_udp_listener(
         });
     }
 
+    // TCP receive loop, running ALONGSIDE the UDP one below.
+    //
+    // WHY BOTH: UDP caps a datagram at 65,507 bytes, and a whole-set snapshot of
+    // a large project — several plugins, hundreds of parameters each — exceeds
+    // that and is dropped whole with no error the producer can see. TCP has no
+    // size limit and guarantees delivery. The Max for Live bridge still speaks
+    // UDP, so removing it would break the working capture path; the two
+    // transports feed the SAME process_packet, so nothing downstream knows or
+    // cares which one an event arrived on.
+    {
+        let state = state.clone();
+        let session = session.clone();
+        let sender = sender.clone();
+        let metrics = metrics.clone();
+
+        thread::spawn(move || {
+            run_tcp_listener(state, session, sender, metrics);
+        });
+    }
+
     // UDP receive loop — parse, normalize, classify, enqueue. No SQLite, no emit.
     thread::spawn(move || {
         let socket = match bind_listener_socket(&metrics) {
@@ -1006,6 +1031,103 @@ pub fn start_udp_listener(
 
 // Everything done with one datagram. Split out of the receive loop so it can be
 // wrapped in catch_unwind — a panic here costs one packet, not the session.
+// Accept control-surface connections and read newline-delimited JSON.
+//
+// FRAMING: one JSON event per line. TCP is a stream with no message boundaries,
+// so something has to mark where an event ends. Newlines are the cheapest option
+// that both sides can implement without a length-prefix protocol, and they are
+// safe here because serialized JSON never contains a raw newline — serde and
+// Python's json module both escape them inside strings.
+//
+// Connections are handled one at a time on purpose: there is exactly one capture
+// client, and accepting concurrently would add threads for a case that does not
+// exist. A dropped connection simply loops back to accept, so restarting Live
+// reconnects without restarting the app.
+fn run_tcp_listener(
+    state: Arc<Mutex<ConnectionState>>,
+    session: Arc<Mutex<SessionState>>,
+    sender: SyncSender<RecallEvent>,
+    metrics: Arc<BridgeMetrics>,
+) {
+    let listener = match TcpListener::bind(TCP_LISTEN_ADDR) {
+        Ok(listener) => listener,
+        Err(error) => {
+            // Same reasoning as the UDP bind failure: never panic. A dead
+            // capture thread with a healthy-looking window is this app's worst
+            // failure — the producer records nothing and finds out hours later.
+            eprintln!(
+                "Recall Studio TCP listener FAILED TO START on {} -> {}",
+                TCP_LISTEN_ADDR, error
+            );
+            metrics.set_last_error(format!("TCP listener failed to bind: {}", error));
+            return;
+        }
+    };
+
+    println!("Recall Studio TCP listener running on {}", TCP_LISTEN_ADDR);
+
+    for incoming in listener.incoming() {
+        let stream = match incoming {
+            Ok(stream) => stream,
+            Err(error) => {
+                metrics.set_last_error(format!("TCP accept failed: {}", error));
+                continue;
+            }
+        };
+
+        let addr = stream
+            .peer_addr()
+            .unwrap_or_else(|_| SocketAddr::from(([127, 0, 0, 1], 0)));
+
+        println!("Recall Studio: capture client connected from {}", addr);
+
+        let reader = BufReader::new(stream);
+        let mut sequence_tracker = SequenceTracker::default();
+
+        for line in reader.lines() {
+            let line = match line {
+                Ok(line) => line,
+                Err(error) => {
+                    // Client vanished mid-stream (Live quit, script reloaded).
+                    // Expected, not exceptional — go back to accepting.
+                    println!("Recall Studio: capture client read ended ({})", error);
+                    break;
+                }
+            };
+
+            if line.trim().is_empty() {
+                continue;
+            }
+
+            metrics.incr_packets_received();
+
+            // Per-event panic isolation, for the same reason the UDP loop has it:
+            // one unanticipated payload shape must not end capture for the
+            // session.
+            let outcome = catch_unwind(AssertUnwindSafe(|| {
+                process_packet(
+                    line.as_bytes(),
+                    addr,
+                    &mut sequence_tracker,
+                    &state,
+                    &session,
+                    &sender,
+                    &metrics,
+                )
+            }));
+
+            if outcome.is_err() {
+                metrics.incr_panics_recovered();
+                metrics.set_last_error(
+                    "panicked while processing a TCP event — skipped it and kept capturing",
+                );
+            }
+        }
+
+        println!("Recall Studio: capture client disconnected ({})", addr);
+    }
+}
+
 fn process_packet(
     bytes: &[u8],
     addr: SocketAddr,

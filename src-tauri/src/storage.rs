@@ -59,7 +59,21 @@ fn now_ms() -> u64 {
 }
 
 fn clean_optional(value: Option<&str>) -> Option<&str> {
-    value.map(str::trim).filter(|value| !value.is_empty())
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        // "0" is Ableton's absent-value sentinel, not a name. The LOM returns the
+        // number 0 for the name and file_path of an unsaved set; anything that
+        // stringifies that on the way here produces a truthy "0" that otherwise
+        // flows all the way to the UI as the project's name. The bridge strips it
+        // at the source (lom_text_or_null), but this is the last gate before the
+        // value is persisted, and a stored "0" is very hard to notice and outlives
+        // the session that wrote it.
+        //
+        // A set genuinely saved as "0.als" is the accepted cost: it would be
+        // treated as unnamed. That trade is deliberate — the false negative is one
+        // odd filename, the false positive is every unsaved set in the product.
+        .filter(|value| *value != "0")
 }
 
 fn project_name_from_path(path: &str) -> Option<String> {

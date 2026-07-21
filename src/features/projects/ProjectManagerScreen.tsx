@@ -7,7 +7,7 @@ import {
 } from "react";
 import { RecallMark } from "../../components/RecallMark";
 import { BridgeSetup } from "../home/BridgeSetup";
-import { formatSessionDate, formatSessionDuration } from "../sessionFormat";
+import { abletonSetName, describeBridgeSet, formatSessionDate, formatSessionDuration } from "../sessionFormat";
 import { RelinkDialog, type AlsFileChoice } from "./RelinkDialog";
 import { detectTakeMismatch } from "./takeMismatch";
 import type { ConnectionStatus, SavedProject, SavedSessionMetadata } from "../../types/recall";
@@ -82,7 +82,8 @@ export function ProjectManagerScreen({
 
   const isBusy = busyLabel !== null || loading;
   const activeSessionId = activeSession?.id ?? null;
-  const activeAbletonName = activeSession?.project_name ?? null;
+  const activeAbletonName = abletonSetName(activeSession ?? null);
+  const bridgeSet = describeBridgeSet(connection.connected, activeSession ?? null);
   const takeMismatch = useMemo(
     () => detectTakeMismatch(activeSession, projects),
     [activeSession, projects],
@@ -161,15 +162,12 @@ export function ProjectManagerScreen({
           </div>
         </div>
 
-        <div className={`home-connection ${connection.connected ? "home-connection--live" : "home-connection--off"}`}>
+        <div
+          className={`home-connection ${connection.connected ? "home-connection--live" : "home-connection--off"}`}
+          title={bridgeSet.hint ?? undefined}
+        >
           <span className="home-connection__dot" />
-          <span>
-            {connection.connected
-              ? activeAbletonName
-                ? `Ableton: ${activeAbletonName}`
-                : "Ableton connected"
-              : "Listening for Ableton…"}
-          </span>
+          <span>{bridgeSet.text}</span>
         </div>
       </header>
 

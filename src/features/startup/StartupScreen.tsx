@@ -10,6 +10,8 @@ type StartupScreenProps = {
   momentCount: number;
   recordingCount: number;
   activeAbletonName: string | null;
+  /** A scan has landed. Distinguishes an unsaved set from one we haven't heard about yet. */
+  hasActiveSession: boolean;
   onProducerNameChange: (name: string) => void;
   onEnter: () => void;
 };
@@ -23,6 +25,7 @@ export function StartupScreen({
   momentCount,
   recordingCount,
   activeAbletonName,
+  hasActiveSession,
   onProducerNameChange,
   onEnter,
 }: StartupScreenProps) {
@@ -83,13 +86,22 @@ export function StartupScreen({
               Enter Project Desk
             </button>
 
-            <div className={`startup-bridge ${connected ? "is-connected" : ""}`}>
+            <div
+              className={`startup-bridge ${connected ? "is-connected" : ""}`}
+              title={
+                connected && !activeAbletonName && hasActiveSession
+                  ? "Save the set so Recall can track versions of it."
+                  : undefined
+              }
+            >
               <span className="startup-bridge__dot" aria-hidden="true" />
               <span>
                 {connected
                   ? activeAbletonName
                     ? `Ableton connected: ${activeAbletonName}`
-                    : "Ableton bridge connected"
+                    : hasActiveSession
+                      ? "Ableton · unsaved set"
+                      : "Ableton bridge connected"
                   : "Ableton bridge waiting"}
               </span>
             </div>

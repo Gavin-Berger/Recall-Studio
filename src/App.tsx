@@ -16,6 +16,7 @@ import {
   StartupScreen,
 } from "./features";
 import { ReportDialog } from "./features/diagnostics/ReportDialog";
+import { abletonSetName } from "./features/sessionFormat";
 import type { ConnectionStatus, SavedProject, SavedSessionMetadata, SessionStatus } from "./types";
 
 const BACKEND_CONNECTION_COMMAND = "get_connection_status";
@@ -334,7 +335,8 @@ function App() {
         takeCount={savedSessions.length}
         momentCount={totalMoments}
         recordingCount={activeSession ? 1 : 0}
-        activeAbletonName={activeSession?.project_name ?? null}
+        activeAbletonName={abletonSetName(activeSession ?? null)}
+        hasActiveSession={activeSession !== null}
         onProducerNameChange={handleProducerNameChange}
         onEnter={() => setEnteredStudio(true)}
       />

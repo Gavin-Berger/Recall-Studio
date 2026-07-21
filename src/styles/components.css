@@ -6013,3 +6013,11 @@
   font-size: 0.79rem;
   line-height: 1.45;
 }
+
+/* Unsaved-set state for the connection chip.
+
+   Deliberately NO styling of its own. The chip keeps its single-line shape and
+   its sage/live treatment — the bridge genuinely is connected, and an unsaved
+   set is a normal condition, so neither a warning color nor extra height is
+   honest here. The state is carried by the label ("Ableton · unsaved set") and
+   the guidance lives in the title tooltip. */

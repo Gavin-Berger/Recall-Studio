@@ -239,10 +239,15 @@ export function SchemaTimeline({
     return out;
   }, [changes, moments, lookups]);
 
-  const lanes = useMemo(
-    () => tracks.map((track) => ({ track, items: activities.filter((a) => a.trackId === track.id) })),
-    [tracks, activities],
-  );
+  // Buses sink to the bottom, Main last of all — the order Ableton's own mixer
+  // uses, so it reads as a fixture rather than as a track that happened to sort
+  // there. Regular tracks keep their existing number order above them.
+  const lanes = useMemo(() => {
+    const rank = (type: string) => (type === "master" ? 2 : type === "return" ? 1 : 0);
+    return [...tracks]
+      .sort((a, b) => rank(a.type) - rank(b.type))
+      .map((track) => ({ track, items: activities.filter((a) => a.trackId === track.id) }));
+  }, [tracks, activities]);
 
   // Shared y-scale for the per-lane activity graphs: the busiest channel peaks
   // at the top, so taller curve = more changes. Sorted move timestamps per lane
@@ -900,13 +905,17 @@ export function SchemaTimeline({
                   <button
                     key={lane.track.id}
                     type="button"
-                    className={`tl-hdr ${lane.track.id === selectedTrackId ? "is-sel" : ""}`}
+                    className={`tl-hdr ${lane.track.id === selectedTrackId ? "is-sel" : ""} ${
+                      lane.track.type === "master" ? "is-main" : lane.track.type === "return" ? "is-bus" : ""
+                    }`}
                     style={{ ["--lane-color" as string]: color }}
                     onClick={() => setSelectedTrackId(lane.track.id)}
                     title={`${lane.track.name ?? "Untitled track"} — ${moveCount} move${moveCount === 1 ? "" : "s"}`}
                   >
                     <span className="tl-hdr__sw" style={{ background: color }} />
-                    <span className="tl-hdr__name">{lane.track.name ?? "Untitled track"}</span>
+                    <span className="tl-hdr__name">
+                      {lane.track.type === "master" ? "Main" : lane.track.name ?? "Untitled track"}
+                    </span>
                     {moveCount > 0 && <span className="tl-hdr__count">{moveCount}</span>}
                   </button>
                 );
@@ -929,7 +938,9 @@ export function SchemaTimeline({
                   <button
                     key={lane.track.id}
                     type="button"
-                    className={`tl-lane ${lane.track.id === selectedTrackId ? "is-sel" : ""}`}
+                    className={`tl-lane ${lane.track.id === selectedTrackId ? "is-sel" : ""} ${
+                      lane.track.type === "master" ? "is-main" : lane.track.type === "return" ? "is-bus" : ""
+                    }`}
                     onClick={() => setSelectedTrackId(lane.track.id)}
                     aria-label={`${lane.track.name ?? "Untitled track"} — ${moveCount} moves`}
                   >

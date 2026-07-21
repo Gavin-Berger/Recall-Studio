@@ -1459,3 +1459,43 @@
   border: 1px dashed rgba(255, 255, 255, 0.16);
   background: rgba(255, 255, 255, 0.012);
 }
+
+/* ---------------------------------------------------------------
+   Bus lanes (returns + Main)
+
+   Main is a permanent fixture of every Ableton set, not a track that
+   happens to exist, so it reads as one: pinned to the bottom in mixer
+   order and fenced off from the numbered tracks by a rule.
+
+   The distinction is STRUCTURAL, not chromatic. Master already carries
+   its own entity color (#9aa3c4) as a type signal, and DESIGN.md forbids
+   recoloring for emphasis — so separation, weight, and letter-spacing do
+   the work here instead of a brighter hue.
+   --------------------------------------------------------------- */
+
+.tl-hdr.is-bus,
+.tl-lane.is-bus {
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+/* Main sits below the returns and gets the heavier rule: everything above
+   it feeds into it, which is exactly what the divider should say. */
+.tl-hdr.is-main,
+.tl-lane.is-main {
+  border-top: 1px solid rgba(255, 255, 255, 0.14);
+}
+
+.tl-hdr.is-main {
+  background: rgba(255, 255, 255, 0.022);
+}
+
+.tl-hdr.is-main .tl-hdr__name {
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  font-size: 0.74rem;
+}
+
+.tl-lane.is-main {
+  background: rgba(255, 255, 255, 0.014);
+}

@@ -25,7 +25,16 @@ export const LIVE_REFRESH_EVENT_TYPES = new Set([
 export type LiveRecallEvent = {
   session_id?: string | null;
   event_type?: string | null;
+  // Which capture tier sent it: "max_for_live" or "control_surface". Shown in the
+  // bridge log so the two can be told apart while both exist.
+  source?: string | null;
+  timestamp_ms?: number | null;
 };
+
+// How many recent events the bridge log keeps. Small on purpose: it answers
+// "is anything arriving, and from where", not "what happened this session" —
+// the timeline itself is the record.
+export const BRIDGE_LOG_LIMIT = 20;
 
 // One thing that happened on a track this take — a knob move or a note.
 export type Activity = {

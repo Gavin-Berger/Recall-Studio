@@ -1499,3 +1499,69 @@
 .tl-lane.is-main {
   background: rgba(255, 255, 255, 0.014);
 }
+
+/* Bridge log — a diagnostic readout, not a product surface. Collapsed by
+   default and visually quiet so it never competes with the timeline. Exists
+   because two capture tiers (M4L and the Python control surface) currently
+   both feed the app, and "is anything arriving, and from which" was otherwise
+   only answerable by querying SQLite by hand. */
+.tl-blog {
+  margin-top: 18px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  padding-top: 10px;
+}
+
+.tl-blog__toggle {
+  border: 0;
+  background: transparent;
+  color: var(--faint-aa);
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  cursor: pointer;
+  padding: 2px 0;
+}
+
+.tl-blog__toggle:hover {
+  color: var(--muted);
+}
+
+.tl-blog__list {
+  margin-top: 8px;
+  max-height: 200px;
+  overflow-y: auto;
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+}
+
+.tl-blog__row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 3px 0;
+  color: var(--muted);
+}
+
+.tl-blog__time {
+  color: var(--faint-aa);
+  min-width: 74px;
+}
+
+/* Tier tag. The Python surface is marked so the two are distinguishable at a
+   glance while both exist; neither is styled as "better". */
+.tl-blog__src {
+  min-width: 30px;
+  font-weight: 700;
+  color: var(--faint-aa);
+}
+
+.tl-blog__src.is-py {
+  color: var(--sage);
+}
+
+.tl-blog__empty {
+  color: var(--faint-aa);
+  font-size: 0.72rem;
+  padding: 4px 0;
+}

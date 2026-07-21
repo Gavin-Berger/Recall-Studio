@@ -37,6 +37,7 @@ import {
   formatMoveValue,
   formatPercent,
   formatTakeTitle,
+  BRIDGE_LOG_LIMIT,
   LIVE_REFRESH_DEBOUNCE_MS,
   LIVE_SAFETY_POLL_MS,
   LIVE_REFRESH_EVENT_TYPES,
@@ -70,6 +71,11 @@ export function SchemaTimeline({
   const [selectedTrackId, setSelectedTrackId] = useState<string | null>(null);
   const [noteDraft, setNoteDraft] = useState("");
   const [noteStar, setNoteStar] = useState(false);
+  // Rolling tail of raw events, newest first — a "is capture actually arriving,
+  // and from which tier" readout while the M4L bridge and the Python control
+  // surface both exist.
+  const [bridgeLog, setBridgeLog] = useState<LiveRecallEvent[]>([]);
+  const [bridgeLogOpen, setBridgeLogOpen] = useState(false);
   // Group ids the user expanded to see each move inside a collapsed run.
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
   // Highlight ids the user has kept/flagged this session, for instant card feedback.
@@ -135,6 +141,13 @@ export function SchemaTimeline({
     // strictly cheaper — one crossing, one debounce, same outcome.
     void listen<LiveRecallEvent[]>("recall-events", (event) => {
       const incoming = event.payload;
+
+      // Log EVERY event, not just refresh-triggering ones. The log's job is to
+      // show that traffic is arriving at all — filtering it to the types that
+      // happen to redraw the timeline would hide exactly the case you open it
+      // for (something is being sent, but nothing appears).
+      setBridgeLog((current) => [...incoming].reverse().concat(current).slice(0, BRIDGE_LOG_LIMIT));
+
       const relevant = incoming.some(
         (item) =>
           item.session_id === sessionId &&
@@ -1305,8 +1318,51 @@ export function SchemaTimeline({
               <p className="tl-recap__text">{sessionStory.join(" ")}</p>
             </div>
           )}
+
         </>
       )}
+
+      {/* Outside the hasMap branch on purpose: the log is most useful when the
+          timeline is EMPTY and you need to know whether anything is arriving at
+          all. Hiding it behind a populated map hides it exactly when it matters. */}
+      <div className="tl-blog">
+        <button
+          type="button"
+          className="tl-blog__toggle"
+          onClick={() => setBridgeLogOpen((open) => !open)}
+          aria-expanded={bridgeLogOpen}
+        >
+          Bridge log {bridgeLog.length > 0 && `(${bridgeLog.length})`}
+        </button>
+
+        {bridgeLogOpen && (
+          <div className="tl-blog__list">
+            {bridgeLog.length === 0 ? (
+              <div className="tl-blog__empty">
+                Nothing received yet. Events appear here as Ableton sends them.
+              </div>
+            ) : (
+              bridgeLog.map((entry, index) => (
+                <div className="tl-blog__row" key={`${entry.timestamp_ms ?? 0}-${index}`}>
+                  <span className="tl-blog__time">
+                    {entry.timestamp_ms
+                      ? new Date(entry.timestamp_ms).toLocaleTimeString()
+                      : "—"}
+                  </span>
+                  <span
+                    className={`tl-blog__src ${
+                      entry.source === "control_surface" ? "is-py" : ""
+                    }`}
+                  >
+                    {entry.source === "control_surface" ? "PY" : "M4L"}
+                  </span>
+                  <span className="tl-blog__type">{entry.event_type ?? "unknown"}</span>
+                </div>
+              ))
+            )}
+          </div>
+        )}
+      </div>
     </div>
   );
 }

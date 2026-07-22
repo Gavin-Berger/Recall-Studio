@@ -1395,6 +1395,7 @@ pub fn run() {
         last_message: None,
         bridge_version: None,
         open_als_path: None,
+        session_als_path: None,
     }));
 
     let recent_events = Arc::new(Mutex::new(Vec::<RecallEvent>::new()));

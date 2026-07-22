@@ -79,6 +79,12 @@ pub struct ConnectionState {
     // rides on incoming events. This is how "open a project" knows which version's
     // take to resume — see open_take_for_open_file.
     pub open_als_path: Option<String>,
+    // The `.als` the CURRENTLY ACTIVE session is anchored to. Compared against
+    // open_als_path on every event to detect that the producer switched projects
+    // in Ableton — the trigger for auto-rotating the session so one project's
+    // capture never lands in, or overwrites, another's. None until the first
+    // saved set is seen.
+    pub session_als_path: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -557,6 +563,107 @@ fn update_open_file(normalized_json: &Value, state: &Arc<Mutex<ConnectionState>>
     }
 }
 
+// Auto-rotate the active session when Ableton switches to a different project.
+//
+// THE BUG THIS FIXES: one session was created at app start and stayed active
+// forever, so opening a second project streamed its snapshot into the FIRST
+// project's session — overwriting its tracks. Capture from two songs collided in
+// one take and the earlier one was lost.
+//
+// This reuses the exact rotation the manual "open take" command already performs
+// (stop + persist the old take, resume-or-create the take anchored to the open
+// file, clear the live buffer). The only new thing is the trigger: comparing the
+// open `.als` against what the active session is anchored to, on the receive
+// thread, BEFORE the event is assigned to a session — so the event lands on the
+// correct take, not the one that was active a moment ago.
+//
+// Because materialize_session_schema is scoped by session_id, separated sessions
+// mean nothing is overwritten: the previous project's take keeps everything, and
+// reopening it later resumes it intact.
+//
+// LOCK DISCIPLINE: every lock here is acquired and released before the next is
+// taken — never nested — matching open_take_for_open_file. Nesting storage
+// inside session (or the reverse) is the one way this could deadlock against the
+// persistence worker, so it is deliberately avoided.
+//
+// Unsaved sets have no `.als` path and do not rotate: they stay on the current
+// session. Anchoring an unsaved set is a separate, unsolved problem (a set with
+// no file has nothing stable to key on).
+fn rotate_session_if_project_changed(
+    state: &Arc<Mutex<ConnectionState>>,
+    session: &Arc<Mutex<SessionState>>,
+    storage: &Arc<Mutex<StorageState>>,
+    events: &Arc<Mutex<Vec<RecallEvent>>>,
+    metrics: &Arc<BridgeMetrics>,
+) {
+    // Cheap guard on the hot path: only proceed when the open file differs from
+    // what the active session covers. One short connection lock, string compare.
+    let open_als = {
+        let connection = state.lock().expect("Connection state lock failed");
+        match &connection.open_als_path {
+            Some(open) if connection.session_als_path.as_deref() != Some(open.as_str()) => {
+                open.clone()
+            }
+            _ => return,
+        }
+    };
+
+    // Stop + persist whatever take was active, so its data is preserved rather
+    // than bled into the next one.
+    let previous_status = {
+        let mut session = session.lock().expect("Session state lock failed");
+        session.stop()
+    };
+
+    // Storage work in its own scope, released before the session lock below.
+    let activated = {
+        let storage = storage.lock().expect("Storage state lock failed");
+        if previous_status.session_id.is_some() {
+            if let Err(error) = storage.save_session_stopped(&previous_status) {
+                eprintln!("AUTO-ROTATE: failed to persist previous take -> {}", error);
+                metrics.set_last_error(error);
+            }
+        }
+        // project_id is None: an auto-captured take is not yet filed under a
+        // user-created project. The producer can assign it later in the UI.
+        storage.activate_take_for_open_file(None, Some(&open_als))
+    };
+
+    let status = match activated {
+        Ok(status) => status,
+        Err(error) => {
+            eprintln!("AUTO-ROTATE: failed to activate take for open file -> {}", error);
+            metrics.set_last_error(error);
+            return;
+        }
+    };
+
+    // Fresh live buffer so the previous take's events don't bleed into this one.
+    {
+        let mut recent_events = events.lock().expect("Recent events lock failed");
+        recent_events.clear();
+    }
+
+    // Point the in-memory session at the new take so subsequent events tag to it,
+    // and record what it is anchored to so this does not re-fire every event.
+    if let (Some(session_id), Some(started_at_ms)) =
+        (status.session_id.clone(), status.started_at_ms)
+    {
+        {
+            let mut session = session.lock().expect("Session state lock failed");
+            session.restore_active(session_id.clone(), started_at_ms);
+        }
+        {
+            let mut connection = state.lock().expect("Connection state lock failed");
+            connection.session_als_path = Some(open_als.clone());
+        }
+        println!(
+            "AUTO-ROTATE: switched capture to take {} for {}",
+            session_id, open_als
+        );
+    }
+}
+
 // Append a whole batch under ONE lock.
 //
 // This used to be called per event, so a 20,000-event burst meant 20,000 lock
@@ -922,11 +1029,13 @@ pub fn start_udp_listener(
     {
         let state = state.clone();
         let session = session.clone();
+        let storage = storage.clone();
+        let events = events.clone();
         let sender = sender.clone();
         let metrics = metrics.clone();
 
         thread::spawn(move || {
-            run_tcp_listener(state, session, sender, metrics);
+            run_tcp_listener(state, session, storage, events, sender, metrics);
         });
     }
 
@@ -973,6 +1082,8 @@ pub fn start_udp_listener(
                             &mut sequence_tracker,
                             &state,
                             &session,
+                            &storage,
+                            &events,
                             &sender,
                             &metrics,
                         )
@@ -1046,6 +1157,8 @@ pub fn start_udp_listener(
 fn run_tcp_listener(
     state: Arc<Mutex<ConnectionState>>,
     session: Arc<Mutex<SessionState>>,
+    storage: Arc<Mutex<StorageState>>,
+    events: Arc<Mutex<Vec<RecallEvent>>>,
     sender: SyncSender<RecallEvent>,
     metrics: Arc<BridgeMetrics>,
 ) {
@@ -1111,6 +1224,8 @@ fn run_tcp_listener(
                     &mut sequence_tracker,
                     &state,
                     &session,
+                    &storage,
+                    &events,
                     &sender,
                     &metrics,
                 )
@@ -1134,6 +1249,8 @@ fn process_packet(
     sequence_tracker: &mut SequenceTracker,
     state: &Arc<Mutex<ConnectionState>>,
     session: &Arc<Mutex<SessionState>>,
+    storage: &Arc<Mutex<StorageState>>,
+    events: &Arc<Mutex<Vec<RecallEvent>>>,
     sender: &SyncSender<RecallEvent>,
     metrics: &Arc<BridgeMetrics>,
 ) {
@@ -1187,6 +1304,9 @@ fn process_packet(
     // version. The bridge stamps project_path on every heartbeat, so do this
     // before heartbeats are dropped below.
     update_open_file(&normalized_json, state);
+    // Switch takes if Ableton has moved to a different project. Runs BEFORE
+    // assignment so this event lands on the take for the file that is open now.
+    rotate_session_if_project_changed(state, session, storage, events, metrics);
     let is_heartbeat =
         normalized_json.get("event_type").and_then(Value::as_str) == Some("heartbeat");
     if is_heartbeat {

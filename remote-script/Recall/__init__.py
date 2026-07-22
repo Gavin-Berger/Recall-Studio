@@ -440,6 +440,20 @@ class Recall(ControlSurface):
         return _on_toggle
 
     @staticmethod
+    def _display(parameter, value):
+        """The value as Ableton shows it — "500 Hz", "-6.0 dB", "Sinefold".
+
+        Without this the app can only show a percentage, so a filter cutoff reads
+        "37.7% -> 50.1%" instead of "500 Hz -> 2 kHz". str_for_value is the LOM
+        method that formats a raw value the way the device's UI does, units and
+        all. Guarded because a few parameters raise or lack it.
+        """
+        try:
+            return parameter.str_for_value(value)
+        except Exception:  # noqa: BLE001
+            return None
+
+    @staticmethod
     def _percent(parameter, value):
         """Position within the parameter's range, 0-100.
 
@@ -551,6 +565,9 @@ class Recall(ControlSurface):
                 "previous_parameter_value": start,
                 "parameter_value_percent": self._percent(parameter, landed),
                 "previous_parameter_value_percent": self._percent(parameter, start),
+                # Human-readable, unit-bearing values as the device displays them.
+                "parameter_display_value": self._display(parameter, landed),
+                "previous_parameter_display_value": self._display(parameter, start),
                 # How far the knob travelled on the way, which is not recoverable
                 # from before/after alone: sweeping to the top and settling back
                 # near the start is a different act from nudging it slightly.

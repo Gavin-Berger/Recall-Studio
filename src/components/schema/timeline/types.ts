@@ -5,6 +5,28 @@
 export type LoadStatus = "idle" | "loading" | "ready" | "error";
 export type ExportFormat = "md" | "txt" | "json" | "pdf";
 
+// A contiguous stretch of work on one track — the unit the timeline summarizes
+// activity in, replacing the per-move "Worth Keeping" rail. Producers work in
+// sections ("I was on the lead for a while"), not isolated knob tweaks.
+export type SessionBlock = {
+  id: string;
+  trackId: string | null;
+  trackName: string | null;
+  startMs: number;
+  endMs: number;
+  moveCount: number;
+  // Devices touched in the block, most-active first.
+  devices: string[];
+  // The parameters ridden most in the block, capped for display.
+  topParams: { name: string; count: number }[];
+};
+
+// A pause longer than this ends the current block and starts a new one, even on
+// the same track. Two minutes: long enough that stepping away and coming back
+// reads as a new stretch of work, short enough not to merge unrelated sessions
+// on one track into a single block.
+export const BLOCK_GAP_MS = 120_000;
+
 export const LIVE_REFRESH_DEBOUNCE_MS = 700;
 // Backstop for a live session when event pushes go missing (a suspended webview
 // drops them silently). Deliberately slow: pushes drive normal updates, and this

@@ -15,7 +15,7 @@ import {
   noteTrackId,
   pct,
   trackColor,
-  type Highlight,
+  type SessionBlock,
 } from "./index";
 
 function makeChange(overrides: Partial<ParameterChange> = {}): ParameterChange {
@@ -188,7 +188,7 @@ describe("buildShareData / buildShareDocument", () => {
     changes: [makeChange()],
     stats: { moves: 1, characterMoves: 0, tracksTouched: 1, keepers: 0 },
     story: ["A take."],
-    highlights: [] as Highlight[],
+    blocks: [] as SessionBlock[],
     sessionStart: 1_000,
   });
 

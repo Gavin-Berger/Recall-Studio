@@ -4,7 +4,7 @@
 // webview's print dialog through a hidden iframe.
 
 import type { ParameterChange } from "../../../types/schema";
-import type { ExportFormat, Highlight } from "./types";
+import type { ExportFormat, SessionBlock } from "./types";
 import { formatElapsed, formatMoveValue } from "./format";
 
 // Everything the share snapshot needs from the component, passed in so the
@@ -22,7 +22,7 @@ type ShareInput = {
     keepers: number;
   };
   story: string[] | null;
-  highlights: Highlight[];
+  blocks: SessionBlock[];
   sessionStart: number;
 };
 
@@ -30,7 +30,7 @@ type ShareInput = {
 // Markdown, and plain text never drift apart. Strings are the producer-facing
 // display values; raw numeric fields are kept alongside for machine consumers.
 export function buildShareData(input: ShareInput) {
-  const { changes, highlights, sessionStart } = input;
+  const { changes, blocks, sessionStart } = input;
   const valueOf = (
     value: number | null,
     percent: number | null,
@@ -54,19 +54,14 @@ export function buildShareData(input: ShareInput) {
     exportedAtMs: Date.now(),
     stats: input.stats,
     story: input.story ? input.story.join(" ") : null,
-    worthKeeping: highlights
-      .filter((h) => h.kind !== "note")
-      .map((h) => ({
-        parameter: h.paramName,
-        track: h.trackName,
-        device: h.deviceName,
-        before: valueOf(h.before, h.beforePercent, h.unit, h.beforeDisplay),
-        after: valueOf(h.after, h.afterPercent, h.unit, h.afterDisplay),
-        reason: h.reason,
-        isMode: h.kind === "mode",
-        atMs: h.atMs,
-        elapsedMs: h.atMs - sessionStart,
-      })),
+    sections: blocks.map((block) => ({
+      track: block.trackName,
+      moves: block.moveCount,
+      params: block.topParams.map((p) => p.name),
+      device: block.devices[0] ?? null,
+      elapsedMs: block.startMs - sessionStart,
+      durationMs: Math.max(0, block.endMs - block.startMs),
+    })),
     tracks: [...byTrack.entries()].map(([name, list]) => ({
       name,
       moves: list.length,
@@ -104,12 +99,16 @@ function renderMarkdown(d: ShareData): string {
   if (meta) lines.push(`_${meta}_`);
   lines.push("");
   if (d.story) lines.push("## The story so far", "", d.story, "");
-  if (d.worthKeeping.length > 0) {
-    lines.push("## Worth keeping", "");
-    for (const h of d.worthKeeping) {
-      const where = [h.track, h.device].filter(Boolean).join(" · ");
-      const value = h.before !== "—" ? `${h.before} → ${h.after}` : h.after;
-      lines.push(`- **${h.parameter ?? "Move"}** (${where}) — ${value} · ${h.reason}`);
+  if (d.sections.length > 0) {
+    lines.push("## What you worked on", "");
+    for (const s of d.sections) {
+      const what = s.params.length > 0 ? s.params.join(" · ") : "adjustments";
+      const dev = s.device ? ` on ${s.device}` : "";
+      lines.push(
+        `- **${s.track ?? "Untitled track"}** — ${what}${dev} · ${s.moves} move${
+          s.moves === 1 ? "" : "s"
+        } (${formatElapsed(s.elapsedMs)})`,
+      );
     }
     lines.push("");
   }
@@ -136,12 +135,16 @@ function renderText(d: ShareData): string {
   if (meta) lines.push(meta);
   lines.push("");
   if (d.story) lines.push("THE STORY SO FAR", d.story, "");
-  if (d.worthKeeping.length > 0) {
-    lines.push("WORTH KEEPING");
-    for (const h of d.worthKeeping) {
-      const where = [h.track, h.device].filter(Boolean).join(" · ");
-      const value = h.before !== "—" ? `${h.before} -> ${h.after}` : h.after;
-      lines.push(`  - ${h.parameter ?? "Move"} (${where}): ${value} [${h.reason}]`);
+  if (d.sections.length > 0) {
+    lines.push("WHAT YOU WORKED ON");
+    for (const s of d.sections) {
+      const what = s.params.length > 0 ? s.params.join(" · ") : "adjustments";
+      const dev = s.device ? ` on ${s.device}` : "";
+      lines.push(
+        `  - ${s.track ?? "Untitled track"}: ${what}${dev} (${s.moves} moves, ${formatElapsed(
+          s.elapsedMs,
+        )})`,
+      );
     }
     lines.push("");
   }
@@ -182,11 +185,13 @@ function renderHtml(d: ShareData): string {
     .filter(Boolean)
     .join(" · ");
 
-  const keep = d.worthKeeping
-    .map((h) => {
-      const where = [h.track, h.device].filter(Boolean).map(esc).join(" · ");
-      const value = h.before !== "—" ? `${esc(h.before)} → ${esc(h.after)}` : esc(h.after);
-      return `<li><b>${esc(h.parameter ?? "Move")}</b> <span class="where">(${where})</span> — <span class="val">${value}</span> <span class="reason">· ${esc(h.reason)}</span></li>`;
+  const sections = d.sections
+    .map((s) => {
+      const what = esc(s.params.length > 0 ? s.params.join(" · ") : "adjustments");
+      const dev = s.device ? ` <span class="where">on ${esc(s.device)}</span>` : "";
+      return `<li><b>${esc(s.track ?? "Untitled track")}</b> — <span class="val">${what}</span>${dev} <span class="reason">· ${s.moves} move${
+        s.moves === 1 ? "" : "s"
+      }</span> <span class="when">(${formatElapsed(s.elapsedMs)})</span></li>`;
     })
     .join("");
 
@@ -222,7 +227,7 @@ function renderHtml(d: ShareData): string {
   <h1>${esc(d.title)}${d.project ? ` — ${esc(d.project)}` : ""}</h1>
   <div class="meta">${esc(meta)}</div>
   ${d.story ? `<h2>The story so far</h2><p class="story">${esc(d.story)}</p>` : ""}
-  ${keep ? `<h2>Worth keeping</h2><ul>${keep}</ul>` : ""}
+  ${sections ? `<h2>What you worked on</h2><ul>${sections}</ul>` : ""}
   ${tracks ? `<h2>What you changed</h2>${tracks}` : ""}
   <div class="foot">Exported from Recall Studio</div>
 </body></html>`;

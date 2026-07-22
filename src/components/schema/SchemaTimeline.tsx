@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { useCallback, useEffect, useMemo, useState, type KeyboardEvent } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { save } from "@tauri-apps/plugin-dialog";
 import "./SchemaTimeline.css";
@@ -34,9 +34,9 @@ import {
   exportPdf,
   formatDuration,
   formatElapsed,
-  formatMoveValue,
   formatPercent,
   formatTakeTitle,
+  BLOCK_GAP_MS,
   BRIDGE_LOG_LIMIT,
   LIVE_REFRESH_DEBOUNCE_MS,
   LIVE_SAFETY_POLL_MS,
@@ -51,8 +51,8 @@ import {
   type Activity,
   type ActivityGroup,
   type ExportFormat,
-  type Highlight,
   type LiveRecallEvent,
+  type SessionBlock,
   type LoadStatus,
 } from "./timeline";
 
@@ -78,11 +78,6 @@ export function SchemaTimeline({
   const [bridgeLogOpen, setBridgeLogOpen] = useState(false);
   // Group ids the user expanded to see each move inside a collapsed run.
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
-  // Highlight ids the user has kept/flagged this session, for instant card feedback.
-  const [keptHighlights, setKeptHighlights] = useState<Map<string, "keeper" | "working">>(new Map());
-  // Keyboard-driven curation: which highlight card is focused in the rail.
-  const [focusedCard, setFocusedCard] = useState(-1);
-  const railRef = useRef<HTMLDivElement>(null);
   // Transient "Copied!" feedback for the share button.
   const [copied, setCopied] = useState(false);
   // Selected export format for copy/save.
@@ -376,198 +371,87 @@ export function SchemaTimeline({
   // first; then deliberate mode flips; then the biggest net parameter swings.
   // Parameter changes are collapsed to one net move per device+param so the same
   // knob doesn't flood the rail.
-  const highlights = useMemo<Highlight[]>(() => {
+  // Activity blocks: contiguous stretches of work on one track, the unit the
+  // timeline now summarizes in. This replaced the per-move "Worth Keeping" rail,
+  // which scored individual knob tweaks and asked you to curate them — the wrong
+  // altitude. Producers remember sections of work ("I was on the lead"), not
+  // isolated moves, so we segment the move stream into those sections instead.
+  const sessionBlocks = useMemo<SessionBlock[]>(() => {
     const resolveTrackId = (change: ParameterChange): string | null =>
       (change.parameter_id ? lookups.paramTrack.get(change.parameter_id) : undefined) ??
       (change.track_name ? lookups.nameTrack.get(change.track_name.toLowerCase()) : undefined) ??
       null;
 
-    const out: Highlight[] = [];
+    const sorted = [...changes]
+      .filter((change) => change.parameter_name)
+      .sort((a, b) => a.changed_at_ms - b.changed_at_ms);
 
-    for (const moment of moments) {
-      const trackId = noteTrackId(moment, lookups);
-      const starred =
-        moment.confidence === "keeper" ||
-        moment.confidence === "final" ||
-        moment.tags.includes("keeper");
-      out.push({
-        id: `note-${moment.id}`,
-        kind: "note",
-        momentId: moment.id,
-        trackId,
-        trackName: trackId ? tracks.find((t) => t.id === trackId)?.name ?? null : null,
-        deviceName: null,
-        paramName: null,
-        before: null,
-        beforePercent: null,
-        beforeDisplay: null,
-        after: null,
-        afterPercent: null,
-        afterDisplay: null,
-        unit: null,
-        title: moment.title,
-        starred,
-        atMs: moment.timeline_start_ms ?? moment.created_at_ms,
-        score: 10_000,
-        reason: starred ? "★ Kept" : "★ Flagged",
-        strength: 1,
-      });
-    }
+    type Acc = {
+      trackId: string | null;
+      trackName: string | null;
+      key: string;
+      startMs: number;
+      endMs: number;
+      moveCount: number;
+      deviceCounts: Map<string, number>;
+      paramCounts: Map<string, number>;
+    };
 
-    // Net change per device+param, walked in time order; count = how many times
-    // you touched it (a strong "I cared" signal on its own).
-    const sorted = [...changes].sort((a, b) => a.changed_at_ms - b.changed_at_ms);
-    const byKey = new Map<string, { first: ParameterChange; last: ParameterChange; count: number }>();
+    const blocks: Acc[] = [];
+    let current: Acc | null = null;
+
     for (const change of sorted) {
-      if (!change.parameter_name) continue;
-      const key = `${change.track_name ?? ""}|${change.device_name ?? ""}|${change.parameter_name}`;
-      const existing = byKey.get(key);
-      if (existing) {
-        existing.last = change;
-        existing.count += 1;
-      } else {
-        byKey.set(key, { first: change, last: change, count: 1 });
+      const key = change.track_name?.toLowerCase() ?? "—";
+      const gap = current ? change.changed_at_ms - current.endMs : 0;
+
+      // Break the block on a track change or a long enough pause.
+      if (!current || key !== current.key || gap > BLOCK_GAP_MS) {
+        current = {
+          trackId: resolveTrackId(change),
+          trackName: change.track_name,
+          key,
+          startMs: change.changed_at_ms,
+          endMs: change.changed_at_ms,
+          moveCount: 0,
+          deviceCounts: new Map(),
+          paramCounts: new Map(),
+        };
+        blocks.push(current);
+      }
+
+      current.endMs = change.changed_at_ms;
+      current.moveCount += 1;
+      if (change.device_name) {
+        current.deviceCounts.set(
+          change.device_name,
+          (current.deviceCounts.get(change.device_name) ?? 0) + 1,
+        );
+      }
+      if (change.parameter_name) {
+        current.paramCounts.set(
+          change.parameter_name,
+          (current.paramCounts.get(change.parameter_name) ?? 0) + 1,
+        );
       }
     }
 
-    // Time range for recency weighting — recent moves get a gentle boost so the
-    // rail feels live during a session, not frozen on early baseline tweaks.
-    const firstMs = sorted.length > 0 ? sorted[0].changed_at_ms : 0;
-    const lastMs = sorted.length > 0 ? sorted[sorted.length - 1].changed_at_ms : 1;
-    const timeSpan = Math.max(lastMs - firstMs, 1);
+    const rankNames = (counts: Map<string, number>) =>
+      [...counts.entries()]
+        .sort((a, b) => b[1] - a[1])
+        .map(([name, count]) => ({ name, count }));
 
-    const moveHighlights: Highlight[] = [];
-    for (const { first, last, count } of byKey.values()) {
-      const magnitude =
-        last.after_value_percent !== null &&
-        last.after_value_percent !== undefined &&
-        first.before_value_percent !== null &&
-        first.before_value_percent !== undefined
-          ? Math.abs(last.after_value_percent - first.before_value_percent)
-          : last.is_quantized
-            ? 60
-            : 30;
+    return blocks.map((block, index) => ({
+      id: `blk-${index}-${block.startMs}`,
+      trackId: block.trackId,
+      trackName: block.trackName,
+      startMs: block.startMs,
+      endMs: block.endMs,
+      moveCount: block.moveCount,
+      devices: rankNames(block.deviceCounts).map((entry) => entry.name),
+      topParams: rankNames(block.paramCounts).slice(0, 3),
+    }));
+  }, [changes, lookups]);
 
-      // Signals of "worth keeping", each its own contribution to the score:
-      //  • iteration — you kept coming back to it (deliberate craft)
-      //  • character — a mode/type flip changes the sound's identity
-      //  • magnitude — a big swing is a decisive move
-      //  • recency — gentle boost for later moves
-      const iterationScore = count > 1 ? (count - 1) * 30 : 0;
-      const characterScore = last.is_quantized ? 70 : 0;
-      const magnitudeScore = magnitude;
-      const recencyScore = ((last.changed_at_ms - firstMs) / timeSpan) * 35;
-      const score = iterationScore + characterScore + magnitudeScore + recencyScore;
-
-      // The reason shown is the strongest signal, with sensible thresholds so a
-      // tiny one-off move doesn't claim "Big swing".
-      let reason = "Move";
-      if (count >= 3) reason = `Came back ${count}×`;
-      else if (last.is_quantized) reason = "Character move";
-      else if (magnitude >= 50) reason = "Big swing";
-      else if (count === 2) reason = "Revisited";
-
-      moveHighlights.push({
-        id: `pc-${last.id}`,
-        kind: last.is_quantized ? "mode" : "move",
-        trackId: resolveTrackId(last),
-        trackName: last.track_name,
-        deviceName: last.device_name,
-        paramName: last.parameter_name,
-        before: first.before_value,
-        beforePercent: first.before_value_percent,
-        beforeDisplay: first.before_display_value,
-        after: last.after_value,
-        afterPercent: last.after_value_percent,
-        afterDisplay: last.after_display_value,
-        unit: last.unit,
-        title: null,
-        starred: false,
-        atMs: last.changed_at_ms,
-        score,
-        reason,
-        strength: 0,
-      });
-    }
-
-    // Strength meter is relative to the strongest move this session.
-    const maxMoveScore = Math.max(1, ...moveHighlights.map((h) => h.score));
-    for (const h of moveHighlights) h.strength = Math.min(1, h.score / maxMoveScore);
-
-    moveHighlights.sort((a, b) => b.score - a.score || b.atMs - a.atMs);
-
-    // Diversity cap: at most 2 cards per device so one busy plugin can't fill the
-    // rail — a spread of decisions across the track is more useful to recall. Fill
-    // any remaining slots with the next-best regardless of device.
-    const LIMIT = 8;
-    const perDevice = new Map<string, number>();
-    const picked: Highlight[] = [];
-    const overflow: Highlight[] = [];
-    for (const h of moveHighlights) {
-      const dev = h.deviceName ?? "—";
-      const used = perDevice.get(dev) ?? 0;
-      if (used < 2) {
-        perDevice.set(dev, used + 1);
-        picked.push(h);
-      } else {
-        overflow.push(h);
-      }
-    }
-    const moves = [...picked, ...overflow].slice(0, LIMIT);
-
-    // Notes (intentional keeps) always lead, then the diversity-capped moves.
-    return [...out, ...moves].slice(0, LIMIT + out.length);
-  }, [changes, moments, lookups, tracks]);
-
-  async function keepHighlight(highlight: Highlight, confidence: "keeper" | "working") {
-    if (!sessionId || !highlight.trackId) return;
-    const label =
-      highlight.kind === "note"
-        ? highlight.title ?? "Moment"
-        : [highlight.deviceName, highlight.paramName].filter(Boolean).join(" · ") || "Move";
-    try {
-      await createCreativeMoment({
-        id: crypto.randomUUID(),
-        sessionId,
-        title: label,
-        momentType: highlight.kind === "mode" ? "sound_design" : "automation",
-        note: label,
-        tags: confidence === "keeper" ? ["keeper"] : [],
-        confidence,
-        timelineStartMs: highlight.atMs ?? null,
-        targets: [{ target_type: "track", target_id: highlight.trackId }],
-      });
-      setKeptHighlights((prev) => new Map(prev).set(highlight.id, confidence));
-      await refreshMoments();
-    } catch (keepError) {
-      setError(String(keepError));
-    }
-  }
-
-  // Keyboard curation: ← → move the focused card, K keeps it, R flags it to revisit.
-  function handleRailKey(event: KeyboardEvent<HTMLDivElement>) {
-    if (highlights.length === 0) return;
-    if (event.key === "ArrowRight") {
-      event.preventDefault();
-      setFocusedCard((i) => Math.min(highlights.length - 1, i < 0 ? 0 : i + 1));
-    } else if (event.key === "ArrowLeft") {
-      event.preventDefault();
-      setFocusedCard((i) => Math.max(0, i < 0 ? 0 : i - 1));
-    } else if (event.key === "k" || event.key === "K" || event.key === "r" || event.key === "R") {
-      const card = highlights[focusedCard];
-      if (card && card.kind !== "note" && !keptHighlights.has(card.id)) {
-        event.preventDefault();
-        void keepHighlight(card, event.key === "k" || event.key === "K" ? "keeper" : "working");
-      }
-    }
-  }
-
-  // Keep the focused curation card in view as arrow keys move across the rail.
-  useEffect(() => {
-    if (focusedCard < 0 || !railRef.current) return;
-    const el = railRef.current.querySelector<HTMLElement>(`[data-card-index="${focusedCard}"]`);
-    el?.scrollIntoView({ block: "nearest", inline: "nearest" });
-  }, [focusedCard]);
 
   // Session-level "pulse": headline counts + a momentum read, so the take feels
   // like an event you're in, not a table you're reading.
@@ -743,7 +627,7 @@ export function SchemaTimeline({
         keepers: pulse.keeperCount,
       },
       story: sessionStory,
-      highlights,
+      blocks: sessionBlocks,
       sessionStart: bounds.sessionStart,
     });
   }
@@ -1163,149 +1047,66 @@ export function SchemaTimeline({
             </div>
           )}
 
-          {highlights.length > 0 && (
-            <div className="tl-keep">
-              <div className="tl-keep__head">
-                <span className="tl-keep__kick">Worth keeping</span>
-                <span className="tl-keep__sub">ranked by what you worked · keep or revisit</span>
-                <span className="tl-keep__keys" aria-hidden="true">
-                  <kbd>←</kbd><kbd>→</kbd> move · <kbd>K</kbd> keep · <kbd>R</kbd> revisit
-                </span>
+          {sessionBlocks.length > 0 && (
+            <div className="tl-blocks">
+              <div className="tl-blocks__head">
+                <span className="tl-blocks__kick">What you worked on</span>
+                <span className="tl-blocks__sub">stretches of activity, newest first</span>
               </div>
-              <div
-                className="tl-keep__rail"
-                ref={railRef}
-                tabIndex={0}
-                role="listbox"
-                aria-label="Worth keeping"
-                onKeyDown={handleRailKey}
-                onFocus={() => setFocusedCard((i) => (i < 0 ? 0 : i))}
-              >
-                {highlights.map((highlight, cardIndex) => {
-                  const track = highlight.trackId
-                    ? tracks.find((t) => t.id === highlight.trackId)
+              <div className="tl-blocks__list">
+                {[...sessionBlocks].reverse().map((block) => {
+                  const track = block.trackId
+                    ? tracks.find((t) => t.id === block.trackId)
                     : null;
                   const color = track ? trackColor(track) : "#6382ff";
-                  const isNote = highlight.kind === "note";
-                  const hasBefore =
-                    (highlight.beforeDisplay !== null && highlight.beforeDisplay !== "") ||
-                    highlight.before !== null ||
-                    highlight.beforePercent !== null;
-                  const after = formatMoveValue(
-                    highlight.after,
-                    highlight.afterPercent,
-                    highlight.unit,
-                    highlight.afterDisplay,
-                  );
-                  const isMode = highlight.kind === "mode";
-                  const beforeRef = highlight.beforePercent ?? highlight.before;
-                  const afterRef = highlight.afterPercent ?? highlight.after;
-                  const direction =
-                    !isMode && beforeRef !== null && afterRef !== null
-                      ? afterRef > beforeRef
-                        ? "up"
-                        : afterRef < beforeRef
-                          ? "down"
-                          : null
-                      : null;
-                  const barPct =
-                    !isMode && highlight.afterPercent !== null
-                      ? Math.max(0, Math.min(100, highlight.afterPercent))
-                      : null;
-                  const strengthPips = isNote ? 0 : Math.max(1, Math.round(highlight.strength * 3));
+                  const durationMs = Math.max(0, block.endMs - block.startMs);
+                  const params =
+                    block.topParams.length > 0
+                      ? block.topParams.map((p) => p.name).join(" · ")
+                      : "adjustments";
                   return (
-                    <div
-                      key={highlight.id}
-                      data-card-index={cardIndex}
-                      className={`tl-card ${isNote ? "tl-card--note" : ""} ${
-                        focusedCard === cardIndex ? "is-focused" : ""
-                      }`}
+                    <button
+                      type="button"
+                      key={block.id}
+                      className="tl-block"
                       style={{ ["--lane-color" as string]: color }}
-                      onClick={() => setFocusedCard(cardIndex)}
+                      onClick={() => block.trackId && setSelectedTrackId(block.trackId)}
+                      title={
+                        block.trackId
+                          ? `Focus ${block.trackName ?? "track"}`
+                          : undefined
+                      }
                     >
-                      <div className="tl-card__top">
-                        <span className="tl-card__badge">{highlight.reason}</span>
-                        {strengthPips > 0 && (
-                          <span
-                            className="tl-card__meter"
-                            aria-label={`strength ${strengthPips} of 3`}
-                            title={`Rank strength ${strengthPips}/3`}
-                          >
-                            {[0, 1, 2].map((i) => (
-                              <span
-                                key={i}
-                                className={`tl-card__pip ${i < strengthPips ? "is-on" : ""}`}
-                              />
-                            ))}
+                      <span className="tl-block__rail" aria-hidden="true" />
+                      <span className="tl-block__main">
+                        <span className="tl-block__top">
+                          <span className="tl-block__track">
+                            {block.trackName ?? "Untitled track"}
+                          </span>
+                          <span className="tl-block__count">
+                            {block.moveCount} move{block.moveCount === 1 ? "" : "s"}
+                          </span>
+                        </span>
+                        <span className="tl-block__params">
+                          {params}
+                          {block.devices.length > 0 && (
+                            <span className="tl-block__dev"> · {block.devices[0]}</span>
+                          )}
+                        </span>
+                      </span>
+                      <span className="tl-block__time">
+                        <span className="tl-block__when">
+                          {formatElapsed(block.startMs - bounds.sessionStart)}
+                        </span>
+                        {durationMs >= 1000 && (
+                          <span className="tl-block__dur">
+                            {durationMs >= 60_000
+                              ? `${Math.round(durationMs / 60_000)}m`
+                              : `${Math.round(durationMs / 1000)}s`}
                           </span>
                         )}
-                        <span className="tl-card__when">
-                          {formatElapsed(highlight.atMs - bounds.sessionStart)}
-                        </span>
-                      </div>
-                      <div className="tl-card__where">
-                        {[highlight.trackName, highlight.deviceName].filter(Boolean).join(" · ")}
-                      </div>
-                      <div className="tl-card__body">
-                        {isNote ? (
-                          <span className="tl-card__note">{highlight.title}</span>
-                        ) : (
-                          <>
-                            <span className="tl-card__param">{highlight.paramName}</span>
-                            <span className={`tl-ba tl-card__val ${isMode ? "is-mode" : ""}`}>
-                              {hasBefore && (
-                                <>
-                                  <span className="tl-ba__o">
-                                    {formatMoveValue(
-                                      highlight.before,
-                                      highlight.beforePercent,
-                                      highlight.unit,
-                                      highlight.beforeDisplay,
-                                    )}
-                                  </span>
-                                  <span className="tl-ba__arr">→</span>
-                                </>
-                              )}
-                              <span className="tl-ba__n">{after}</span>
-                              {direction && (
-                                <span className={`tl-ba__dir is-${direction}`} aria-hidden="true">
-                                  {direction === "up" ? "▲" : "▼"}
-                                </span>
-                              )}
-                            </span>
-                            {barPct !== null && (
-                              <span className="tl-card__bar" aria-hidden="true">
-                                <span className="tl-card__bar-fill" style={{ width: `${barPct}%` }} />
-                              </span>
-                            )}
-                          </>
-                        )}
-                      </div>
-                      {isNote ? (
-                        highlight.starred && <div className="tl-card__kept">★ Kept</div>
-                      ) : keptHighlights.has(highlight.id) ? (
-                        <div className="tl-card__kept">
-                          {keptHighlights.get(highlight.id) === "keeper" ? "★ Kept" : "↩ Saved to revisit"}
-                        </div>
-                      ) : (
-                        <div className="tl-card__actions">
-                          <button
-                            type="button"
-                            className="tl-card__act tl-card__act--keep"
-                            onClick={() => void keepHighlight(highlight, "keeper")}
-                          >
-                            ★ Keep
-                          </button>
-                          <button
-                            type="button"
-                            className="tl-card__act"
-                            onClick={() => void keepHighlight(highlight, "working")}
-                          >
-                            ↩ Revisit
-                          </button>
-                        </div>
-                      )}
-                    </div>
+                      </span>
+                    </button>
                   );
                 })}
               </div>

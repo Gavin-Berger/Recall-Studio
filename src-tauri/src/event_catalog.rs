@@ -411,6 +411,12 @@ pub static CATALOG: &[EventDef] = &[
         "A MIDI clip was created in Ableton.",
     ),
     def(
+        "clip_notes_changed",
+        Critical,
+        "Notes Changed",
+        "The notes in a MIDI clip were edited in Ableton.",
+    ),
+    def(
         "clip_launched",
         Important,
         "Clip Launched",
@@ -687,6 +693,7 @@ mod tests {
             "device_added",
             "sample_added",
             "midi_clip_created",
+            "clip_notes_changed",
             "automation_created",
             "track_armed",
         ] {

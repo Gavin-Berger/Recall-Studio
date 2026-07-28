@@ -349,6 +349,7 @@ function App() {
       surface={surface}
       onChangeSurface={setSurface}
       connected={connection.connected}
+      onOpenStartup={() => setEnteredStudio(false)}
       onOpenReport={() => setReportOpen(true)}
       projects={
         <ProjectManagerScreen

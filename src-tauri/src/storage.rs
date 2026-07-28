@@ -1,8 +1,8 @@
 use crate::protocol::RecallEvent;
 use crate::schema_projection::{
-    build_parameter_changes, parse_session_tree, ChangeEvent, CreativeMoment, CreativeMomentTarget,
-    DeviceObj, DeviceRole, ParameterChange, ParameterObj, ParsedParam, ParsedTrack, ProjectSchema,
-    TrackObj, TrackType,
+    build_parameter_changes, parse_note_edit, parse_session_tree, ChangeEvent, CreativeMoment,
+    CreativeMomentTarget, DeviceObj, DeviceRole, NoteEdit, ParameterChange, ParameterObj,
+    ParsedParam, ParsedTrack, ProjectSchema, TrackObj, TrackType,
 };
 use crate::session::{
     SavedProject, SavedSession, SavedSessionEvent, SavedSessionMetadata, SessionStatus,
@@ -2063,6 +2063,48 @@ impl StorageState {
 
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(|error| format!("Failed to collect parameter_changes: {}", error))
+    }
+
+    /// Note edits for a session, read straight from the event log.
+    ///
+    /// No materialized table behind this: the control surface settles note edits
+    /// before sending them, so one event row is already one edit. See
+    /// [`schema_projection::NoteEdit`] for why that differs from parameters.
+    pub fn get_note_edits(&self, session_id: &str) -> Result<Vec<NoteEdit>, String> {
+        let connection = self.open_connection()?;
+
+        let mut statement = connection
+            .prepare(
+                "SELECT id, timestamp_ms, track_name, payload
+                 FROM events
+                 WHERE session_id = ?1 AND event_type = 'clip_notes_changed'
+                 ORDER BY timestamp_ms ASC, id ASC",
+            )
+            .map_err(|error| format!("Failed to prepare note edits query: {}", error))?;
+
+        let rows = statement
+            .query_map(params![session_id], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)? as u64,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                ))
+            })
+            .map_err(|error| format!("Failed to read note edits: {}", error))?;
+
+        let mut edits = Vec::new();
+        for row in rows {
+            let (id, timestamp_ms, track_name, payload) =
+                row.map_err(|error| format!("Failed to read note edit row: {}", error))?;
+            // Unparseable rows are skipped, not fatal — one malformed payload
+            // must not cost the producer the rest of the session's edits.
+            if let Some(edit) = parse_note_edit(id, timestamp_ms, track_name, payload.as_deref()) {
+                edits.push(edit);
+            }
+        }
+
+        Ok(edits)
     }
 
     // ── Creative moments (user-authored) ─────────────────────────────────────

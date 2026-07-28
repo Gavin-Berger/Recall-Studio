@@ -40,6 +40,7 @@ type AppShellProps = {
   organizer: ReactNode;
   notes: ReactNode;
   glossary: ReactNode;
+  onOpenStartup: () => void;
   onOpenReport: () => void;
 };
 
@@ -54,6 +55,7 @@ export function AppShell({
   organizer,
   notes,
   glossary,
+  onOpenStartup,
   onOpenReport,
 }: AppShellProps) {
   return (
@@ -66,13 +68,19 @@ export function AppShell({
 
       <div className="recall-frame">
         <nav className="recall-sidebar" aria-label="Recall Studio navigation">
-          <div className="recall-sidebar__brand">
+          <button
+            type="button"
+            className="recall-sidebar__brand"
+            onClick={onOpenStartup}
+            aria-label="Return to startup screen"
+            title="Return to startup screen"
+          >
             <RecallMark size="sm" />
             <span>
               <span>Studio</span>
               <strong>Recall</strong>
             </span>
-          </div>
+          </button>
 
           <div className="recall-sidebar__nav">
             {NAV_ITEMS.map((item) => {

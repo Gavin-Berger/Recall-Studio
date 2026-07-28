@@ -696,6 +696,17 @@
   line-height: 1;
 }
 
+/* A note edit on the lane. --clip because it IS a clip changing (DESIGN.md §
+   entity colors); deliberately a small bar rather than a second star, so the
+   producer's own pinned moments stay the loudest marks on the lane. */
+.tl-mk--midi {
+  width: 3px;
+  height: 12px;
+  border-radius: 1.5px;
+  background: var(--clip);
+  opacity: 0.75;
+}
+
 .tl-playhead {
   position: absolute;
   top: 0;
@@ -958,6 +969,11 @@
 .tl-ci__ic--note {
   color: #ffd98a;
   font-size: 13px;
+}
+
+/* Piano-roll glyph for a note edit, in the clip color. */
+.tl-ci__ic--notes {
+  color: var(--clip);
 }
 
 /* Two-column body: what (device · param) on the left, value on the right. */
@@ -1686,4 +1702,135 @@
 .tl-block__dur {
   font-size: 11px;
   color: var(--faint-aa);
+}
+
+/* MIDI notes section. Same row anatomy as an activity block (entity-colored
+   rail, body, right-aligned time) so it reads as a sibling of "What you worked
+   on" rather than a new kind of surface. Not a button: unlike a block, a note
+   edit has nowhere to navigate to yet. */
+.tl-notes {
+  margin-top: 20px;
+}
+
+.tl-note-row {
+  display: flex;
+  align-items: stretch;
+  gap: 12px;
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.tl-note-row__track {
+  flex: 0 0 auto;
+  font-size: 12px;
+  color: var(--faint-aa);
+}
+
+/* Raw capture fields, for reading the timeline against Live itself. Mono so
+   the numbers line up down the column when several edits stack. */
+.tl-note-row__raw {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--faint-aa);
+}
+
+/* What kind of change it was. A quiet outline, never a filled badge — the kind
+   is a qualifier on the summary beside it, not the headline. */
+.tl-note-kind {
+  flex: 0 0 auto;
+  padding: 1px 6px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  font-size: 11px;
+  color: var(--muted);
+  text-transform: lowercase;
+}
+
+.tl-note-kind.is-notes_added {
+  border-color: rgba(170, 204, 240, 0.4);
+  color: var(--clip);
+}
+
+/* Removal and clearing are the one place --danger belongs here: they are the
+   only note changes that destroy something. */
+.tl-note-kind.is-notes_removed,
+.tl-note-kind.is-cleared {
+  border-color: rgba(220, 90, 106, 0.4);
+  color: var(--danger);
+}
+
+/* ── Note edits, told apart from parameter moves ────────────────────────────
+
+   A note edit and a knob move are different kinds of act — one changes what is
+   played, the other how it sounds — and until now they shared one row anatomy.
+   Three signals separate them, in decreasing subtlety: a --clip left rail on the
+   row, the clip color on the value text (moves are --parameter teal), and the
+   pitch bar, which is a positional graphic no other row has. */
+.tl-ci--notes {
+  border-left: 2px solid var(--clip);
+  padding-left: 8px;
+  background: linear-gradient(90deg, rgba(170, 204, 240, 0.05), transparent 55%);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+}
+
+.tl-notes-val {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.tl-notes-val__text {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--clip);
+  white-space: nowrap;
+}
+
+/* The pitch bar: a fixed 0–127 keyboard span, so bars from different clips are
+   comparable — a sub sits left and short, a lead sits right. Not a meter and not
+   a progress bar; it encodes POSITION, which is why the middle-C tick matters. */
+.tl-pitch {
+  position: relative;
+  flex: 0 0 auto;
+  display: inline-block;
+  width: 84px;
+  height: 10px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.06);
+  overflow: hidden;
+}
+
+.tl-pitch--empty {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+/* Middle C (C3 = 60 in Live's naming) — the reference the eye reads against. */
+.tl-pitch__mid {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: rgba(255, 255, 255, 0.22);
+}
+
+/* Where the part used to sit. Past tense, so it is quiet and never animated —
+   its whole job is to make a transposition legible as a change of place. */
+.tl-pitch__ghost {
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  border-radius: 2px;
+  background: rgba(170, 204, 240, 0.22);
+}
+
+.tl-pitch__span {
+  position: absolute;
+  top: 1px;
+  bottom: 1px;
+  border-radius: 2px;
+  background: var(--clip);
 }

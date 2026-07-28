@@ -152,6 +152,91 @@ export function moveValueNode(beforeItem: Activity, afterItem: Activity, count: 
   );
 }
 
+// Where a part sits on the keyboard, drawn rather than spelled.
+//
+// A note edit and a knob move currently differ only by an icon, and they are not
+// the same kind of act — one changes what is played, the other how it sounds.
+// This bar is the strongest available distinction: no other row in the timeline
+// carries a positional graphic, so "this row is about notes" is legible before
+// any text is read. It also says something the string "C1-G2" cannot — whether
+// the part is a bassline, a lead, or spread across the whole keyboard.
+//
+// The scale is fixed to the MIDI range (0–127), NOT to the part's own extent, so
+// bars from different clips can be compared: a sub bass sits left and short, a
+// lead sits right. `previous` draws a ghost of where the part used to sit, which
+// is how a transposition becomes visible as movement.
+const PITCH_FLOOR = 0;
+const PITCH_CEIL = 127;
+// C3 = 60 in Live's naming, the reference line a producer reads position against.
+const MIDDLE_C = 60;
+
+export function PitchBar({
+  min,
+  max,
+  previousMin,
+  previousMax,
+  label,
+}: {
+  min: number | null | undefined;
+  max: number | null | undefined;
+  previousMin?: number | null;
+  previousMax?: number | null;
+  label?: string | null;
+}) {
+  if (min === null || min === undefined || max === null || max === undefined) {
+    // A cleared clip has no range to draw. An empty track reads as "nothing
+    // left" without pretending to a position it no longer has.
+    return <span className="tl-pitch tl-pitch--empty" aria-label="no notes" />;
+  }
+
+  const span = PITCH_CEIL - PITCH_FLOOR;
+  const toPct = (pitch: number) =>
+    Math.min(100, Math.max(0, ((pitch - PITCH_FLOOR) / span) * 100));
+  // A single-pitch part would otherwise be a zero-width bar and vanish.
+  const left = toPct(Math.min(min, max));
+  const width = Math.max(1.5, toPct(Math.max(min, max)) - left);
+
+  const hasGhost =
+    previousMin !== null &&
+    previousMin !== undefined &&
+    previousMax !== null &&
+    previousMax !== undefined &&
+    (previousMin !== min || previousMax !== max);
+  const ghostLeft = hasGhost ? toPct(Math.min(previousMin, previousMax)) : 0;
+  const ghostWidth = hasGhost
+    ? Math.max(1.5, toPct(Math.max(previousMin, previousMax)) - ghostLeft)
+    : 0;
+
+  return (
+    <span className="tl-pitch" title={label ?? undefined} aria-label={label ?? "pitch range"}>
+      <span className="tl-pitch__mid" style={{ left: `${toPct(MIDDLE_C)}%` }} aria-hidden="true" />
+      {hasGhost && (
+        <span
+          className="tl-pitch__ghost"
+          style={{ left: `${ghostLeft}%`, width: `${ghostWidth}%` }}
+          aria-hidden="true"
+        />
+      )}
+      <span
+        className="tl-pitch__span"
+        style={{ left: `${left}%`, width: `${width}%` }}
+        aria-hidden="true"
+      />
+    </span>
+  );
+}
+
+// Two piano-roll blocks — the shape of MIDI in a clip, so a note edit reads as
+// a different KIND of act from a knob move at a glance, without needing a label.
+export function NotesIcon() {
+  return (
+    <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true">
+      <rect x="2" y="4" width="7" height="3" rx="1" fill="currentColor" />
+      <rect x="6" y="9.5" width="8" height="3" rx="1" fill="currentColor" opacity="0.65" />
+    </svg>
+  );
+}
+
 export function ScanIcon() {
   return (
     <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">

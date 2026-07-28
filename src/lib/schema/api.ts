@@ -9,6 +9,7 @@ import type {
   CreativeMoment,
   CreativeMomentTarget,
   MomentType,
+  NoteEdit,
   ParameterChange,
   ProjectSchema,
 } from "../../types/schema";
@@ -29,6 +30,10 @@ export function getProjectSchema(sessionId: string): Promise<ProjectSchema> {
 
 export function getParameterChanges(sessionId: string): Promise<ParameterChange[]> {
   return invoke<ParameterChange[]>("get_parameter_changes", { sessionId });
+}
+
+export function getNoteEdits(sessionId: string): Promise<NoteEdit[]> {
+  return invoke<NoteEdit[]>("get_note_edits", { sessionId });
 }
 
 export function listCreativeMoments(sessionId: string): Promise<CreativeMoment[]> {

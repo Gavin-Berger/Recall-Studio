@@ -5,6 +5,7 @@ import "./SchemaTimeline.css";
 import {
   createCreativeMoment,
   deleteCreativeMoment,
+  getNoteEdits,
   getParameterChanges,
   getProjectSchema,
   listCreativeMoments,
@@ -13,8 +14,10 @@ import {
 } from "../../lib/schema/api";
 import {
   DEVICE_ROLE_LABEL,
+  NOTE_KIND_LABEL,
   TRACK_TYPE_LABEL,
   type CreativeMoment,
+  type NoteEdit,
   type ParameterChange,
   type ProjectSchema,
   type SavedSessionMetadata,
@@ -26,14 +29,16 @@ import {
   buildShareData,
   buildShareDocument,
   buildTicks,
+  clipLabel,
   CopyIcon,
   cumulativeMovePaths,
   deviceColor,
   describeActivity,
+  describeNoteEdit,
   ExportIcon,
   exportPdf,
   formatDuration,
-  formatElapsed,
+  formatWhen,
   formatPercent,
   formatTakeTitle,
   BLOCK_GAP_MS,
@@ -44,6 +49,8 @@ import {
   moveValueNode,
   moveWhatNode,
   noteTrackId,
+  NotesIcon,
+  PitchBar,
   pct,
   ScanEmptyState,
   ScanIcon,
@@ -65,6 +72,7 @@ export function SchemaTimeline({
 }) {
   const [schema, setSchema] = useState<ProjectSchema | null>(null);
   const [changes, setChanges] = useState<ParameterChange[]>([]);
+  const [noteEdits, setNoteEdits] = useState<NoteEdit[]>([]);
   const [moments, setMoments] = useState<CreativeMoment[]>([]);
   const [status, setStatus] = useState<LoadStatus>("idle");
   const [error, setError] = useState<string | null>(null);
@@ -90,13 +98,15 @@ export function SchemaTimeline({
       setError(null);
       try {
         if (rematerialize) await materializeSessionSchema(sessionId);
-        const [nextSchema, nextChanges, nextMoments] = await Promise.all([
+        const [nextSchema, nextChanges, nextNoteEdits, nextMoments] = await Promise.all([
           getProjectSchema(sessionId),
           getParameterChanges(sessionId),
+          getNoteEdits(sessionId),
           listCreativeMoments(sessionId),
         ]);
         setSchema(nextSchema);
         setChanges(nextChanges);
+        setNoteEdits(nextNoteEdits);
         setMoments(nextMoments);
         setStatus("ready");
       } catch (loadError) {
@@ -110,6 +120,7 @@ export function SchemaTimeline({
   useEffect(() => {
     setSchema(null);
     setChanges([]);
+    setNoteEdits([]);
     setMoments([]);
     setSelectedTrackId(null);
     void load(true);
@@ -215,6 +226,7 @@ export function SchemaTimeline({
     // that leading/trailing dead air by bounding to the first and last activity.
     const stamps: number[] = [];
     for (const change of changes) stamps.push(change.changed_at_ms);
+    for (const edit of noteEdits) stamps.push(edit.changed_at_ms);
     for (const moment of moments) stamps.push(moment.timeline_start_ms ?? moment.created_at_ms);
 
     let start: number;
@@ -234,7 +246,7 @@ export function SchemaTimeline({
     if (end - start < 60_000) end = start + 60_000;
 
     return { start, end, span: end - start, recording, sessionStart };
-  }, [session, changes, moments]);
+  }, [session, changes, noteEdits, moments]);
 
   const activities = useMemo<Activity[]>(() => {
     const out: Activity[] = [];
@@ -260,6 +272,34 @@ export function SchemaTimeline({
         quantized: change.is_quantized,
       });
     }
+    for (const edit of noteEdits) {
+      // Note edits carry a track NAME only — the control surface reports the
+      // clip, and clips are not in the parameter/device lookups. A clip on a
+      // track the schema hasn't seen yet is dropped rather than floated on a
+      // lane it doesn't belong to.
+      const trackId = edit.track_name
+        ? lookups.nameTrack.get(edit.track_name.toLowerCase())
+        : undefined;
+      if (!trackId) continue;
+      out.push({
+        id: edit.id,
+        kind: "noteEdit",
+        trackId,
+        atMs: edit.changed_at_ms,
+        clipName: edit.clip_name,
+        clipId: edit.clip_id,
+        changeKind: edit.change_kind,
+        noteCount: edit.note_count,
+        previousNoteCount: edit.previous_note_count,
+        pitchRange: edit.pitch_range,
+        pitchMin: edit.pitch_min,
+        pitchMax: edit.pitch_max,
+        previousPitchMin: edit.previous_pitch_min,
+        previousPitchMax: edit.previous_pitch_max,
+        previousPitchRange: edit.previous_pitch_range,
+        summary: edit.summary,
+      });
+    }
     for (const moment of moments) {
       const trackId = noteTrackId(moment, lookups);
       if (!trackId) continue;
@@ -273,7 +313,7 @@ export function SchemaTimeline({
       });
     }
     return out;
-  }, [changes, moments, lookups]);
+  }, [changes, noteEdits, moments, lookups]);
 
   // Buses sink to the bottom, Main last of all — the order Ableton's own mixer
   // uses, so it reads as a fixture rather than as a track that happened to sort
@@ -337,11 +377,21 @@ export function SchemaTimeline({
     for (const item of trackActivity) {
       const last = out[out.length - 1];
       const mergeable =
-        item.kind === "move" &&
         last !== undefined &&
-        last.lead.kind === "move" &&
-        last.lead.deviceName === item.deviceName &&
-        last.lead.paramName === item.paramName;
+        (item.kind === "move"
+          ? last.lead.kind === "move" &&
+            last.lead.deviceName === item.deviceName &&
+            last.lead.paramName === item.paramName
+          : // Consecutive edits to the SAME clip are one stretch of writing.
+            // Each settled edit is already coalesced at the bridge, but a
+            // producer building a part still produces a run of them, and eight
+            // rows for one part is the same noise the move grouping exists to
+            // prevent.
+            item.kind === "noteEdit" &&
+            last.lead.kind === "noteEdit" &&
+            // Identity, not name: unnamed clips all share a blank name, and
+            // merging on that collapses edits from different parts into one run.
+            (item.clipId ?? item.id) === (last.lead.clipId ?? last.lead.id));
       if (mergeable) {
         last.items.push(item);
       } else {
@@ -366,6 +416,7 @@ export function SchemaTimeline({
   }, [trackActivity]);
 
   const moveCountForTrack = trackActivity.filter((a) => a.kind === "move").length;
+  const noteEditCountForTrack = trackActivity.filter((a) => a.kind === "noteEdit").length;
 
   // Session-wide "worth keeping" candidates. Notes are intentional, so they rank
   // first; then deliberate mode flips; then the biggest net parameter swings.
@@ -488,10 +539,13 @@ export function SchemaTimeline({
   const activeMs = useMemo(() => {
     const stamps = [
       ...changes.map((change) => change.changed_at_ms),
+      // Writing a part is hands-on time as surely as riding a knob is. Without
+      // these, a session spent entirely in the piano roll would read as idle.
+      ...noteEdits.map((edit) => edit.changed_at_ms),
       ...moments.map((moment) => moment.timeline_start_ms ?? moment.created_at_ms),
     ];
     return activeDurationMs(stamps, bounds.recording ? Date.now() : null);
-  }, [changes, moments, bounds.recording]);
+  }, [changes, noteEdits, moments, bounds.recording]);
 
   // An auto-written recap of the take — prose that ties the numbers together so
   // the session reads like a memory you can skim, not a table you decode.
@@ -876,6 +930,19 @@ export function SchemaTimeline({
                         gradientId={`spark-${lane.track.id}`}
                       />
                     )}
+                    {/* Note edits sit UNDER the note stars so an annotation is
+                        never hidden behind a tick, and read as a small mark on
+                        the lane rather than a second star competing with it. */}
+                    {lane.items
+                      .filter((item) => item.kind === "noteEdit")
+                      .map((item) => (
+                        <span
+                          key={item.id}
+                          className="tl-mk tl-mk--midi"
+                          style={{ left: `${pct(item.atMs, bounds)}%` }}
+                          title={describeActivity(item)}
+                        />
+                      ))}
                     {lane.items
                       .filter((item) => item.kind === "note")
                       .map((item) => (
@@ -907,6 +974,9 @@ export function SchemaTimeline({
                   {TRACK_TYPE_LABEL[selectedTrack.type]} · {selectedTrack.devices.length} device
                   {selectedTrack.devices.length === 1 ? "" : "s"} · {moveCountForTrack} move
                   {moveCountForTrack === 1 ? "" : "s"}
+                  {noteEditCountForTrack > 0 && (
+                    <> · {noteEditCountForTrack} note edit{noteEditCountForTrack === 1 ? "" : "s"}</>
+                  )}
                 </span>
                 {mostTouched && mostTouched.count > 1 && (
                   <span className="tl-dock__top">
@@ -939,8 +1009,51 @@ export function SchemaTimeline({
                     const lead = group.lead;
                     const count = group.items.length;
                     const oldest = group.items[count - 1];
-                    const when = formatElapsed(lead.atMs - bounds.sessionStart);
+                    const when = formatWhen(lead.atMs, bounds.sessionStart, bounds.span);
                     const expanded = expandedGroups.has(group.key);
+
+                    if (lead.kind === "noteEdit") {
+                      // Net result of the run: the newest edit's landing state,
+                      // measured from the oldest edit's starting count — the
+                      // same before→after logic the move rows use.
+                      // The bridge's own summary is dropped for a run: it
+                      // describes only the newest edit, so reusing it would
+                      // report "+1" for a stretch that added twelve notes.
+                      const net = {
+                        ...lead,
+                        previousNoteCount: oldest.previousNoteCount,
+                        previousPitchRange: oldest.previousPitchRange,
+                        summary: count > 1 ? null : lead.summary,
+                      };
+                      return (
+                        <li key={group.key} className="tl-ci tl-ci--notes">
+                          <span className="tl-ci__ic tl-ci__ic--notes" aria-hidden="true">
+                            <NotesIcon />
+                          </span>
+                          <span className="tl-ci__body">
+                            <span className="tl-ci__what">
+                              <b>{clipLabel(lead.clipName)}</b>
+                              <span className="tl-ci__det"> · notes</span>
+                            </span>
+                            <span className="tl-ci__val tl-notes-val">
+                              {/* Drawn before it is spelled: where the part sits
+                                  on the keyboard, and the ghost of where it sat
+                                  before, so a transposition reads as movement. */}
+                              <PitchBar
+                                min={net.pitchMin}
+                                max={net.pitchMax}
+                                previousMin={oldest.previousPitchMin}
+                                previousMax={oldest.previousPitchMax}
+                                label={net.pitchRange}
+                              />
+                              <span className="tl-notes-val__text">{describeNoteEdit(net)}</span>
+                              {count > 1 && <span className="tl-ba__count">{count}×</span>}
+                            </span>
+                          </span>
+                          <span className="tl-ci__when">{when}</span>
+                        </li>
+                      );
+                    }
 
                     if (lead.kind === "note") {
                       return (
@@ -1002,7 +1115,7 @@ export function SchemaTimeline({
                                   {moveValueNode(item, item, 1)}
                                 </span>
                                 <span className="tl-ci__when">
-                                  {formatElapsed(item.atMs - bounds.sessionStart)}
+                                  {formatWhen(item.atMs, bounds.sessionStart, bounds.span)}
                                 </span>
                               </li>
                             ))}
@@ -1096,7 +1209,7 @@ export function SchemaTimeline({
                       </span>
                       <span className="tl-block__time">
                         <span className="tl-block__when">
-                          {formatElapsed(block.startMs - bounds.sessionStart)}
+                          {formatWhen(block.startMs, bounds.sessionStart, bounds.span)}
                         </span>
                         {durationMs >= 1000 && (
                           <span className="tl-block__dur">
@@ -1112,6 +1225,85 @@ export function SchemaTimeline({
               </div>
             </div>
           )}
+
+          {/* MIDI notes — its own section rather than only per-track rows.
+              Session-wide and newest-first, so what the capture layer claims can
+              be read against what actually happened in Live. Rendered even when
+              empty: "nothing arrived" is the reading that matters most while
+              note capture is young, and a section that vanishes when there is
+              no data cannot say it. */}
+          <div className="tl-notes">
+            <div className="tl-blocks__head">
+              <span className="tl-blocks__kick">MIDI notes</span>
+              <span className="tl-blocks__sub">
+                {noteEdits.length > 0
+                  ? `${noteEdits.length} edit${noteEdits.length === 1 ? "" : "s"}, newest first`
+                  : "edits to clip contents land here"}
+              </span>
+            </div>
+            {noteEdits.length > 0 ? (
+              <div className="tl-blocks__list">
+                {[...noteEdits].reverse().map((edit) => {
+                  const track = edit.track_name
+                    ? tracks.find(
+                        (t) => t.name?.toLowerCase() === edit.track_name?.toLowerCase(),
+                      )
+                    : null;
+                  return (
+                    <div
+                      key={edit.id}
+                      className="tl-note-row"
+                      style={{ ["--lane-color" as string]: track ? trackColor(track) : "var(--clip)" }}
+                    >
+                      <span className="tl-block__rail" aria-hidden="true" />
+                      <span className="tl-block__main">
+                        <span className="tl-block__top">
+                          <span className="tl-block__track">{clipLabel(edit.clip_name)}</span>
+                          <span className="tl-note-row__track">
+                            {edit.track_name ?? "unknown track"}
+                          </span>
+                          {edit.change_kind && (
+                            <span className={`tl-note-kind is-${edit.change_kind}`}>
+                              {NOTE_KIND_LABEL[edit.change_kind] ?? edit.change_kind}
+                            </span>
+                          )}
+                        </span>
+                        <span className="tl-notes-val">
+                          <PitchBar
+                            min={edit.pitch_min}
+                            max={edit.pitch_max}
+                            previousMin={edit.previous_pitch_min}
+                            previousMax={edit.previous_pitch_max}
+                            label={edit.pitch_range}
+                          />
+                          <span className="tl-block__params">{edit.summary ?? "—"}</span>
+                        </span>
+                        {/* Raw fields, for checking the capture against Live
+                            rather than trusting the rendered phrase. */}
+                        <span className="tl-note-row__raw">
+                          {edit.previous_note_count ?? "—"} → {edit.note_count ?? "—"} notes
+                          {edit.distinct_pitches !== null && ` · ${edit.distinct_pitches} pitches`}
+                          {edit.pitch_range && ` · ${edit.pitch_range}`}
+                          {edit.velocity_mean !== null && ` · vel ${edit.velocity_mean}`}
+                          {edit.length_beats !== null && ` · ${edit.length_beats} beats`}
+                        </span>
+                      </span>
+                      <span className="tl-block__time">
+                        <span className="tl-block__when">
+                          {formatWhen(edit.changed_at_ms, bounds.sessionStart, bounds.span)}
+                        </span>
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <p className="tl-story__empty">
+                No note edits captured yet. Open a MIDI clip in Ableton, change some
+                notes, then pause — an edit is reported once the clip sits still.
+              </p>
+            )}
+          </div>
 
           {sessionStory && (
             <div className="tl-recap">

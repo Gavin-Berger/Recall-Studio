@@ -12,8 +12,16 @@
 #      doubt; parameters are half the beta scope, and if listeners cannot
 #      carry them then M4L stays, and with it the Live Suite requirement.
 #
-# What this is NOT: a capture implementation. No gesture thinning, no schema,
-# no reconnect logic. Those come after the answers.
+# Both answers came back yes, so this is no longer only a spike: it now carries
+# gesture thinning, reconnect logic, the whole-set snapshot the schema projects
+# from, and clip-note capture.
+#
+# WHAT IS CAPTURED, and the rule behind it: this reports DECISIONS, not data. A
+# knob ride becomes one settled move; a written phrase becomes one note edit
+# describing what changed about the part. The authoritative content — every note
+# of every clip — lives in the .als for the take and is read from there. Sending
+# it through this socket would cost a note scan on Live's thread and bury the
+# timeline in rows nobody reads.
 #
 # Runtime: Python 3.11 (Live 12's embedded interpreter).
 
@@ -54,6 +62,16 @@ RECONNECT_DELAY_SEC = 2.0
 # actually rides live near the top of the list.
 MAX_PARAMS_PER_DEVICE = 128
 
+# Ceiling on clips watched per track, and on notes read out of any one clip.
+#
+# Notes are the one thing in this script that can be genuinely large: a bounced
+# MIDI performance or a densely programmed hat pattern runs to thousands of
+# events, and the read happens on Live's thread. Both caps are about that read,
+# not about listener count — registering a notes listener is free, reading the
+# roll is not.
+MAX_CLIPS_PER_TRACK = 64
+MAX_NOTES_READ = 4096
+
 # How long a parameter must sit still before its gesture counts as finished.
 # Listeners fire ~every 3ms during a ride, so emitting each one buries the
 # timeline in near-identical rows. 350ms is long enough to bridge the pauses
@@ -61,11 +79,25 @@ MAX_PARAMS_PER_DEVICE = 128
 # producer still remembers making it.
 GESTURE_SETTLE_SEC = 0.35
 
+# The same idea for note edits, but slower. A notes listener fires on every
+# single change — each drawn note, each nudge, and continuously through a record
+# pass — so a four-bar take would otherwise emit a hundred rows describing one
+# act. 1.2s waits out the gaps inside a phrase without making the edit feel like
+# it went missing.
+NOTE_SETTLE_SEC = 1.2
+
 # Distinct from the bridge's "max_for_live" so events from the two capture tiers
 # are told apart in the database. The listener defaults source to max_for_live
 # when absent, so this must always be sent explicitly.
 SOURCE = "control_surface"
-SCRIPT_VERSION = "0.1.0-spike"
+
+# Pitch class names for rendering a note range the way a producer reads it
+# ("C1–G2" rather than "36–67"). Live numbers middle C as C3 = MIDI 60, so the
+# octave is (pitch // 12) - 2 — matching Live's own display, not the C4 = 60
+# convention other DAWs use.
+NOTE_NAMES = ("C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B")
+
+SCRIPT_VERSION = "0.2.0"
 
 
 class Recall(ControlSurface):
@@ -88,6 +120,22 @@ class Recall(ControlSurface):
         # and when it arrived). Settled by update_display, not by the callback.
         self._gestures = {}
         self._moves_seen = 0
+        # Clip-note capture. _clip_listeners and _slot_listeners are unregistered
+        # on teardown; _clip_prints holds the last settled fingerprint per clip so
+        # an edit can report what it changed FROM, the same way _last_values does
+        # for parameters; _dirty_clips holds edits waiting to settle.
+        self._clip_listeners = []
+        self._slot_listeners = []
+        self._clip_prints = {}
+        self._dirty_clips = {}
+        # Clips already carrying a notes listener, so the slot path and the
+        # piano-roll path can't both register on one clip.
+        self._watched_clip_ids = set()
+        # slotId -> the name of the clip it last held, so a deletion can still
+        # say WHICH clip went away after Live has discarded the object.
+        self._slot_names = {}
+        self._watched_clips = (0, 0)
+        self._note_edits_seen = 0
 
         with self.component_guard():
             self._open_socket()
@@ -231,6 +279,14 @@ class Recall(ControlSurface):
         self.song.add_tempo_listener(self._on_tempo_changed)
         self.song.add_tracks_listener(self._on_tracks_changed)
 
+        # Opening a different clip in the piano roll is how note editing starts,
+        # in both views. Guarded because a failure here must not stop the surface
+        # loading — the lesson from arrangement_clips.
+        try:
+            self.song.view.add_detail_clip_listener(self._on_detail_clip_changed)
+        except Exception as error:  # noqa: BLE001
+            logger.info("Recall Studio: no detail clip listener: {}".format(error))
+
         self._on_selection_changed()
 
     # ── whole-set snapshot ─────────────────────────────────────────────────
@@ -262,6 +318,22 @@ class Recall(ControlSurface):
             "parameters": parameters,
         }
 
+    def _serialize_clip_slot(self, slot, index):
+        if not slot.has_clip:
+            return {"index": index, "has_clip": False}
+
+        clip = slot.clip
+        return {
+            "index": index,
+            "has_clip": True,
+            "id": self._safe_id(clip),
+            "name": self._safe_name(clip),
+            # derive_track_type in schema_projection.rs reads this flag to type a
+            # track that has no instrument in its chain yet.
+            "is_midi_clip": bool(getattr(clip, "is_midi_clip", False)),
+            "length_beats": round(getattr(clip, "length", 0.0) or 0.0, 4),
+        }
+
     def _serialize_track(self, track, index):
         # Send the RAW Live flags the projection actually reads (is_foldable,
         # has_midi_input) rather than a pre-computed type string.
@@ -278,6 +350,18 @@ class Recall(ControlSurface):
             "index": index,
             "devices": [self._serialize_device(d) for d in track.devices],
         }
+
+        # Clip slots, structurally only — name, type, length. No note reads here:
+        # the snapshot walks every track in the set, and fingerprinting every
+        # clip in a full project would put a note scan for the whole song on
+        # Live's thread at load. Note CONTENT is reported by clip_notes_changed
+        # for the track in focus, and read from the .als for the take.
+        slots = self._safe_list(track, "clip_slots")
+        if slots:
+            payload["clip_slots"] = [
+                self._serialize_clip_slot(slot, i)
+                for i, slot in enumerate(slots[:MAX_CLIPS_PER_TRACK])
+            ]
 
         if hasattr(track, "is_foldable"):
             payload["is_foldable"] = bool(track.is_foldable)
@@ -334,6 +418,7 @@ class Recall(ControlSurface):
         """Selection changed: re-point the devices listener, then re-attach params."""
         self._clear_parameter_listeners()
         self._clear_devices_listener()
+        self._clear_clip_listeners()
 
         track = self.song.view.selected_track
 
@@ -347,6 +432,25 @@ class Recall(ControlSurface):
             track.add_devices_listener(self._on_devices_changed)
             self._observed_track = track
 
+        # Clips first, so focus_changed can report what note capture attached to
+        # in the same event that reports the device chain. A separate event would
+        # mean two rows describing one selection.
+        #
+        # CONTAINED on purpose. This method runs from __init__, so anything that
+        # escapes it stops the control surface from loading AT ALL — no snapshot,
+        # no session, no parameter capture, and no clue in the app as to why.
+        # That is precisely what a raising `arrangement_clips` did. Note capture
+        # is the newest and least-proven thing here; it must be able to fail
+        # without taking the proven parts down with it.
+        try:
+            self._watched_clips = self._attach_to_clips(track)
+            # Re-attach the open clip too: _clear_clip_listeners just dropped it,
+            # and the detail-clip listener won't fire again because the clip
+            # itself didn't change — only the selection did.
+            self._on_detail_clip_changed()
+        except Exception as error:  # noqa: BLE001
+            self._watched_clips = (0, 0)
+            logger.info("Recall Studio: clip capture failed to attach: {}".format(error))
         self._attach_to_focused_device(track)
 
     def _on_devices_changed(self):
@@ -367,6 +471,475 @@ class Recall(ControlSurface):
         except Exception:  # noqa: BLE001 - track may already be deleted
             pass
 
+    # ── clip notes ─────────────────────────────────────────────────────────
+    #
+    # The parallel to the parameter listeners above, for the other half of what a
+    # producer actually does: writing and editing parts. Same three rules, for
+    # the same reasons —
+    #
+    #   SCOPE:   the selected track only, never the whole set.
+    #   SETTLE:  the callback records that something changed; update_display
+    #            decides when the change is finished and worth reporting.
+    #   DIFF:    Live's notes listener carries no payload at all, so the
+    #            before-side has to be remembered here (_clip_prints), exactly as
+    #            _last_values remembers parameter values.
+    #
+    # The one thing that is genuinely different: reading notes is expensive, so
+    # the callback deliberately does NOT read them. During a record pass it fires
+    # continuously, and reading the roll on every fire would put a full note scan
+    # on Live's thread dozens of times per second.
+
+    def _attach_to_clips(self, track):
+        """Watch the selected track's clips for note edits.
+
+        Returns (clips watched, MIDI clips watched) so focus_changed can report
+        them. Slot listeners are registered on EVERY slot, not just filled ones:
+        an empty slot is where the next clip gets recorded, and that arrival is
+        the event most worth having.
+        """
+        if track is None:
+            return (0, 0)
+
+        slots = self._safe_list(track, "clip_slots")
+        watched = 0
+
+        for index, slot in enumerate(slots[:MAX_CLIPS_PER_TRACK]):
+            listener = self._make_slot_listener(track, slot, index)
+            try:
+                slot.add_has_clip_listener(listener)
+            except Exception:  # noqa: BLE001
+                continue
+            self._slot_listeners.append((slot, listener))
+
+            if slot.has_clip:
+                watched += self._watch_clip(track, slot.clip, index)
+
+        # Arrangement clips are not reachable through clip_slots — a producer
+        # working in Arrangement view has no clip slots in play at all, and
+        # without this branch their entire session would capture no note edits.
+        # _safe_list because group/return/main tracks RAISE on this property.
+        for clip in self._safe_list(track, "arrangement_clips")[:MAX_CLIPS_PER_TRACK]:
+            watched += self._watch_clip(track, clip, None)
+
+        # Logged as well as emitted: focus_changed reaches the app only if the
+        # socket is up, and this is exactly the diagnostic you want when it
+        # isn't. "3 slots, 0 watched" says the listeners are the problem;
+        # "0 slots" says the track selection is.
+        logger.info(
+            "Recall Studio: {} clip slots, {} MIDI clips watched on {}".format(
+                len(slots), watched, self._safe_name(track)
+            )
+        )
+
+        return (len(slots), watched)
+
+    def _watch_clip(self, track, clip, slot_index):
+        """Register a notes listener on one MIDI clip. Returns 1 if attached."""
+        if clip is None or not getattr(clip, "is_midi_clip", False):
+            return 0
+
+        # The same clip can arrive from both paths — its slot and the piano roll.
+        # Registering twice would report every edit twice.
+        if id(clip) in self._watched_clip_ids:
+            return 0
+        self._watched_clip_ids.add(id(clip))
+
+        listener = self._make_notes_listener(track, clip, slot_index)
+        try:
+            clip.add_notes_listener(listener)
+        except Exception as error:  # noqa: BLE001 - clip gone, or API not present
+            # LOUD on purpose. A silently swallowed registration failure is
+            # indistinguishable from "the producer edited nothing", and that
+            # ambiguity costs a full Live restart to diagnose. If
+            # add_notes_listener is missing on this build, this line is the only
+            # thing that will say so.
+            logger.info(
+                "Recall Studio: could not watch clip notes ({}): {}".format(
+                    self._safe_name(clip), error
+                )
+            )
+            return 0
+
+        self._clip_listeners.append((clip, listener))
+        # Seed the before-side now, so the first edit reports a real starting
+        # state instead of "changed from nothing" — the same seeding _last_values
+        # does for parameters.
+        self._clip_prints[id(clip)] = self._fingerprint(clip)
+        return 1
+
+    def _make_slot_listener(self, track, slot, index):
+        # A clip appearing in or vanishing from a slot: recorded, drawn,
+        # duplicated, dragged in, or deleted. Previously all of this was silent.
+        def _on_has_clip():
+            try:
+                has_clip = bool(slot.has_clip)
+            except Exception:  # noqa: BLE001 - slot's track was deleted
+                return
+
+            if not has_clip:
+                self._emit(
+                    "clip_deleted",
+                    {
+                        "track_name": self._safe_name(track),
+                        "track_id": self._safe_id(track),
+                        "clip_slot_index": index,
+                        "clip_name": self._slot_names.pop(id(slot), None),
+                    },
+                )
+                return
+
+            clip = slot.clip
+            is_midi = bool(getattr(clip, "is_midi_clip", False))
+            self._watch_clip(track, clip, index)
+
+            name = self._safe_name(clip)
+            # Remembered so the deletion event above can still name the clip
+            # after Live has thrown the object away.
+            self._slot_names[id(slot)] = name
+
+            print_ = self._clip_prints.get(id(clip))
+            self._emit(
+                "midi_clip_created" if is_midi else "audio_clip_added",
+                {
+                    "track_name": self._safe_name(track),
+                    "track_id": self._safe_id(track),
+                    "clip_slot_index": index,
+                    "clip_name": name,
+                    "clip_id": self._safe_id(clip),
+                    "length_beats": round(getattr(clip, "length", 0.0) or 0.0, 4),
+                    "note_count": (print_ or {}).get("count"),
+                },
+            )
+
+        return _on_has_clip
+
+    def _make_notes_listener(self, track, clip, slot_index):
+        def _on_notes():
+            self._note_edits_seen += 1
+
+            key = id(clip)
+            edit = self._dirty_clips.get(key)
+
+            if edit is None:
+                edit = {
+                    "track": track,
+                    "clip": clip,
+                    "slot_index": slot_index,
+                    # The last SETTLED state, not the current one: mid-pass
+                    # samples would make a whole recorded phrase read as a
+                    # one-note change.
+                    "before": self._clip_prints.get(key),
+                }
+                self._dirty_clips[key] = edit
+
+            edit["at"] = time.time()
+
+        return _on_notes
+
+    def _on_detail_clip_changed(self):
+        """Watch whatever clip is open in the piano roll.
+
+        THE path for an Arrangement-view producer, and the reason the first
+        working build captured nothing: clip_slots only covers Session view, and
+        a producer working in Arrangement has eight EMPTY slots per track. The
+        detail clip is the clip they are literally looking at and editing, in
+        either view, which makes it a better signal than either clip list.
+        """
+        clip = None
+        try:
+            clip = self.song.view.detail_clip
+        except Exception as error:  # noqa: BLE001
+            logger.info("Recall Studio: no detail clip readable: {}".format(error))
+            return
+
+        if clip is None:
+            return
+
+        watched = self._watch_clip(self.song.view.selected_track, clip, None)
+        logger.info(
+            "Recall Studio: detail clip '{}' midi={} watched={}".format(
+                self._safe_name(clip), getattr(clip, "is_midi_clip", None), watched
+            )
+        )
+
+    def _safe_list(self, obj, name):
+        """Read a list-valued LOM property that may REFUSE to be read.
+
+        getattr(obj, name, None) is not enough and this cost a Live restart to
+        learn: `arrangement_clips` exists on every Track, but reading it on a
+        group, return or main track raises RuntimeError rather than returning
+        empty. A default only covers a MISSING attribute, not a raising one — so
+        the exception escaped __init__ and the whole control surface failed to
+        load. Anything that can't be read is treated as empty.
+        """
+        try:
+            value = getattr(obj, name, None)
+            return list(value) if value else []
+        except Exception as error:  # noqa: BLE001 - the property refused
+            # Logged, not silent. A swallowed read here reads downstream as
+            # "this track has no clips", which is indistinguishable from the
+            # truth and sent me hunting the wrong thing once already.
+            logger.info(
+                "Recall Studio: {} unreadable on {}: {}".format(
+                    name, self._safe_name(obj), error
+                )
+            )
+            return []
+
+    @staticmethod
+    def _safe_name(obj):
+        """An object's name, or None when Live has no real name for it.
+
+        Two ways Live says "no name", both of which reach the app as a name if
+        passed through raw:
+          - an empty string (an unnamed arrangement clip),
+          - the number 0, which Live returns for absent TEXT properties and
+            which stringifies to a truthy "0".
+        A blank clip name is what made a captured note edit render as "· notes"
+        with nothing in front of it.
+        """
+        try:
+            name = obj.name
+        except Exception:  # noqa: BLE001
+            return None
+
+        if name is None or name == 0:
+            return None
+
+        name = str(name).strip()
+        return name or None
+
+    @staticmethod
+    def _safe_id(obj):
+        try:
+            return str(obj._live_ptr)
+        except Exception:  # noqa: BLE001
+            return None
+
+    @staticmethod
+    def _pitch_name(pitch):
+        if pitch is None:
+            return None
+        return "{}{}".format(NOTE_NAMES[int(pitch) % 12], (int(pitch) // 12) - 2)
+
+    @staticmethod
+    def _read_notes(clip):
+        """Every note in a clip as plain tuples, or None if unreadable.
+
+        Two API generations: get_notes_extended is the Live 11+ call and the only
+        one that returns note ids; get_notes is the legacy tuple form, kept as a
+        fallback because failing closed here would mean silently capturing no
+        note edits at all on an older build.
+
+        The read starts at beat 0 and spans the clip's length, so notes sitting
+        before the start marker (an anacrusis dragged left) are outside it. That
+        is a known, bounded blind spot — preferable to an unbounded scan.
+        """
+        try:
+            span = float(getattr(clip, "length", 0.0) or 0.0)
+        except Exception:  # noqa: BLE001
+            return None
+
+        if span <= 0.0:
+            return []
+
+        try:
+            # (from_pitch, pitch_span, from_time, time_span)
+            notes = clip.get_notes_extended(0, 128, 0.0, span)
+            return [
+                (n.pitch, n.start_time, n.duration, n.velocity, bool(n.mute))
+                for n in notes
+            ][:MAX_NOTES_READ]
+        except Exception:  # noqa: BLE001
+            pass
+
+        try:
+            # (from_time, from_pitch, time_span, pitch_span) — different order.
+            return [tuple(n) for n in clip.get_notes(0.0, 0, span, 128)][:MAX_NOTES_READ]
+        except Exception:  # noqa: BLE001
+            return None
+
+    def _fingerprint(self, clip):
+        """A small summary of a clip's notes — never the notes themselves.
+
+        Recall records decisions, not data. The authoritative note content is in
+        the .als for the take; what the timeline needs is what CHANGED, which is
+        this. Shipping the roll through the event stream would bury a session in
+        rows nobody reads and bloat every session's storage for no added recall.
+        """
+        notes = self._read_notes(clip)
+        if notes is None:
+            return None
+
+        if not notes:
+            return {
+                "count": 0,
+                "pitch_min": None,
+                "pitch_max": None,
+                "distinct_pitches": 0,
+                "velocity_mean": None,
+                "span_beats": 0.0,
+                "digest": 0,
+            }
+
+        pitches = [n[0] for n in notes]
+        velocities = [n[3] for n in notes]
+        starts = [n[1] for n in notes]
+        ends = [n[1] + n[2] for n in notes]
+
+        return {
+            "count": len(notes),
+            "pitch_min": min(pitches),
+            "pitch_max": max(pitches),
+            "distinct_pitches": len(set(pitches)),
+            "velocity_mean": round(sum(velocities) / len(velocities), 1),
+            "span_beats": round(max(ends) - min(starts), 4),
+            # Sorted because Live gives no ordering guarantee, so an unsorted
+            # digest would report a change every time the same notes came back
+            # in a different order. Compared only within this process, which is
+            # all Python's hash guarantees for.
+            "digest": hash(tuple(sorted(notes))),
+        }
+
+    def _flush_settled_note_edits(self, force=False):
+        if not self._dirty_clips:
+            return
+
+        now = time.time()
+
+        for key in list(self._dirty_clips.keys()):
+            edit = self._dirty_clips[key]
+
+            if not force and (now - edit["at"]) < NOTE_SETTLE_SEC:
+                continue
+
+            del self._dirty_clips[key]
+            self._emit_note_edit(key, edit)
+
+    def _emit_note_edit(self, key, edit):
+        clip = edit["clip"]
+        before = edit["before"]
+        after = self._fingerprint(clip)
+
+        if after is None:
+            # Clip deleted mid-edit; the slot listener reports that instead.
+            self._clip_prints.pop(key, None)
+            return
+
+        self._clip_prints[key] = after
+
+        # Nothing actually changed. Selecting notes, or drawing one and undoing
+        # it, both fire the listener and both leave the part exactly as it was —
+        # the note-edit equivalent of a knob ridden back to where it started.
+        if before is not None and before.get("digest") == after.get("digest"):
+            return
+
+        before_count = (before or {}).get("count")
+        after_count = after["count"]
+
+        if before_count is None:
+            kind = "edited"
+        elif after_count == 0 and before_count > 0:
+            kind = "cleared"
+        elif after_count > before_count:
+            kind = "notes_added"
+        elif after_count < before_count:
+            kind = "notes_removed"
+        else:
+            kind = "notes_edited"
+
+        self._emit(
+            "clip_notes_changed",
+            {
+                "track_name": self._safe_name(edit["track"]),
+                "track_id": self._safe_id(edit["track"]),
+                "clip_name": self._safe_name(clip),
+                "clip_id": self._safe_id(clip),
+                "clip_slot_index": edit["slot_index"],
+                "change_kind": kind,
+                "note_count": after_count,
+                "previous_note_count": before_count,
+                "distinct_pitches": after["distinct_pitches"],
+                "pitch_min": after["pitch_min"],
+                "pitch_max": after["pitch_max"],
+                # The raw before-range too, not only its label: the timeline
+                # draws where the part USED to sit behind where it sits now, and
+                # a string like "C1-G2" cannot be measured or positioned.
+                "previous_pitch_min": (before or {}).get("pitch_min"),
+                "previous_pitch_max": (before or {}).get("pitch_max"),
+                "pitch_range": self._pitch_range(after),
+                "previous_pitch_range": self._pitch_range(before),
+                "velocity_mean": after["velocity_mean"],
+                "span_beats": after["span_beats"],
+                "length_beats": round(getattr(clip, "length", 0.0) or 0.0, 4),
+                # Pre-rendered because the app should not have to know Live's
+                # C3 = 60 octave convention to describe what happened.
+                "summary": self._note_summary(kind, before_count, after, before),
+            },
+        )
+
+    @classmethod
+    def _pitch_range(cls, print_):
+        if not print_ or print_.get("pitch_min") is None:
+            return None
+        low = cls._pitch_name(print_["pitch_min"])
+        high = cls._pitch_name(print_["pitch_max"])
+        return low if low == high else "{}-{}".format(low, high)
+
+    @staticmethod
+    def _notes_label(count):
+        # "1 notes" reads like a bug in a surface whose whole job is to be
+        # trusted about what happened.
+        return "1 note" if count == 1 else "{} notes".format(count)
+
+    @classmethod
+    def _note_summary(cls, kind, before_count, after, before):
+        if kind == "cleared":
+            return "Cleared {}".format(cls._notes_label(before_count))
+
+        parts = [cls._notes_label(after["count"])]
+
+        if before_count is not None and after["count"] != before_count:
+            parts[0] += " ({:+d})".format(after["count"] - before_count)
+
+        span = cls._pitch_range(after)
+        if span:
+            previous_span = cls._pitch_range(before)
+            if previous_span and previous_span != span:
+                parts.append("{} -> {}".format(previous_span, span))
+            else:
+                parts.append(span)
+
+        return ", ".join(parts)
+
+    def _clear_clip_listeners(self):
+        # Settle in-flight edits BEFORE dropping listeners, for the same reason
+        # the parameter path does: the part you were writing right before
+        # clicking to another track is exactly the one worth remembering.
+        self._flush_settled_note_edits(force=True)
+
+        for clip, listener in self._clip_listeners:
+            try:
+                if clip.notes_has_listener(listener):
+                    clip.remove_notes_listener(listener)
+            except Exception:  # noqa: BLE001 - clip already deleted
+                pass
+
+        for slot, listener in self._slot_listeners:
+            try:
+                if slot.has_clip_has_listener(listener):
+                    slot.remove_has_clip_listener(listener)
+            except Exception:  # noqa: BLE001
+                pass
+
+        self._clip_listeners = []
+        self._slot_listeners = []
+        self._watched_clip_ids = set()
+        # Dropped with the listeners so a stale fingerprint cannot attach to a
+        # different clip that reuses the same object id.
+        self._clip_prints = {}
+        self._slot_names = {}
+
     def _attach_to_focused_device(self, track):
 
         # Emit even when there is nothing to observe. A silent return here is
@@ -379,6 +952,8 @@ class Recall(ControlSurface):
                     "track_name": track.name if track else None,
                     "device_name": None,
                     "parameter_count": 0,
+                    "clip_slot_count": self._watched_clips[0],
+                    "midi_clips_watched": self._watched_clips[1],
                 },
             )
             return
@@ -422,6 +997,8 @@ class Recall(ControlSurface):
                 "device_count": len(track.devices),
                 "device_chain": [d.name for d in track.devices],
                 "parameter_count": parameter_count,
+                "clip_slot_count": self._watched_clips[0],
+                "midi_clips_watched": self._watched_clips[1],
             },
         )
 
@@ -512,6 +1089,7 @@ class Recall(ControlSurface):
         """
         super().update_display()
         self._flush_settled_gestures()
+        self._flush_settled_note_edits()
 
     def _flush_settled_gestures(self, force=False):
         if not self._gestures:
@@ -618,6 +1196,7 @@ class Recall(ControlSurface):
         with self.component_guard():
             self._clear_parameter_listeners()
             self._clear_devices_listener()
+            self._clear_clip_listeners()
             self._on_selection_changed()
             self._send_snapshot()
 
@@ -629,6 +1208,7 @@ class Recall(ControlSurface):
         # be exhaustive even in a spike.
         self._clear_parameter_listeners()
         self._clear_devices_listener()
+        self._clear_clip_listeners()
 
         try:
             if self.song.view.selected_track_has_listener(self._on_selection_changed):
@@ -639,13 +1219,18 @@ class Recall(ControlSurface):
                 self.song.remove_tempo_listener(self._on_tempo_changed)
             if self.song.tracks_has_listener(self._on_tracks_changed):
                 self.song.remove_tracks_listener(self._on_tracks_changed)
+            if self.song.view.detail_clip_has_listener(self._on_detail_clip_changed):
+                self.song.view.remove_detail_clip_listener(self._on_detail_clip_changed)
         except Exception:  # noqa: BLE001
             pass
 
         # Flush before the final event, so a move made seconds before quitting
         # still lands.
         self._flush_settled_gestures(force=True)
-        self._emit("bridge_stopped", {"moves_seen": self._moves_seen})
+        self._emit(
+            "bridge_stopped",
+            {"moves_seen": self._moves_seen, "note_edits_seen": self._note_edits_seen},
+        )
 
         # Give the sender a moment to flush bridge_stopped before tearing it
         # down, but never block Live's quit on it — a daemon thread dies with the

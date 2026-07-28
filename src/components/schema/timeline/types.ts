@@ -2,6 +2,8 @@
 // component so the data helpers, share/export, and presentational parts can all
 // agree on one shape without importing the big component file.
 
+import type { NoteChangeKind } from "../../../types/schema";
+
 export type LoadStatus = "idle" | "loading" | "ready" | "error";
 export type ExportFormat = "md" | "txt" | "json" | "pdf";
 
@@ -35,6 +37,9 @@ export const LIVE_REFRESH_DEBOUNCE_MS = 700;
 export const LIVE_SAFETY_POLL_MS = 15_000;
 export const LIVE_REFRESH_EVENT_TYPES = new Set([
   "parameter_changed",
+  "clip_notes_changed",
+  "midi_clip_created",
+  "clip_deleted",
   "device_parameter_changed",
   "automation_created",
   "selected_track_focus_snapshot",
@@ -58,10 +63,15 @@ export type LiveRecallEvent = {
 // the timeline itself is the record.
 export const BRIDGE_LOG_LIMIT = 20;
 
-// One thing that happened on a track this take — a knob move or a note.
+// One thing that happened on a track this take — a knob move, a note the
+// producer wrote, or an edit to the MIDI in a clip.
+//
+// "note" and "noteEdit" are different things and the names are load-bearing:
+// a `note` is an annotation the producer typed, a `noteEdit` is MIDI notes
+// changing inside a clip.
 export type Activity = {
   id: string;
-  kind: "move" | "note";
+  kind: "move" | "note" | "noteEdit";
   trackId: string;
   atMs: number;
   // move
@@ -84,6 +94,22 @@ export type Activity = {
   // note
   title?: string;
   starred?: boolean;
+  // noteEdit — the part that changed, and how
+  clipName?: string | null;
+  clipId?: string | null;
+  changeKind?: NoteChangeKind | null;
+  noteCount?: number | null;
+  previousNoteCount?: number | null;
+  pitchRange?: string | null;
+  pitchMin?: number | null;
+  pitchMax?: number | null;
+  previousPitchMin?: number | null;
+  previousPitchMax?: number | null;
+  previousPitchRange?: string | null;
+  // Bridge-rendered phrase ("16 notes (+4), C1-G1 -> C1-G2"), preferred over
+  // anything reassembled here — it was written where Live's own note naming was
+  // in hand.
+  summary?: string | null;
 };
 
 // A run of consecutive same-parameter moves collapsed into one story row.

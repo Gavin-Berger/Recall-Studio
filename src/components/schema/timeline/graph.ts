@@ -8,7 +8,7 @@ import type {
   ProjectSchema,
 } from "../../../types/schema";
 import type { Lookups } from "./types";
-import { formatElapsed } from "./format";
+import { formatWhen } from "./format";
 
 export function buildLookups(schema: ProjectSchema | null): Lookups {
   const paramTrack = new Map<string, string>();
@@ -95,7 +95,10 @@ export function buildTicks(bounds: {
     // Label each tick by how far into the session it sits, so the axis and the
     // change-list timestamps share one clock (elapsed from session start).
     const atMs = bounds.start + (bounds.span * i) / steps;
-    out.push({ pct: (i / steps) * 100, label: formatElapsed(atMs - bounds.sessionStart) });
+    out.push({
+      pct: (i / steps) * 100,
+      label: formatWhen(atMs, bounds.sessionStart, bounds.span),
+    });
   }
   return out;
 }

@@ -87,6 +87,52 @@ export type ParameterChange = {
   changed_at_ms: number;
 };
 
+// A settled edit to the notes in a MIDI clip. Read straight from the event log
+// rather than a projection table — the bridge coalesces note edits before
+// sending, so one event already means one edit.
+export type NoteChangeKind =
+  | "notes_added"
+  | "notes_removed"
+  | "notes_edited"
+  | "cleared"
+  | "edited";
+
+// Producer-facing wording for each kind of note change. "Rewritten" rather than
+// "edited" for a same-count change: the count held but the part did not, which
+// is what transposing or re-timing a phrase looks like from here.
+export const NOTE_KIND_LABEL: Record<NoteChangeKind, string> = {
+  notes_added: "added",
+  notes_removed: "removed",
+  notes_edited: "rewritten",
+  cleared: "cleared",
+  edited: "edited",
+};
+
+export type NoteEdit = {
+  id: string;
+  track_name: string | null;
+  clip_name: string | null;
+  // Live's clip pointer — the only reliable way to tell two clips apart, since
+  // clip names are often blank.
+  clip_id: string | null;
+  change_kind: NoteChangeKind | null;
+  note_count: number | null;
+  previous_note_count: number | null;
+  distinct_pitches: number | null;
+  // Raw MIDI numbers, for drawing the pitch bar. pitch_range is the label.
+  pitch_min: number | null;
+  pitch_max: number | null;
+  previous_pitch_min: number | null;
+  previous_pitch_max: number | null;
+  // Pitch range in Live's naming ("C1-G2"), pre-rendered by the bridge.
+  pitch_range: string | null;
+  previous_pitch_range: string | null;
+  velocity_mean: number | null;
+  length_beats: number | null;
+  summary: string | null;
+  changed_at_ms: number;
+};
+
 export type CreativeMomentTarget = {
   target_type: "track" | "device" | "parameter" | "parameter_change" | "clip";
   target_id: string;

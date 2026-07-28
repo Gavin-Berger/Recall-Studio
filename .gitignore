@@ -32,3 +32,7 @@ logs/
 # Claude Code local runtime state (machine-local, not shared)
 .claude/
 .gstack/
+
+# Python bytecode
+__pycache__/
+*.pyc

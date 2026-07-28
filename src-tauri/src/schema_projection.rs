@@ -178,6 +178,90 @@ pub struct ParameterChange {
     pub changed_at_ms: u64,
 }
 
+/// One settled note edit in a MIDI clip, as the timeline renders it.
+///
+/// Unlike [`ParameterChange`] this is NOT materialized into its own table. The
+/// control surface already coalesces note edits at source (one row per settled
+/// edit, not per keystroke), so there is nothing left to derive — the event row
+/// *is* the record, and a projection table would only duplicate it. Read
+/// straight from `events` by [`parse_note_edit`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NoteEdit {
+    pub id: String,
+    pub track_name: Option<String>,
+    pub clip_name: Option<String>,
+    /// Live's pointer for the clip. The only reliable way to tell two clips
+    /// apart — names are frequently blank, so grouping on name alone merges
+    /// edits from different clips into one run.
+    pub clip_id: Option<String>,
+    /// `notes_added` | `notes_removed` | `notes_edited` | `cleared` | `edited`.
+    pub change_kind: Option<String>,
+    pub note_count: Option<i64>,
+    pub previous_note_count: Option<i64>,
+    pub distinct_pitches: Option<i64>,
+    /// Raw MIDI numbers as well as the rendered range: the timeline draws a
+    /// pitch bar from these, and a string like "C1-G2" cannot be measured.
+    pub pitch_min: Option<i64>,
+    pub pitch_max: Option<i64>,
+    pub previous_pitch_min: Option<i64>,
+    pub previous_pitch_max: Option<i64>,
+    /// Pitch range in Live's own naming ("C1-G2"), pre-rendered by the bridge so
+    /// the app needs no opinion about C3 = 60.
+    pub pitch_range: Option<String>,
+    pub previous_pitch_range: Option<String>,
+    pub velocity_mean: Option<f64>,
+    pub length_beats: Option<f64>,
+    /// Ready-to-show phrase: "16 notes (+4), C1-G1 -> C1-G2".
+    pub summary: Option<String>,
+    pub changed_at_ms: u64,
+}
+
+/// Build a [`NoteEdit`] from one `clip_notes_changed` event row.
+///
+/// `payload` is the raw JSON *string* stored in `events.payload`. Anything
+/// unparseable yields None rather than a half-filled row: a note edit the app
+/// cannot describe is worse than one it doesn't show, because it would occupy a
+/// line of the story saying nothing.
+pub fn parse_note_edit(
+    event_id: i64,
+    timestamp_ms: u64,
+    column_track_name: Option<String>,
+    payload: Option<&str>,
+) -> Option<NoteEdit> {
+    let parsed: Value = serde_json::from_str(payload?).ok()?;
+
+    let text = |key: &str| {
+        parsed
+            .get(key)
+            .and_then(Value::as_str)
+            .map(|value| value.to_string())
+    };
+    let int = |key: &str| parsed.get(key).and_then(Value::as_i64);
+
+    Some(NoteEdit {
+        id: format!("note-edit-{}", event_id),
+        // The first-class column wins when present — it is what every other
+        // read path joins tracks on — with the payload as the fallback.
+        track_name: column_track_name.or_else(|| text("track_name")),
+        clip_name: text("clip_name"),
+        clip_id: text("clip_id"),
+        change_kind: text("change_kind"),
+        note_count: int("note_count"),
+        previous_note_count: int("previous_note_count"),
+        distinct_pitches: int("distinct_pitches"),
+        pitch_min: int("pitch_min"),
+        pitch_max: int("pitch_max"),
+        previous_pitch_min: int("previous_pitch_min"),
+        previous_pitch_max: int("previous_pitch_max"),
+        pitch_range: text("pitch_range"),
+        previous_pitch_range: text("previous_pitch_range"),
+        velocity_mean: parsed.get("velocity_mean").and_then(Value::as_f64),
+        length_beats: parsed.get("length_beats").and_then(Value::as_f64),
+        summary: text("summary"),
+        changed_at_ms: timestamp_ms,
+    })
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreativeMomentTarget {
     pub target_type: String,
@@ -696,5 +780,61 @@ mod tests {
         assert_eq!(rows[0].after_value, Some(0.8));
         assert_eq!(rows[0].before_value_percent, Some(20.0));
         assert_eq!(rows[0].after_value_percent, Some(80.0));
+    }
+
+    #[test]
+    fn note_edit_reads_the_bridge_payload() {
+        let payload = json!({
+            "track_name": "Bass",
+            "clip_name": "Verse",
+            "change_kind": "notes_added",
+            "note_count": 16,
+            "previous_note_count": 12,
+            "distinct_pitches": 5,
+            "pitch_range": "C1-G2",
+            "previous_pitch_range": "C1-G1",
+            "velocity_mean": 96.7,
+            "length_beats": 8.0,
+            "summary": "16 notes (+4), C1-G1 -> C1-G2"
+        })
+        .to_string();
+
+        let edit = parse_note_edit(42, 1_700_000_000_000, None, Some(&payload)).expect("parsed");
+
+        assert_eq!(edit.id, "note-edit-42");
+        assert_eq!(edit.track_name.as_deref(), Some("Bass"));
+        assert_eq!(edit.clip_name.as_deref(), Some("Verse"));
+        assert_eq!(edit.change_kind.as_deref(), Some("notes_added"));
+        assert_eq!(edit.note_count, Some(16));
+        assert_eq!(edit.previous_note_count, Some(12));
+        assert_eq!(edit.summary.as_deref(), Some("16 notes (+4), C1-G1 -> C1-G2"));
+        assert_eq!(edit.changed_at_ms, 1_700_000_000_000);
+    }
+
+    #[test]
+    fn note_edit_prefers_the_first_class_track_column() {
+        // The column is what every other read path joins on; a stale payload
+        // name must not win over it.
+        let payload = json!({ "track_name": "payload name", "note_count": 4 }).to_string();
+        let edit = parse_note_edit(1, 0, Some("column name".into()), Some(&payload)).unwrap();
+        assert_eq!(edit.track_name.as_deref(), Some("column name"));
+    }
+
+    #[test]
+    fn note_edit_rejects_unusable_rows() {
+        // No payload, or one that isn't JSON, yields nothing rather than a row
+        // that would occupy a line of the story saying nothing.
+        assert!(parse_note_edit(1, 0, None, None).is_none());
+        assert!(parse_note_edit(1, 0, None, Some("not json")).is_none());
+    }
+
+    #[test]
+    fn note_edit_survives_a_sparse_payload() {
+        // An older bridge sending only the essentials still renders.
+        let payload = json!({ "note_count": 3 }).to_string();
+        let edit = parse_note_edit(7, 5, None, Some(&payload)).expect("parsed");
+        assert_eq!(edit.note_count, Some(3));
+        assert!(edit.summary.is_none());
+        assert!(edit.pitch_range.is_none());
     }
 }

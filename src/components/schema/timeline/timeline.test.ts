@@ -7,14 +7,21 @@ import {
   buildShareDocument,
   buildTicks,
   cumulativeMovePaths,
+  describeActivity,
+  describeNoteEdit,
+  clipLabel,
   formatDuration,
   formatElapsed,
+  formatWhen,
+  formatClock,
+  LONG_TAKE_MS,
   formatMoveValue,
   formatPercent,
   formatTakeTitle,
   noteTrackId,
   pct,
   trackColor,
+  type Activity,
   type SessionBlock,
 } from "./index";
 
@@ -204,5 +211,108 @@ describe("buildShareData / buildShareDocument", () => {
     expect(JSON.parse(buildShareDocument(data, "json")).title).toBe("Take");
     expect(buildShareDocument(data, "md")).toContain("# Take");
     expect(buildShareDocument(data, "txt")).toContain("Take");
+  });
+});
+
+describe("describeNoteEdit", () => {
+  const edit = (overrides: Partial<Activity> = {}): Activity => ({
+    id: "ne1",
+    kind: "noteEdit",
+    trackId: "t1",
+    atMs: 1_000,
+    clipName: "Verse",
+    changeKind: "notes_added",
+    noteCount: 16,
+    previousNoteCount: 12,
+    pitchRange: "C1-G2",
+    previousPitchRange: "C1-G1",
+    summary: null,
+    ...overrides,
+  });
+
+  it("prefers the bridge's own summary", () => {
+    // Written where Live's note naming was in hand — nothing here improves on it.
+    expect(describeNoteEdit(edit({ summary: "16 notes (+4), C1-G1 -> C1-G2" }))).toBe(
+      "16 notes (+4), C1-G1 -> C1-G2",
+    );
+  });
+
+  it("reassembles a line when an older payload carried no summary", () => {
+    expect(describeNoteEdit(edit())).toBe("16 notes (+4), C1-G1 → C1-G2");
+  });
+
+  it("shows a single range when the part did not change shape", () => {
+    expect(describeNoteEdit(edit({ previousPitchRange: "C1-G2" }))).toBe("16 notes (+4), C1-G2");
+  });
+
+  it("signs a removal", () => {
+    expect(
+      describeNoteEdit(edit({ noteCount: 8, previousNoteCount: 12, previousPitchRange: "C1-G2" })),
+    ).toBe("8 notes (-4), C1-G2");
+  });
+
+  it("omits the delta when the count held steady", () => {
+    // Transposing or re-timing a part changes it without changing how many
+    // notes it has; "(+0)" would be noise.
+    expect(
+      describeNoteEdit(edit({ noteCount: 12, previousNoteCount: 12, previousPitchRange: "C1-G2" })),
+    ).toBe("12 notes, C1-G2");
+  });
+
+  it("names a cleared clip by what it used to hold", () => {
+    expect(describeNoteEdit(edit({ changeKind: "cleared", noteCount: 0 }))).toBe("Cleared 12 notes");
+  });
+
+  it("says '1 note', never '1 notes'", () => {
+    expect(describeNoteEdit(edit({ noteCount: 1, previousNoteCount: 2, previousPitchRange: "C1-G2" }))).toBe(
+      "1 note (-1), C1-G2",
+    );
+    expect(describeNoteEdit(edit({ changeKind: "cleared", noteCount: 0, previousNoteCount: 1 }))).toBe(
+      "Cleared 1 note",
+    );
+  });
+
+  it("names an unnamed clip rather than leaving a hole", () => {
+    // Live reports no name as "" — and as a literal "0" for absent text props.
+    expect(clipLabel(null)).toBe("Untitled clip");
+    expect(clipLabel("")).toBe("Untitled clip");
+    expect(clipLabel("   ")).toBe("Untitled clip");
+    expect(clipLabel("0")).toBe("Untitled clip");
+    expect(clipLabel("Verse")).toBe("Verse");
+  });
+
+  it("describes an activity as clip plus change", () => {
+    expect(describeActivity(edit({ summary: "16 notes (+4)" }))).toBe("Verse: 16 notes (+4)");
+  });
+});
+
+describe("formatWhen", () => {
+  const start = new Date("2026-07-21T21:36:00").getTime();
+
+  it("uses elapsed for a normal take", () => {
+    expect(formatWhen(start + 65_000, start, 90 * 60_000)).toBe("1:05");
+  });
+
+  it("switches to the clock once a take outgrows elapsed", () => {
+    // 39 hours in, "39:24:22" is a number you decode; the clock is a memory.
+    const span = 39 * 60 * 60 * 1000;
+    const when = formatWhen(start + span, start, span);
+    expect(when).toBe(formatClock(start + span));
+    expect(when).not.toContain("39:");
+  });
+
+  it("holds elapsed right up to the threshold, and flips just past it", () => {
+    const at = start + 1000;
+    expect(formatWhen(at, start, LONG_TAKE_MS)).toBe("0:01");
+    expect(formatWhen(at, start, LONG_TAKE_MS + 1)).toBe(formatClock(at));
+  });
+
+  it("gives the axis and the rows the same clock", () => {
+    // One source of truth, so a tick and a row can never disagree.
+    const span = 39 * 60 * 60 * 1000;
+    const bounds = { start, span, sessionStart: start };
+    const ticks = buildTicks(bounds);
+    expect(ticks[0].label).toBe(formatWhen(start, start, span));
+    expect(ticks[4].label).toBe(formatWhen(start + span, start, span));
   });
 });

@@ -17,6 +17,28 @@ export function formatElapsed(ms: number): string {
   return `${minutes}:${seconds.toString().padStart(2, "0")}`;
 }
 
+// Past this span, elapsed-from-session-start stops being readable: "39:24:22"
+// is a number you have to decode, and nobody remembers a moment as "thirty-nine
+// hours in". A take this long means the set was left open across sittings, so
+// the useful question becomes "when did I do that", answered by the clock.
+// Four hours: longer than any single sitting, short enough that a take spanning
+// two of them switches over.
+export const LONG_TAKE_MS = 4 * 60 * 60 * 1000;
+
+export function formatClock(atMs: number): string {
+  return new Date(atMs).toLocaleTimeString(undefined, {
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
+// The timestamp column, in whichever clock the take's length calls for. Every
+// surface takes it from here so the axis, the story rows and the blocks can
+// never disagree about which clock they are on.
+export function formatWhen(atMs: number, sessionStart: number, spanMs: number): string {
+  return spanMs > LONG_TAKE_MS ? formatClock(atMs) : formatElapsed(atMs - sessionStart);
+}
+
 // Human, scannable take title. Auto-generated names (the raw "Session <epoch>"
 // the backend assigns) are replaced with the session's date + start time so the
 // header reads like a memory, not a database row.
@@ -116,8 +138,49 @@ export function formatMoveValue(
     : formatValue(value, unit);
 }
 
+// One-line phrase for a MIDI note edit. The bridge's own summary wins — it was
+// written with Live's note naming in hand — and this only reassembles a line
+// when an older payload didn't carry one.
+// Live leaves a clip unnamed as often as not, and reports that as an empty
+// string (or a literal "0" — its sentinel for an absent text property). Either
+// one rendered raw leaves a row labelled " · notes" with a hole where the clip
+// should be.
+export function clipLabel(name: string | null | undefined): string {
+  const trimmed = name?.trim();
+  if (!trimmed || trimmed === "0") return "Untitled clip";
+  return trimmed;
+}
+
+function notesLabel(count: number): string {
+  return count === 1 ? "1 note" : `${count} notes`;
+}
+
+export function describeNoteEdit(item: Activity): string {
+  if (item.summary) return item.summary;
+  if (item.changeKind === "cleared") {
+    return `Cleared ${notesLabel(item.previousNoteCount ?? 0)}`;
+  }
+  const count = item.noteCount ?? 0;
+  const delta =
+    item.previousNoteCount !== null &&
+    item.previousNoteCount !== undefined &&
+    item.previousNoteCount !== count
+      ? ` (${count - item.previousNoteCount > 0 ? "+" : ""}${count - item.previousNoteCount})`
+      : "";
+  // Show the range as a transition when it actually moved — widening a part by
+  // an octave is the change, and "C1-G2" alone would hide it.
+  const range =
+    item.pitchRange && item.previousPitchRange && item.previousPitchRange !== item.pitchRange
+      ? `${item.previousPitchRange} → ${item.pitchRange}`
+      : item.pitchRange;
+  return [`${notesLabel(count)}${delta}`, range].filter(Boolean).join(", ");
+}
+
 export function describeActivity(item: Activity): string {
   if (item.kind === "note") return item.title ?? "Note";
+  if (item.kind === "noteEdit") {
+    return `${clipLabel(item.clipName)}: ${describeNoteEdit(item)}`;
+  }
   const where = [item.deviceName, item.paramName].filter(Boolean).join(" · ");
   return `${where}: ${formatMoveValue(item.before, item.beforePercent, item.unit, item.beforeDisplay)} → ${formatMoveValue(
     item.after,

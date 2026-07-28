@@ -477,6 +477,7 @@ const LOGGED_EVENT_TYPES: &[&str] = &[
     "audio_clip_added",
     "midi_clip_created",
     "clip_created",
+    "clip_notes_changed",
     // Deep snapshots that feed the schema projection
     "live_set_snapshot",
     "session_snapshot",

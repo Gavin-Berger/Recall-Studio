@@ -1,0 +1,477 @@
+% Recall Studio project-status brief
+% Place this file in the same Overleaf directory as the supplied PNG assets.
+% Expected filenames are listed in the Product Walkthrough section below.
+
+\documentclass[11pt,letterpaper]{article}
+
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+\usepackage[margin=0.82in]{geometry}
+\usepackage{microtype}
+\usepackage[table]{xcolor}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage{array}
+\usepackage{enumitem}
+\usepackage{titlesec}
+\usepackage{caption}
+\usepackage{fancyhdr}
+\usepackage{hyperref}
+\usepackage{lastpage}
+
+\definecolor{RecallInk}{HTML}{0B0E18}
+\definecolor{RecallPanel}{HTML}{F3F4F8}
+\definecolor{RecallLine}{HTML}{D8DCEF}
+\definecolor{RecallViolet}{HTML}{7466D9}
+\definecolor{RecallMint}{HTML}{438F7F}
+\definecolor{RecallMuted}{HTML}{5E6472}
+\definecolor{RecallWarm}{HTML}{A87026}
+\definecolor{RecallDanger}{HTML}{B44254}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=RecallViolet,
+  urlcolor=RecallMint,
+  pdftitle={Recall Studio Project Status and Technical Brief},
+  pdfauthor={Recall Studio}
+}
+
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{0.68em}
+\setlist[itemize]{leftmargin=1.25em,itemsep=0.28em,topsep=0.25em}
+\setlist[enumerate]{leftmargin=1.45em,itemsep=0.35em,topsep=0.25em}
+\renewcommand{\arraystretch}{1.22}
+
+\titleformat{\section}
+  {\Large\bfseries\color{RecallInk}}
+  {\thesection}{0.65em}{}
+  [\vspace{0.2em}\color{RecallLine}\titlerule]
+\titleformat{\subsection}
+  {\large\bfseries\color{RecallInk}}
+  {\thesubsection}{0.6em}{}
+\titleformat{\subsubsection}
+  {\normalsize\bfseries\color{RecallInk}}
+  {\thesubsubsection}{0.5em}{}
+
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\small\sffamily\bfseries RECALL STUDIO}
+\fancyhead[R]{\small\sffamily\color{RecallMuted} Project Status}
+\fancyfoot[L]{\small\sffamily\color{RecallMuted} Pre-beta technical brief}
+\fancyfoot[R]{\small\sffamily\color{RecallMuted} \thepage\ of \pageref{LastPage}}
+\renewcommand{\headrulewidth}{0.4pt}
+\renewcommand{\footrulewidth}{0pt}
+
+\newcolumntype{Y}{>{\raggedright\arraybackslash}X}
+\newcolumntype{P}[1]{>{\raggedright\arraybackslash}p{#1}}
+
+\newcommand{\statuslabel}[2]{%
+  \begingroup
+  \setlength{\fboxsep}{4pt}%
+  \colorbox{#1!12}{\textcolor{#1}{\sffamily\footnotesize\bfseries #2}}%
+  \endgroup
+}
+
+\newcommand{\callout}[1]{%
+  \begin{center}
+    \setlength{\fboxsep}{10pt}%
+    \colorbox{RecallPanel}{%
+      \parbox{0.93\linewidth}{\color{RecallInk}#1}%
+    }
+  \end{center}
+}
+
+\newcommand{\missingasset}[1]{%
+  \fcolorbox{RecallLine}{RecallPanel}{%
+    \parbox[c][0.28\textheight][c]{0.88\linewidth}{%
+      \centering\sffamily\color{RecallMuted}
+      Image asset not found\\[0.5em]
+      \texttt{\detokenize{#1}}%
+    }%
+  }%
+}
+
+\newcommand{\productimage}[2]{%
+  \IfFileExists{#1}{%
+    \includegraphics[width=\linewidth,height=0.68\textheight,keepaspectratio]{#1}%
+  }{%
+    \missingasset{#2}%
+  }%
+}
+
+\newcommand{\productfigure}[3]{%
+  \begin{figure}[p]
+    \centering
+    \productimage{#1}{#1}
+    \caption{\textbf{#2} #3}
+  \end{figure}
+  \clearpage
+}
+
+\begin{document}
+
+\begin{titlepage}
+  \thispagestyle{empty}
+
+  \IfFileExists{Logo.png}{%
+    \includegraphics[width=25mm,height=25mm,keepaspectratio]{Logo.png}%
+  }{%
+    \fcolorbox{RecallViolet}{white}{%
+      \parbox[c][22mm][c]{22mm}{\centering\sffamily\bfseries\color{RecallViolet}RECALL}%
+    }%
+  }
+
+  \vspace{1.25in}
+
+  {\fontsize{34}{39}\selectfont\bfseries\color{RecallInk} Recall Studio\par}
+  \vspace{0.18in}
+  {\Large\sffamily\color{RecallMuted} Project Status and Technical Brief\par}
+
+  \vspace{0.55in}
+
+  \callout{%
+    \textbf{Recall Studio is local-first session memory for Ableton Live.}
+    It records meaningful production activity, organizes it into a reviewable
+    history, and helps a producer understand how a project changed over time.
+  }
+
+  \vfill
+
+  \begin{tabular}{@{}ll@{}}
+    \textbf{Product stage:} & Pre-beta development \\
+    \textbf{Application version:} & 0.1.0 \\
+    \textbf{Primary platform:} & Windows 10/11 \\
+    \textbf{Status date:} & July 22, 2026 \\
+  \end{tabular}
+
+  \vspace{0.5in}
+
+  {\small\color{RecallMuted}
+  Prepared for developers, technical advisors, potential collaborators, and
+  people evaluating the product.}
+\end{titlepage}
+
+\tableofcontents
+\clearpage
+
+\section{Executive Summary}
+
+Recall Studio is a desktop companion for Ableton Live. It captures the work that
+normally disappears between saved project files: devices added or removed,
+parameter moves, clips, tempo changes, takes, and creative moments a producer
+chooses to keep. The application turns that activity into a project history that
+can be reviewed after the session.
+
+The product is functional but not release-ready. The native application, local
+database, project and take management, timeline, recap tools, release organizer,
+notes, and diagnostic report flow are implemented. The capture layer currently
+supports the bundled Max for Live bridge over UDP. A newer Ableton control-surface
+integration over TCP is present in the current branch as an active prototype and
+still needs sustained live validation before it should become the default path.
+
+\callout{%
+  \textbf{The core product idea is simple:} an Ableton project file remembers the
+  result. Recall Studio is intended to remember the work that produced it.
+}
+
+The immediate challenge is no longer proving that events can reach a desktop app.
+The challenge is earning trust over real, multi-hour sessions. That means validating
+the new capture path, improving field diagnostics, removing silent failure modes,
+and testing installation on machines that do not have development tools.
+
+\section{The Product}
+
+\subsection{The problem it addresses}
+
+Music production is a long sequence of small decisions. A producer may find the
+right bass tone through a short filter ride, delete a device that later becomes
+important, or save several versions without remembering which one contained the
+best idea. Ableton preserves the current project state, but it does not provide a
+readable history of how that state developed.
+
+Manual notes are useful when someone remembers to write them. In practice, the
+best sessions are often the moments when note-taking stops. Cloud collaboration
+tools solve a different problem and can be inappropriate for unreleased material.
+Recall therefore keeps its working data on the producer's machine and captures in
+the background.
+
+\subsection{Product principles}
+
+\begin{itemize}
+  \item \textbf{Invisible during creation.} Capture must not interrupt the producer
+        or make Ableton feel slower.
+  \item \textbf{Local by default.} Session data is stored in a local SQLite database.
+        Nothing is uploaded by the application.
+  \item \textbf{The raw event log remains authoritative.} Timelines and summaries are
+        derived views. Curation may hide noise, but it should not rewrite history.
+  \item \textbf{Producer language over implementation language.} The interface talks
+        about projects, takes, tracks, moves, and moments rather than packets or schemas.
+  \item \textbf{Uncertainty is shown honestly.} When Ableton or a plug-in does not
+        expose information, the product should identify the gap instead of inventing detail.
+\end{itemize}
+
+\section{Current Product State}
+
+\subsection{Status at a glance}
+
+\begin{center}
+\small
+\rowcolors{2}{RecallPanel}{white}
+\begin{tabularx}{\linewidth}{P{0.19\linewidth} P{0.16\linewidth} Y Y}
+  \toprule
+  \textbf{Area} & \textbf{Status} & \textbf{What works now} & \textbf{Current boundary} \\
+  \midrule
+  Startup and Project Desk & \statuslabel{RecallMint}{Implemented} &
+  Local producer profile, bridge state, project library, active take controls, folder connection, and project creation. &
+  The guided first-run music-folder scan is not yet a complete onboarding flow. \\
+
+  Projects and Versions & \statuslabel{RecallMint}{Implemented} &
+  Projects, loose takes, scanned \texttt{.als} files, relinking, take status, and structural comparison between versions. &
+  Parameter-level comparison and persistent cross-take track identity are planned. \\
+
+  Timeline & \statuslabel{RecallMint}{Implemented} &
+  Curated session activity, track lanes, parameter moves, creative moments, activity blocks, filtering, and session recap data. &
+  Arrangement-position anchoring and the planned Sound Story view are not implemented. \\
+
+  Recap and export & \statuslabel{RecallMint}{Implemented} &
+  Session summary plus Markdown, text, JSON, and printable export paths in the sharing pipeline. &
+  Export behavior still needs clean-machine and real-project validation. \\
+
+  Project Organizer & \statuslabel{RecallMint}{Implemented} &
+  Album, EP, and single organization; track ordering; source sets; bounce versions; waveform analysis; loudness and peak measurements; timed comments; final-version selection; and private preview export. &
+  Its exact role in the first beta scope should be decided so it does not distract from capture reliability. \\
+
+  Notes and Reference & \statuslabel{RecallWarm}{Partial} &
+  Autosaving producer notes and a built-in production reference are available. &
+  Notes still use browser local storage and must move to SQLite before beta. \\
+
+  Diagnostics & \statuslabel{RecallWarm}{Partial} &
+  A Report a Problem dialog can gather connection details, bridge metrics, recent frontend errors, and a producer note for copy or save. &
+  Persistent file logging, a dedicated diagnostics view, and a React error boundary remain open. \\
+
+  Capture transport & \statuslabel{RecallWarm}{Transition} &
+  Max for Live over UDP remains available. A Python control-surface path over TCP now feeds the same Rust pipeline. &
+  The TCP path is still labeled as a spike in source and needs marathon-session and compatibility testing. \\
+  \bottomrule
+\end{tabularx}
+\end{center}
+
+\subsection{What has been proven}
+
+The application can receive structured events, normalize multiple protocol shapes,
+classify event importance, write events to SQLite, rebuild typed project data, and
+render that history in React. Folder scanning can discover existing \texttt{.als}
+files and create takes without modifying the Ableton projects themselves.
+
+The ingestion pipeline includes bounded queues, transactional persistence, sequence
+gap detection, panic isolation per event, and an enlarged UDP receive buffer. The
+project's stress work showed why this matters: packet loss occurred before the
+application queue when Windows exhausted its default socket buffer. Increasing the
+receive buffer and moving work off the receive loop corrected that measured failure
+mode in the test harness.
+
+This is meaningful engineering progress, but it is not the same as a completed beta.
+The remaining standard is operational: Recall must run beside Ableton for hours,
+capture the right details, and explain any failure clearly enough to diagnose later.
+
+\subsection{Known limitations}
+
+\begin{itemize}
+  \item The product is Windows-first. macOS packaging, signing, and notarization are
+        separate work.
+  \item Some VST plug-ins do not expose preset names or complete state through Ableton's
+        public object model. Recall can record only what Live makes visible.
+  \item The control-surface prototype was written against Ableton Live 12's embedded
+        Python environment. Live 11 compatibility has not been established for that path.
+  \item The application does not yet have production file logging, signed installers,
+        an updater, or continuous integration.
+  \item The Tauri content security policy is currently unset, and package metadata
+        remains at development defaults in several places.
+  \item Several shared Rust states still use poisoning mutexes with \texttt{expect} calls.
+        A failure while a lock is held can make later commands fail until restart.
+  \item Sound Story, arrangement anchoring, first-run scanning, and parameter-level
+        take differences are specified or planned, not shipped features.
+\end{itemize}
+
+\section{Product Walkthrough}
+
+The screenshots in this section show the current interface. Each image is presented
+as product evidence, not as a claim that every workflow has completed release testing.
+
+\productfigure{Landing Page.png}{Startup and local profile.}{The opening screen shows local identity, library readiness, and Ableton bridge state before entering the Project Desk.}
+
+\productfigure{Nav Bar.png}{Application navigation.}{Projects, Recap, Timeline, Organizer, Notes, and Reference are persistent surfaces. The top-left Recall mark returns to startup.}
+
+\productfigure{Project Manager.png}{Project Desk.}{The project library groups takes by song, supports connected folders, exposes active capture state, and provides direct access to recap and timeline views.}
+
+\productfigure{Timeline_Capture.png}{Session capture timeline.}{Captured events are organized into a readable working history rather than displayed as an unfiltered transport log.}
+
+\productfigure{Track_Changes_Timeline.png}{Track-level changes.}{The timeline groups activity by musical context so parameter moves and structural changes can be read after the session.}
+
+\productfigure{project Organizer.png}{Project Organizer.}{A release can contain multiple songs, source Ableton sets, bounce versions, measurements, comments, and a selected final version.}
+
+\productfigure{Unfilled Project Organizer.png}{Organizer empty state.}{The incomplete state makes missing source sets, mixes, or release information explicit rather than presenting an apparently finished release.}
+
+\productfigure{Album Preview.png}{Private release preview.}{Final bounce selections can be assembled into a portable listener page with cover art, playback, track order, and comments.}
+
+\productfigure{Notes.png}{Producer Notes.}{Notes live outside an individual session and autosave locally. Native SQLite persistence is still required before beta.}
+
+\productfigure{Reference.png}{Production Reference.}{A built-in reference keeps common production terminology and practical guidance available without leaving the application.}
+
+\section{Technical Breakdown}
+
+\subsection{Architecture at a glance}
+
+\begin{center}
+\small
+\begin{tabularx}{\linewidth}{P{0.20\linewidth} P{0.23\linewidth} Y}
+  \toprule
+  \textbf{Layer} & \textbf{Technology} & \textbf{Responsibility and rationale} \\
+  \midrule
+  Ableton integration & Max for Live JavaScript bridge; Python MIDI Remote Script prototype &
+  Observes Live's object model and emits changes. Max for Live is the established path. The control-surface prototype explores broader capture with lower traversal cost and without UDP snapshot-size limits. \\
+
+  Local transport & UDP on \texttt{127.0.0.1:9000}; TCP on \texttt{127.0.0.1:9001} &
+  UDP keeps the existing bridge simple and low overhead. TCP carries newline-delimited JSON from the prototype and supports whole-set snapshots larger than one UDP datagram. Both remain local to the machine. \\
+
+  Native application & Tauri 2 and Rust &
+  Owns process boundaries, filesystem access, dialogs, transport listeners, persistence, and commands exposed to the frontend. Tauri keeps the desktop shell small while allowing native Rust control over reliability-sensitive work. \\
+
+  Persistence & SQLite through \texttt{rusqlite} &
+  Stores the append-only event history, projects, sessions, creative moments, organizer metadata, and migrations in a local database. SQLite fits the single-user, local-first model and supports transactional writes without a separate service. \\
+
+  Projection layer & Rust schema projection &
+  Rebuilds project, track, device, parameter, and change views from stored events. Derived views can evolve without discarding the original capture record. \\
+
+  Interface & React 19, TypeScript, and Vite &
+  Renders project management, versions, timeline, recap, organizer, notes, reference, and diagnostics. Tauri IPC keeps native operations behind explicit commands. \\
+  \bottomrule
+\end{tabularx}
+\end{center}
+
+\subsection{Event flow}
+
+\begin{enumerate}
+  \item Ableton exposes tracks, devices, parameters, clips, tempo, and project context
+        through its object model.
+  \item The active bridge converts relevant observations into Recall Protocol JSON.
+        The established Max for Live path sends UDP datagrams. The newer control-surface
+        path queues newline-delimited JSON to a background TCP sender so socket work does
+        not block Live's main thread.
+  \item Rust validates the protocol envelope and normalizes older or nested field shapes
+        into one canonical event representation.
+  \item Events are assigned a priority. Creative and structural changes are protected.
+        High-frequency telemetry may be shed under overload.
+  \item A bounded 4,096-event channel separates receiving from database work. The worker
+        persists as many as 256 events per transaction.
+  \item SQLite retains the raw record. Projection code derives typed entities, parameter
+        histories, summaries, versions, and timeline material.
+  \item React requests those views through Tauri commands. Export occurs only when the
+        producer explicitly chooses to create a recap or release preview.
+\end{enumerate}
+
+\subsection{Reliability controls currently in code}
+
+\begin{itemize}
+  \item The UDP socket requests an 8 MiB receive buffer to absorb project-load bursts.
+  \item Sequence tracking detects gaps independently for each sending device.
+  \item The persistence channel is bounded at 4,096 events and never blocks the receive loop.
+  \item The in-memory live-event buffer is capped at 50,000 entries; SQLite remains authoritative.
+  \item Each UDP packet and TCP event is processed behind panic isolation so one malformed
+        payload does not end the capture thread.
+  \item The control-surface sender has a bounded 2,048-event queue and discards the oldest
+        backlog first when the application is unavailable.
+  \item Parameter listening in the prototype is limited to the focused device and at most
+        128 parameters. A 350 ms settle window turns a dense knob ride into one meaningful move.
+\end{itemize}
+
+\subsection{Data and privacy posture}
+
+Recall does not require an account and does not upload session data. Transport is
+bound to loopback addresses. Core history and organizer metadata live in SQLite;
+larger waveform and cover assets are stored as managed files in the application's
+data directory. Notes are the current exception because they still use local storage.
+
+The application is read-only with respect to Ableton's musical project. It observes
+and records activity but does not inject locators, rewrite project history, or modify
+the \texttt{.als} file. Export is an explicit user action.
+
+\subsection{Verified build and test state}
+
+The following results were verified against the current working tree on July 22, 2026:
+
+\begin{itemize}
+  \item TypeScript compilation and the Vite production build complete successfully.
+  \item 112 frontend tests pass across 9 Vitest files.
+  \item 55 Rust tests pass, including storage migration, schema projection, transport
+        normalization, sequence-gap detection, organizer persistence, and preview export.
+  \item The repository does not yet run these checks in continuous integration, so the
+        verified local result is stronger than the current release process around it.
+\end{itemize}
+
+\section{What's Next}
+
+\subsection{Immediate engineering priorities}
+
+\begin{enumerate}
+  \item \textbf{Choose and validate the beta capture path.} Run the TCP control-surface
+        prototype beside real Ableton projects for multi-hour sessions. Confirm CPU impact,
+        reconnection behavior, listener cleanup, snapshot completeness, and Live 11/12 scope.
+        Then decide whether TCP replaces Max for Live or ships as a separate capture tier.
+  \item \textbf{Make failures observable.} Add persistent native file logging, expose the
+        full bridge metrics in a dedicated diagnostic view, and retain the existing report
+        generator as the handoff format for bug reports.
+  \item \textbf{Remove silent failure modes.} Replace poisoning mutex usage, add a React
+        error boundary around application surfaces, and provide a clear startup error when
+        database initialization or a listener bind fails.
+  \item \textbf{Dogfood the core loop.} Use Recall during every real session for at least
+        two weeks. Track data loss, Ableton responsiveness, wrong project assignment, and
+        whether the timeline actually answers a question the producer had forgotten.
+  \item \textbf{Complete first-run value.} Turn the existing folder scanner into a guided
+        first-run flow so a producer can see useful project history before a new capture has
+        accumulated.
+\end{enumerate}
+
+\subsection{Before a friend beta}
+
+\begin{itemize}
+  \item Build the planned Sound Story view from existing event data and validate it on real tracks.
+  \item Move Notes from local storage into SQLite with an additive migration.
+  \item Add continuous integration for the Rust tests, frontend tests, type checking, and build.
+  \item Synchronize application versions and replace development package metadata.
+  \item Test the NSIS installer and bridge setup on a clean Windows machine with no developer tools.
+  \item Set a real Tauri content security policy and document known plug-in visibility limits.
+\end{itemize}
+
+\subsection{After the first stable release}
+
+Arrangement-position anchoring is the strongest planned extension. It would place
+changes on the song's bars-and-beats ruler instead of only on session time. That work
+requires a protocol update and its own Live performance validation, so it should not
+be pulled into the initial release path.
+
+Other later candidates include parameter-level take differences, persistent identity
+for tracks across renamed versions, richer collaboration exports, a signed macOS build,
+and an updater. AI-generated summaries remain a possible later layer over trustworthy
+captured data, not a substitute for getting capture and history correct.
+
+\section{Questions or Claims to Verify}
+
+\begin{enumerate}
+  \item Is the Python control-surface integration intended to replace the Max for Live
+        bridge, or should both remain supported capture tiers?
+  \item Does the control-surface path support Ableton Live 11, or is Live 12 the accurate
+        requirement for the first version that uses it?
+  \item Has the TCP snapshot and focused-device listener path completed a real four-hour
+        session with instruments active and no measurable effect on Live?
+  \item Is the Project Organizer part of the first friend beta, or should the beta remain
+        focused on project history, versions, timeline, recap, and Sound Story?
+  \item Which export formats have been visually reviewed on a clean packaged build, as
+        opposed to being implemented and covered by unit tests?
+  \item The README and several planning documents still describe UDP and Max for Live as
+        the only active capture path. They should be updated once the transport decision is final.
+\end{enumerate}
+
+\end{document}

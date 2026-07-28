@@ -10,7 +10,9 @@ mod udp_listener;
 
 use metrics::{BridgeMetrics, BridgeMetricsSnapshot};
 use protocol::RecallEvent;
-use schema_projection::{CreativeMoment, CreativeMomentTarget, ParameterChange, ProjectSchema};
+use schema_projection::{
+    CreativeMoment, CreativeMomentTarget, NoteEdit, ParameterChange, ProjectSchema,
+};
 use session::{SavedProject, SavedSession, SavedSessionMetadata, SessionState, SessionStatus};
 use std::io::{Read, Seek, Write};
 use std::sync::{Arc, Mutex};
@@ -1308,6 +1310,12 @@ fn get_parameter_changes(
 }
 
 #[tauri::command]
+fn get_note_edits(state: State<'_, AppState>, session_id: String) -> Result<Vec<NoteEdit>, String> {
+    let storage = state.storage.lock().expect("Storage state lock failed");
+    storage.get_note_edits(&session_id)
+}
+
+#[tauri::command]
 fn list_creative_moments(
     state: State<'_, AppState>,
     session_id: String,
@@ -1527,6 +1535,7 @@ pub fn run() {
             materialize_session_schema,
             get_project_schema,
             get_parameter_changes,
+            get_note_edits,
             list_creative_moments,
             create_creative_moment,
             update_creative_moment,

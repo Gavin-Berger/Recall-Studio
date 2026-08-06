@@ -805,10 +805,10 @@ export function SchemaTimeline({
             className="tl-btn tl-btn--primary"
             onClick={() => void load(true)}
             disabled={status === "loading"}
-            title="Re-read the current Live set's tracks and devices to refresh this map"
+            title="Rebuild this map from the moves already captured in the database"
           >
             <ScanIcon />
-            {status === "loading" ? "Scanning…" : "Rescan set"}
+            {status === "loading" ? "Rebuilding…" : "Rebuild timeline"}
           </button>
         </div>
       </header>

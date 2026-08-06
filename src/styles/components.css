@@ -2766,6 +2766,16 @@
   display: inline-flex;
 }
 
+/* An explicit stacking context for the open state, not just the popup's own
+   z-index: 30. Without this, the trigger button's open-state background
+   transition (border-color/background, 120ms) can promote it to its own
+   compositor layer for a frame, and that layer's paint order isn't settled
+   by the popup's z-index alone -- observed as a one-frame flash where the
+   row's own Open/… buttons paint through the popup before it corrects. */
+.row-menu.is-open {
+  z-index: 31;
+}
+
 .row-menu__trigger {
   display: inline-flex;
   align-items: center;

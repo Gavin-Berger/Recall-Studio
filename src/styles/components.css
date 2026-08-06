@@ -1891,6 +1891,7 @@
 
 .cheat-sheet__controls {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   align-items: center;
 }

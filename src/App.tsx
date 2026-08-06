@@ -9,6 +9,7 @@ import { ProductionCheatSheet } from "./components/ProductionCheatSheet";
 import { SchemaTimeline } from "./components/schema/SchemaTimeline";
 import {
   NotesScreen,
+  ProjectBriefingScreen,
   ProjectManagerScreen,
   ProjectOrganizerScreen,
   ProjectVersionsScreen,
@@ -174,10 +175,11 @@ function App() {
     setSurface("recap");
   }
 
-  // Drill into a project's version memory — the hero surface for a song.
+  // Open a project → land on its re-entry briefing (where did I leave off), the
+  // hero surface for a song. The version list is one click away from there.
   function handleOpenVersions(projectId: string) {
     setSelectedProjectId(projectId);
-    setSurface("versions");
+    setSurface("briefing");
   }
 
   // Open a project for work: resume the take for the version open in Ableton (or
@@ -377,11 +379,19 @@ function App() {
           onRelinkTake={handleRelinkTake}
         />
       }
+      briefing={
+        <ProjectBriefingScreen
+          project={selectedProject}
+          onBack={() => setSurface("projects")}
+          onOpenAllVersions={() => setSurface("versions")}
+          onOpenTimeline={handleOpenTimeline}
+        />
+      }
       versions={
         <ProjectVersionsScreen
           project={selectedProject}
           connection={connection}
-          onBack={() => setSurface("projects")}
+          onBack={() => setSurface("briefing")}
           onOpenProject={handleOpenProject}
           onRescanFolder={handleRescanFolder}
           onConnectFolder={handleConnectFolder}

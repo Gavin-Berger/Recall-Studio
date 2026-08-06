@@ -7,6 +7,7 @@ import { RecallMark } from "./RecallMark";
 // Projects, so it shares the Projects nav item.
 export type AppSurface =
   | "projects"
+  | "briefing"
   | "versions"
   | "recap"
   | "timeline"
@@ -34,6 +35,7 @@ type AppShellProps = {
   onChangeSurface: (surface: AppSurface) => void;
   connected: boolean;
   projects: ReactNode;
+  briefing: ReactNode;
   versions: ReactNode;
   recap: ReactNode;
   timeline: ReactNode;
@@ -49,6 +51,7 @@ export function AppShell({
   onChangeSurface,
   connected,
   projects,
+  briefing,
   versions,
   recap,
   timeline,
@@ -85,7 +88,8 @@ export function AppShell({
           <div className="recall-sidebar__nav">
             {NAV_ITEMS.map((item) => {
               const active =
-                surface === item.id || (item.id === "projects" && surface === "versions");
+                surface === item.id ||
+                (item.id === "projects" && (surface === "versions" || surface === "briefing"));
               return (
                 <button
                   key={item.id}
@@ -127,6 +131,8 @@ export function AppShell({
             >
               {surface === "projects" ? (
                 <div className="home-surface">{projects}</div>
+              ) : surface === "briefing" ? (
+                <div className="home-surface">{briefing}</div>
               ) : surface === "versions" ? (
                 <div className="home-surface">{versions}</div>
               ) : surface === "recap" ? (

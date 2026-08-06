@@ -38,6 +38,19 @@ export function abletonSetName(session: SavedSessionMetadata | null): string | n
   return raw === "" || raw === "0" ? null : raw;
 }
 
+// The set's name taken from its `.als` path — the filename with the extension
+// dropped. "…/believeme_140_Am.als" → "believeme_140_Am". Null when the take is
+// not anchored to a saved version yet. The `.als` on disk is the most reliable
+// name source (it survives an unsaved LOM name), so callers prefer it over
+// abletonSetName and fall back to that. Handles both `\` and `/` separators and
+// the same "0" sentinel abletonSetName guards against.
+export function alsSetName(path: string | null | undefined): string | null {
+  if (!path) return null;
+  const file = path.split(/[\\/]/).pop() ?? "";
+  const name = file.replace(/\.als$/i, "").trim();
+  return name === "" || name === "0" ? null : name;
+}
+
 /** What the connection chip should say about the set Ableton has open. */
 export type BridgeSetLabel = {
   text: string;

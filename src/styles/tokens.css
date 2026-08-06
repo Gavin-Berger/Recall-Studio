@@ -1,45 +1,47 @@
 :root {
-  --ink: #0b0e18;
-  --ink-2: #10131f;
-  --paper: #d8dcef;
-  --paper-strong: #f4f6ff;
-  --muted: #8b90a3;
-  --faint: #636a82;
-  /* AA-safe replacement for --faint on text under 19px (DESIGN.md §2). */
-  --faint-aa: #7d84a0;
-  --panel: #14161f;
-  --panel-2: #191c27;
-  --panel-3: #202432;
-  --line: #2a3041;
-  --line-soft: #222838;
+  /* Surfaces — cool graphite ramp (DESIGN.md v2 §2). */
+  --ink: #0d0f13;
+  --ink-2: #12141a;
+  --paper: #d6dae4;
+  --paper-strong: #f3f5fa;
+  --muted: #8b91a0;
+  --faint: #666d7c;
+  /* AA-safe replacement for --faint on text under 19px (DESIGN.md §9). */
+  --faint-aa: #868d9c;
+  --panel: #161922;
+  --panel-2: #1c2029;
+  --panel-3: #232833;
+  --line: #2a2f3a;
+  --line-soft: #21262f;
 
-  --oxide: #9c88ff;
-  --sage: #5ab4a0;
-  --brass: #6382ff;
-  --smoke: #8b90a3;
-  --danger: #dc5a6a;
+  /* The only two accents (DESIGN.md v2 §2). No third accent, no entity rainbow. */
+  --signal: #5e93ff; /* interactive / active / now / focus ring */
+  --moment: #e3b667; /* the producer's pinned mark — the one warm accent */
+  --danger: #dc5a6a; /* error / destructive state only */
 
-  --track: #6382ff;
-  --device: #9c88ff;
-  --parameter: #5ab4a0;
-  --clip: #aaccf0;
-  --transport: #f0cfa0;
-  --session: #ffd98a;
+  /* v1 entity-color system RETIRED (DESIGN.md v2 §2): the alias tokens
+     (--track/--device/--parameter/--clip/--transport/--session/--oxide/--sage/
+     --brass/--smoke) are gone. Type is told apart by weight, monospace, and
+     luminance now; colour is only --signal, --moment, and --danger. */
 
   --radius: 10px;
   --radius-sm: 6px;
   --shadow: 0 24px 70px rgba(0, 0, 0, 0.34);
 
-  /* Motion (DESIGN.md §6). Two registers only: arrival and recognition.
+  /* Motion (DESIGN.md §6) — unchanged. Two registers only: arrival and recognition.
      linear easing is banned; --ease-arrive is the default. */
   --m-settle: 120ms;
   --m-arrive: 220ms;
   --m-develop: 420ms;
   --ease-arrive: cubic-bezier(0.16, 1, 0.3, 1);
   --ease-exit: cubic-bezier(0.4, 0, 1, 1);
-  --font-display: "Bahnschrift", "Aptos Display", "Segoe UI Variable Display", "Segoe UI", sans-serif;
-  --font-body: "Aptos", "Segoe UI Variable Text", "Segoe UI", sans-serif;
-  --font-mono: "Cascadia Code", "JetBrains Mono", "SFMono-Regular", Consolas, monospace;
+
+  /* Typography (DESIGN.md v2 §3) — IBM Plex, bundled via @fontsource in main.tsx.
+     No separate display face; --font-display is Plex Sans at a heavier weight. */
+  --font-sans: "IBM Plex Sans", "Segoe UI Variable Text", "Segoe UI", sans-serif;
+  --font-body: var(--font-sans);
+  --font-display: var(--font-sans);
+  --font-mono: "IBM Plex Mono", "Cascadia Code", "JetBrains Mono", "SFMono-Regular", Consolas, monospace;
 
   color: var(--paper);
   background: var(--ink);
@@ -54,7 +56,7 @@ body {
   margin: 0;
   color: var(--paper);
   background:
-    linear-gradient(180deg, #0b0e18 0%, #10131f 48%, #080b13 100%),
+    linear-gradient(180deg, #0d0f13 0%, #12141a 48%, #090b0f 100%),
     var(--ink);
 }
 

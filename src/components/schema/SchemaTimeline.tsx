@@ -1171,7 +1171,7 @@ export function SchemaTimeline({
                   const track = block.trackId
                     ? tracks.find((t) => t.id === block.trackId)
                     : null;
-                  const color = track ? trackColor(track) : "#6382ff";
+                  const color = track ? trackColor(track) : "#5e93ff";
                   const durationMs = Math.max(0, block.endMs - block.startMs);
                   const params =
                     block.topParams.length > 0
@@ -1253,7 +1253,7 @@ export function SchemaTimeline({
                     <div
                       key={edit.id}
                       className="tl-note-row"
-                      style={{ ["--lane-color" as string]: track ? trackColor(track) : "var(--clip)" }}
+                      style={{ ["--lane-color" as string]: track ? trackColor(track) : "var(--paper)" }}
                     >
                       <span className="tl-block__rail" aria-hidden="true" />
                       <span className="tl-block__main">

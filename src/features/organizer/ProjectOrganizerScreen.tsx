@@ -1528,7 +1528,7 @@ export function ProjectOrganizerScreen({
               step="1"
               value={Math.round(progress * 1000)}
               style={{
-                background: `linear-gradient(to right, #8ee6c7 0%, #8ee6c7 ${progress * 100}%, rgba(255, 255, 255, 0.14) ${progress * 100}%, rgba(255, 255, 255, 0.14) 100%)`,
+                background: `linear-gradient(to right, #7aa2ff 0%, #7aa2ff ${progress * 100}%, rgba(255, 255, 255, 0.14) ${progress * 100}%, rgba(255, 255, 255, 0.14) 100%)`,
               }}
               aria-label={`Seek ${activePlayback.bounce.fileName}`}
               onChange={(event) => seekExport(activePlayback.bounce, Number(event.target.value) / 1000)}

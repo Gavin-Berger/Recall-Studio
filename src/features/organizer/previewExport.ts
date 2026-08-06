@@ -208,8 +208,8 @@ export function buildReleasePreviewHtml(
     .shell { width: min(980px, 100%); margin: 0 auto; padding: 48px 28px 72px; }
     .hero { display: grid; grid-template-columns: 240px minmax(0, 1fr); gap: 32px; align-items: end; padding-bottom: 34px; border-bottom: 1px solid #252a33; }
     .cover { display: block; width: 100%; aspect-ratio: 1; object-fit: cover; box-shadow: 0 18px 48px rgba(0,0,0,.42); }
-    .cover--empty { display: grid; place-items: center; background: #171b23; color: #8ee6c7; font-size: 64px; font-weight: 800; }
-    .kind { margin: 0 0 8px; color: #8ee6c7; font-size: 12px; font-weight: 750; text-transform: uppercase; }
+    .cover--empty { display: grid; place-items: center; background: #171b23; color: #7aa2ff; font-size: 64px; font-weight: 800; }
+    .kind { margin: 0 0 8px; color: #7aa2ff; font-size: 12px; font-weight: 750; text-transform: uppercase; }
     h1 { margin: 0; font-size: clamp(38px, 7vw, 78px); line-height: .98; overflow-wrap: anywhere; }
     .artist { margin: 14px 0 0; color: #c7cdd6; font-size: 18px; font-weight: 650; }
     .meta { margin: 8px 0 0; color: #8d95a3; font-size: 13px; }
@@ -218,7 +218,7 @@ export function buildReleasePreviewHtml(
     .track { display: grid; grid-template-columns: 42px 34px minmax(0,1fr) auto; gap: 10px; align-items: center; min-height: 64px; border-bottom: 1px solid #1d222b; }
     .track:hover { background: #10141b; }
     .play { width: 34px; height: 34px; border: 1px solid #343b47; border-radius: 50%; background: #151a22; color: #f4f6f8; cursor: pointer; }
-    .play.is-playing { border-color: #8ee6c7; color: #8ee6c7; }
+    .play.is-playing { border-color: #7aa2ff; color: #7aa2ff; }
     .number, .duration { color: #7f8896; font: 12px ui-monospace, SFMono-Regular, Consolas, monospace; }
     .track-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 650; }
     footer { margin-top: 36px; color: #68717f; font-size: 11px; text-transform: uppercase; }

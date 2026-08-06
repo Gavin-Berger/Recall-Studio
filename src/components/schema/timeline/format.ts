@@ -190,21 +190,16 @@ export function describeActivity(item: Activity): string {
   )}`;
 }
 
-const TRACK_FALLBACK: Record<TrackObj["type"], string> = {
-  midi: "#6382ff",
-  audio: "#aaccf0",
-  return: "#f0cfa0",
-  group: "#9c88ff",
-  master: "#9aa3c4",
-};
+/* DESIGN.md v2 §2 is fully monochrome — lanes carry no type or per-track hue at
+   all. Every lane rail is the one neutral graphite; tracks are told apart by their
+   name, not their colour. */
+const LANE_NEUTRAL = "#868d9c";
 
-export function trackColor(track: TrackObj): string {
-  if (track.color && /^#[0-9a-fA-F]{6}$/.test(track.color)) return track.color;
-  return TRACK_FALLBACK[track.type];
+export function trackColor(_track: TrackObj): string {
+  return LANE_NEUTRAL;
 }
 
-export function deviceColor(device: DeviceObj): string {
-  if (device.role === "instrument") return "#9c88ff";
-  if (device.role === "midi_effect") return "#6382ff";
-  return "#5ab4a0";
+/* Devices no longer carry a type hue — device names read in mono paper (§2). */
+export function deviceColor(_device: DeviceObj): string {
+  return "#d6dae4";
 }

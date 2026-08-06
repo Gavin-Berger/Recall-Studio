@@ -134,7 +134,7 @@ export function Waveform({ peaks, waveformMin, waveformMax, waveformData, wavefo
       context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
       context.clearRect(0, 0, cssWidth, cssHeight);
 
-      context.fillStyle = "rgba(142, 230, 199, 0.075)";
+      context.fillStyle = "rgba(94, 147, 255, 0.075)";
       context.fillRect(0, 0, cssWidth, cssHeight);
       context.strokeStyle = "rgba(190, 218, 220, 0.105)";
       context.lineWidth = 1;
@@ -173,7 +173,7 @@ export function Waveform({ peaks, waveformMin, waveformMax, waveformData, wavefo
         context.beginPath();
         context.rect(0, 0, Math.min(cssWidth, playedX), cssHeight);
         context.clip();
-        context.fillStyle = "#8ee6c7";
+        context.fillStyle = "#7aa2ff";
         for (const path of paths) context.fill(path);
         context.restore();
       }
@@ -198,7 +198,7 @@ export function Waveform({ peaks, waveformMin, waveformMax, waveformData, wavefo
         const x = ((marker.fraction - windowStart) / visibleFraction) * cssWidth;
         if (x < 0 || x > cssWidth) continue;
         context.globalAlpha = 0.24 + 0.76 * Math.min(1, Math.max(0, marker.emphasis ?? 1));
-        context.strokeStyle = "#8ee6c7";
+        context.strokeStyle = "#7aa2ff";
         context.lineWidth = 1.25;
         context.beginPath();
         context.moveTo(x, 4);

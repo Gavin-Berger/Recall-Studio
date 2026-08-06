@@ -631,8 +631,24 @@ fn rotate_session_if_project_changed(
     // Storage work in its own scope, released before the session lock below.
     let activated = {
         let storage = storage.lock().expect("Storage state lock failed");
-        if previous_status.session_id.is_some() {
-            if let Err(error) = storage.save_session_stopped(&previous_status) {
+        if let Some(previous_session_id) = previous_status.session_id.as_deref() {
+            // The startup fallback creates a session before any event has said
+            // which project it belongs to. If nothing was ever captured into
+            // it and it was never anchored to a set, this rotation is the
+            // first proof that it will never be used — delete it rather than
+            // leaving an empty, stopped, unanchored session behind on every
+            // launch that reaches this point. Real takes (events or anchor)
+            // are always preserved via the normal stop-and-persist path.
+            let empty_and_unanchored = storage
+                .is_session_empty_and_unanchored(previous_session_id)
+                .unwrap_or(false);
+
+            if empty_and_unanchored {
+                if let Err(error) = storage.delete_session(previous_session_id) {
+                    eprintln!("AUTO-ROTATE: failed to delete empty startup session -> {}", error);
+                    metrics.set_last_error(error);
+                }
+            } else if let Err(error) = storage.save_session_stopped(&previous_status) {
                 eprintln!("AUTO-ROTATE: failed to persist previous take -> {}", error);
                 metrics.set_last_error(error);
             }

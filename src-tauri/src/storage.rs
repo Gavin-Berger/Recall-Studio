@@ -613,6 +613,44 @@ impl StorageState {
         Ok(())
     }
 
+    /// True when a session has zero captured events and was never anchored to
+    /// an Ableton set (als_path IS NULL). This is exactly the shape of the
+    /// throwaway session `resume_or_create_active_session` creates at startup
+    /// when there is no unfinished take to resume: it exists only so the app
+    /// has *a* session_id before the producer's first event tells it which
+    /// project that is. If a real event arrives, auto-rotation immediately
+    /// stops this one and activates the correctly-anchored take instead — the
+    /// stopped placeholder never did anything and never will.
+    pub fn is_session_empty_and_unanchored(&self, session_id: &str) -> Result<bool, String> {
+        let connection = self.open_connection()?;
+
+        let anchored: Option<bool> = connection
+            .query_row(
+                "SELECT als_path IS NOT NULL FROM sessions WHERE id = ?1",
+                params![session_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| format!("Failed to check session anchor: {}", error))?;
+
+        let Some(anchored) = anchored else {
+            return Ok(false); // no such session; nothing to clean up
+        };
+        if anchored {
+            return Ok(false);
+        }
+
+        let event_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM events WHERE session_id = ?1",
+                params![session_id],
+                |row| row.get(0),
+            )
+            .map_err(|error| format!("Failed to count session events: {}", error))?;
+
+        Ok(event_count == 0)
+    }
+
     pub fn save_session_started(&self, status: &SessionStatus) -> Result<(), String> {
         let Some(session_id) = status.session_id.as_deref() else {
             return Ok(());
@@ -3833,6 +3871,74 @@ mod tests {
             assert_eq!(count, 0, "{table} rows should be deleted");
         }
 
+        cleanup(&path);
+    }
+
+    #[test]
+    fn fresh_startup_session_is_empty_and_unanchored() {
+        // This is exactly the throwaway session resume_or_create_active_session
+        // creates when there's no unfinished take to resume (#7): no events,
+        // no als_path. Auto-rotation should be free to delete it.
+        let (storage, path) = temp_storage();
+        let session_id = storage
+            .resume_or_create_active_session()
+            .unwrap()
+            .session_id
+            .unwrap();
+
+        assert!(storage.is_session_empty_and_unanchored(&session_id).unwrap());
+
+        cleanup(&path);
+    }
+
+    #[test]
+    fn session_with_events_is_not_empty() {
+        let (storage, path) = temp_storage();
+        let session_id = storage
+            .resume_or_create_active_session()
+            .unwrap()
+            .session_id
+            .unwrap();
+
+        storage
+            .save_events_batch(&[event(&session_id, "heartbeat")])
+            .unwrap();
+
+        assert!(!storage.is_session_empty_and_unanchored(&session_id).unwrap());
+
+        cleanup(&path);
+    }
+
+    #[test]
+    fn anchored_session_is_not_unanchored_even_with_no_events() {
+        let (storage, path) = temp_storage();
+        let session_id = storage
+            .resume_or_create_active_session()
+            .unwrap()
+            .session_id
+            .unwrap();
+
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute(
+                "UPDATE sessions SET als_path = ?1 WHERE id = ?2",
+                params!["C:/music/song.als", session_id],
+            )
+            .unwrap();
+        drop(connection);
+
+        assert!(!storage.is_session_empty_and_unanchored(&session_id).unwrap());
+
+        cleanup(&path);
+    }
+
+    #[test]
+    fn nonexistent_session_is_not_flagged_for_cleanup() {
+        let (storage, path) = temp_storage();
+        // No session ever created for this id.
+        assert!(!storage
+            .is_session_empty_and_unanchored("session-does-not-exist")
+            .unwrap());
         cleanup(&path);
     }
 

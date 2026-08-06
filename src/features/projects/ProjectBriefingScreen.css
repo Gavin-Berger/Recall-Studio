@@ -1,0 +1,619 @@
+/* Project re-entry briefing — the "where did I leave off" surface you land on
+   when you open a project. Dark, calm, dense-but-readable (DESIGN.md §1);
+   monochrome — the one lane rail is a neutral graphite, not a type hue (§2). */
+
+.brief {
+  width: 100%;
+  max-width: 1080px;
+  margin: 0 auto;
+  padding: 26px clamp(16px, 3vw, 40px) 60px;
+  color: var(--paper);
+}
+
+.brief--empty {
+  display: grid;
+  place-items: center;
+  gap: 10px;
+  min-height: 50vh;
+  text-align: center;
+}
+
+.brief__eyebrow {
+  font-size: 11px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--faint-aa);
+}
+
+/* ── Orientation header ─────────────────────────────── */
+.brief__top {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 24px;
+  flex-wrap: wrap;
+  padding-bottom: 20px;
+  border-bottom: 1px solid var(--line);
+}
+
+.brief__back {
+  display: inline-block;
+  margin-bottom: 10px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.brief__back:hover {
+  color: var(--paper);
+}
+
+.brief__title {
+  margin: 8px 0 0;
+  font-size: 26px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--paper-strong);
+}
+
+.brief__meta {
+  margin: 9px 0 0;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.brief__meta b {
+  color: var(--paper);
+  font-weight: 600;
+}
+
+.brief__num {
+  font-variant-numeric: tabular-nums;
+}
+
+.brief__actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.brief__btn {
+  appearance: none;
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+  color: var(--paper);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  padding: 10px 16px;
+  border-radius: 9px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition:
+    border-color var(--m-settle) var(--ease-arrive),
+    background-color var(--m-settle) var(--ease-arrive);
+}
+
+.brief__btn:hover {
+  border-color: #3a4056;
+  background: var(--panel-3);
+}
+
+.brief__btn--primary {
+  border-color: #3a3f77;
+  background: linear-gradient(#2a2f52, #232743);
+  color: var(--paper-strong);
+}
+
+.brief__btn--primary:hover {
+  border-color: #4a5197;
+  background: linear-gradient(#30355f, #272c4c);
+}
+
+.brief__error {
+  margin-top: 16px;
+  padding: 10px 12px;
+  border: 1px solid rgba(255, 120, 120, 0.3);
+  border-radius: 8px;
+  background: rgba(255, 90, 90, 0.08);
+  color: #ffb4b4;
+  font-size: 13px;
+}
+
+/* ── Sections ───────────────────────────────────────── */
+.brief__section {
+  margin-top: 30px;
+}
+
+.brief__kick {
+  display: flex;
+  align-items: baseline;
+  gap: 11px;
+  margin: 0 0 14px;
+  flex-wrap: wrap;
+}
+
+.brief__kick h2 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--paper-strong);
+}
+
+.brief__kick span {
+  font-size: 12px;
+  color: var(--faint-aa);
+}
+
+.brief__hint {
+  color: var(--faint-aa);
+  font-size: 13px;
+  padding: 8px 2px;
+}
+
+.brief__footnote {
+  margin: 14px 2px 0;
+  font-size: 12.5px;
+  color: var(--faint-aa);
+}
+
+/* ── State board ────────────────────────────────────── */
+.brief__board {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(236px, 1fr));
+  gap: 10px;
+}
+
+.brief-card {
+  position: relative;
+  overflow: hidden;
+  background: var(--panel);
+  border: 1px solid var(--line-soft);
+  border-radius: 11px;
+  padding: 13px 14px 12px;
+}
+
+/* Lane rail: one neutral graphite for every track (DESIGN.md v2 §2 monochrome). */
+.brief-card::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  background: var(--tc, var(--line));
+}
+
+.brief-card__top {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin-bottom: 9px;
+}
+
+.brief-card__name {
+  flex: 1;
+  min-width: 0;
+  font-weight: 600;
+  font-size: 13.5px;
+  color: var(--paper-strong);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.brief-state {
+  flex-shrink: 0;
+  font-size: 10.5px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  padding: 2px 7px;
+  border-radius: 20px;
+  white-space: nowrap;
+}
+
+.brief-state.is-active {
+  color: #cdd9ff;
+  background: #16203a;
+  border: 1px solid #2f4d86;
+}
+
+.brief-state.is-quiet {
+  color: var(--muted);
+  background: #1a1e29;
+  border: 1px solid var(--line);
+}
+
+.brief-state.is-empty {
+  color: var(--faint-aa);
+  background: transparent;
+  border: 1px dashed #363c52;
+}
+
+.brief-card__chain {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-bottom: 10px;
+  min-height: 22px;
+}
+
+.brief-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  color: var(--paper);
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  padding: 2px 7px;
+}
+
+.brief-pill.is-off {
+  opacity: 0.5;
+}
+
+.brief-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.brief-card__none {
+  font-size: 12px;
+  color: var(--faint-aa);
+}
+
+.brief-card__foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding-top: 9px;
+  border-top: 1px solid var(--line-soft);
+  font-size: 12px;
+  color: var(--faint-aa);
+}
+
+.brief-card__when {
+  font-variant-numeric: tabular-nums;
+}
+
+.brief-card__moves {
+  color: var(--muted);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .brief__section,
+  .brief__top {
+    animation: brief-rise 0.5s var(--ease-arrive, cubic-bezier(0.2, 0.7, 0.2, 1)) both;
+  }
+  .brief__section {
+    animation-delay: 60ms;
+  }
+  @keyframes brief-rise {
+    from {
+      opacity: 0;
+      transform: translateY(7px);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+    }
+  }
+}
+
+/* ── Contribution record ────────────────────────────────
+   The "what you did, how, and when" surface. Monochrome (§2): the numbers and
+   before→after values do the work in mono; no accent but --signal for anything
+   live and --moment for a pinned mark. */
+.brief__story {
+  border-top: 1px solid var(--line);
+  padding-top: 26px;
+}
+
+.story-ledger {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 1px;
+  margin-bottom: 22px;
+  background: var(--line);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.story-ledger > div {
+  background: var(--panel);
+  padding: 14px 15px;
+}
+
+.story-ledger__n {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 21px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  color: var(--paper-strong);
+}
+
+.story-ledger__l {
+  display: block;
+  margin-top: 7px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--faint-aa);
+}
+
+/* Shared disclosure reset — every expandable row in the record uses <details>/
+   <summary> so it's keyboard- and screen-reader-native (DESIGN §9), styled with
+   a rotating caret instead of the browser's default marker. */
+.brief__story details > summary {
+  list-style: none;
+  cursor: pointer;
+}
+
+.brief__story details > summary::-webkit-details-marker {
+  display: none;
+}
+
+.brief__story .disc {
+  flex-shrink: 0;
+  width: 14px;
+  color: var(--faint-aa);
+  transition: transform var(--m-settle) var(--ease-arrive);
+}
+
+.brief__story details[open] > summary .disc {
+  transform: rotate(90deg);
+}
+
+/* The arc — one row per sitting, expandable to the full track list. */
+.story-arc {
+  list-style: none;
+  margin: 0 0 24px;
+  padding: 0;
+  border-top: 1px solid var(--line-soft);
+}
+
+.story-sit {
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.story-sit__sum {
+  display: grid;
+  grid-template-columns: 14px 132px 1fr auto;
+  gap: 16px;
+  align-items: baseline;
+  padding: 12px 2px;
+}
+
+.story-sit__when {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  color: var(--paper);
+}
+
+.story-sit__when small {
+  display: block;
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--faint-aa);
+}
+
+.story-sit__body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.story-sit__label {
+  font-size: 13.5px;
+  color: var(--paper-strong);
+}
+
+.story-sit__work {
+  font-size: 12.5px;
+  color: var(--muted);
+}
+
+.story-sit__moves {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  color: var(--faint-aa);
+  white-space: nowrap;
+}
+
+.story-sit__detail {
+  padding: 0 2px 14px 30px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.story-sit__group {
+  display: flex;
+  gap: 8px;
+  font-size: 12.5px;
+}
+
+.story-sit__dt {
+  flex-shrink: 0;
+  color: var(--faint-aa);
+  text-transform: uppercase;
+  font-size: 11px;
+  letter-spacing: 0.05em;
+  padding-top: 1px;
+}
+
+.story-sit__dd {
+  color: var(--paper);
+}
+
+/* What stuck — one expandable row per track, headline is the volume of work. */
+.story-recap__h {
+  margin: 0 0 12px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--paper-strong);
+}
+
+.story-tracks {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--line-soft);
+}
+
+.track-row {
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.track-row__sum {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  padding: 11px 2px;
+}
+
+.track-row__name {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--paper-strong);
+}
+
+.track-row__meta {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--faint-aa);
+  white-space: nowrap;
+}
+
+.track-row__params {
+  list-style: none;
+  margin: 0;
+  padding: 0 2px 14px 26px;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+
+.recap-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.recap-row__where {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  color: var(--muted);
+  min-width: 0;
+}
+
+.recap-row__dev {
+  color: var(--paper);
+}
+
+.recap-row__ba {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.ba__from {
+  color: var(--muted);
+}
+
+.ba__arrow {
+  padding: 0 7px;
+  color: var(--faint-aa);
+}
+
+.ba__to {
+  color: var(--paper-strong);
+  font-weight: 500;
+}
+
+.ba__n {
+  margin-left: 8px;
+  padding: 1px 6px;
+  font-size: 11px;
+  color: var(--faint-aa);
+  background: var(--panel-3);
+  border-radius: 5px;
+}
+
+/* Explored, later cut — labour that didn't make the delivered take. */
+.story-cut {
+  margin-top: 22px;
+  padding-top: 18px;
+  border-top: 1px dashed var(--line);
+}
+
+.story-cut__note {
+  margin: 0 0 12px;
+  font-size: 12px;
+  color: var(--faint-aa);
+}
+
+.story-cut__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.cut-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  opacity: 0.72;
+}
+
+.cut-row__name {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  color: var(--muted);
+  text-decoration: line-through;
+  text-decoration-color: var(--faint);
+}
+
+.cut-row__moves {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--faint-aa);
+  white-space: nowrap;
+}
+
+@media (max-width: 560px) {
+  .story-ledger {
+    grid-template-columns: repeat(2, 1fr);
+  }
+  .story-sit {
+    grid-template-columns: 1fr auto;
+  }
+  .story-sit__body {
+    grid-column: 1 / -1;
+    order: 3;
+  }
+}

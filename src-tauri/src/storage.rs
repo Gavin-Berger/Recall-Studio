@@ -1529,6 +1529,7 @@ impl StorageState {
                         description,
                         payload,
                         track_name,
+                        track_id,
                         track_type,
                         device_name,
                         device_chain,
@@ -1550,7 +1551,7 @@ impl StorageState {
                     VALUES (
                         ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
                         ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20,
-                        ?21, ?22, ?23, ?24, ?25, ?26
+                        ?21, ?22, ?23, ?24, ?25, ?26, ?27
                     )
                     ",
                 )
@@ -1573,6 +1574,7 @@ impl StorageState {
                         event.description.as_str(),
                         event.payload.as_deref(),
                         event.track_name.as_deref(),
+                        event.track_id.as_deref(),
                         event.track_type.as_deref(),
                         event.device_name.as_deref(),
                         event.device_chain.as_deref(),
@@ -1892,13 +1894,33 @@ impl StorageState {
                         p_index,
                     )?;
 
-                    if let (Some(track_name), Some(device_name), Some(param_name)) =
-                        (&track.name, &device.name, &param.name)
-                    {
-                        parameter_lookup.insert(
-                            (track_name.clone(), device_name.clone(), param_name.clone()),
-                            param_id.clone(),
-                        );
+                    if let (Some(device_name), Some(param_name)) = (&device.name, &param.name) {
+                        // Register under both keys a change event might arrive
+                        // with: the ableton_id (what a change carrying track_id
+                        // resolves to — disambiguates same-named tracks) and the
+                        // bare name (what a change with no track_id, e.g. a
+                        // pre-migration row, falls back to). When two tracks
+                        // share a name, the name-keyed entry is necessarily
+                        // ambiguous between them — same as before this fix —
+                        // but the id-keyed entry, used whenever the event has
+                        // one, is exact.
+                        let mut keys: Vec<String> = Vec::with_capacity(2);
+                        if let Some(ableton_id) = track.ableton_id.as_deref() {
+                            if !ableton_id.is_empty() {
+                                keys.push(ableton_id.to_string());
+                            }
+                        }
+                        if let Some(name) = track.name.as_deref() {
+                            if !name.is_empty() && !keys.contains(&name.to_string()) {
+                                keys.push(name.to_string());
+                            }
+                        }
+                        for track_key in keys {
+                            parameter_lookup.insert(
+                                (track_key, device_name.clone(), param_name.clone()),
+                                param_id.clone(),
+                            );
+                        }
                     }
 
                     for (c_index, child) in param.children.iter().enumerate() {
@@ -1922,12 +1944,12 @@ impl StorageState {
             let mut statement = transaction
                 .prepare_cached(
                     "INSERT INTO parameter_changes
-                     (id, session_id, parameter_id, track_name, device_name, parameter_name,
+                     (id, session_id, parameter_id, track_name, track_id, device_name, parameter_name,
                       before_value, after_value, before_value_percent, after_value_percent,
                       unit, before_display_value, after_display_value, is_quantized,
                       reason, changed_at_ms, source_event_id)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
-                             ?15, ?16, ?17)",
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15,
+                             ?16, ?17, ?18)",
                 )
                 .map_err(|error| {
                     format!("Failed to prepare parameter_changes insert: {}", error)
@@ -1945,6 +1967,7 @@ impl StorageState {
                         session_id,
                         change.parameter_id,
                         change.track_name,
+                        change.track_id,
                         change.device_name,
                         change.parameter_name,
                         change.before_value,
@@ -2030,7 +2053,7 @@ impl StorageState {
 
         let mut statement = connection
             .prepare(
-                "SELECT id, parameter_id, track_name, device_name, parameter_name,
+                "SELECT id, parameter_id, track_name, track_id, device_name, parameter_name,
                         before_value, after_value, before_value_percent, after_value_percent,
                         unit, before_display_value, after_display_value, is_quantized,
                         reason, changed_at_ms
@@ -2045,18 +2068,19 @@ impl StorageState {
                     id: row.get(0)?,
                     parameter_id: row.get(1)?,
                     track_name: row.get(2)?,
-                    device_name: row.get(3)?,
-                    parameter_name: row.get(4)?,
-                    before_value: row.get(5)?,
-                    after_value: row.get(6)?,
-                    before_value_percent: row.get(7)?,
-                    after_value_percent: row.get(8)?,
-                    unit: row.get(9)?,
-                    before_display_value: row.get(10)?,
-                    after_display_value: row.get(11)?,
-                    is_quantized: row.get::<_, Option<i64>>(12)?.map(|value| value != 0),
-                    reason: row.get(13)?,
-                    changed_at_ms: row.get::<_, i64>(14)? as u64,
+                    track_id: row.get(3)?,
+                    device_name: row.get(4)?,
+                    parameter_name: row.get(5)?,
+                    before_value: row.get(6)?,
+                    after_value: row.get(7)?,
+                    before_value_percent: row.get(8)?,
+                    after_value_percent: row.get(9)?,
+                    unit: row.get(10)?,
+                    before_display_value: row.get(11)?,
+                    after_display_value: row.get(12)?,
+                    is_quantized: row.get::<_, Option<i64>>(13)?.map(|value| value != 0),
+                    reason: row.get(14)?,
+                    changed_at_ms: row.get::<_, i64>(15)? as u64,
                 })
             })
             .map_err(|error| format!("Failed to read parameter_changes: {}", error))?;
@@ -2692,7 +2716,7 @@ fn collect_change_events(
 ) -> Result<Vec<ChangeEvent>, String> {
     let mut statement = connection
         .prepare(
-            "SELECT id, timestamp_ms, track_name, device_name, parameter_name,
+            "SELECT id, timestamp_ms, track_name, track_id, device_name, parameter_name,
                     parameter_value, previous_parameter_value, parameter_value_percent,
                     previous_parameter_value_percent, parameter_display_value,
                     previous_parameter_display_value, parameter_is_quantized
@@ -2709,15 +2733,16 @@ fn collect_change_events(
                 event_id: row.get::<_, i64>(0)?,
                 timestamp_ms: row.get::<_, i64>(1)? as u64,
                 track_name: row.get(2)?,
-                device_name: row.get(3)?,
-                parameter_name: row.get(4)?,
-                value: row.get(5)?,
-                previous_value: row.get(6)?,
-                value_percent: row.get(7)?,
-                previous_value_percent: row.get(8)?,
-                display_value: row.get(9)?,
-                previous_display_value: row.get(10)?,
-                is_quantized: row.get::<_, Option<i64>>(11)?.map(|value| value != 0),
+                track_id: row.get(3)?,
+                device_name: row.get(4)?,
+                parameter_name: row.get(5)?,
+                value: row.get(6)?,
+                previous_value: row.get(7)?,
+                value_percent: row.get(8)?,
+                previous_value_percent: row.get(9)?,
+                display_value: row.get(10)?,
+                previous_display_value: row.get(11)?,
+                is_quantized: row.get::<_, Option<i64>>(12)?.map(|value| value != 0),
             })
         })
         .map_err(|error| format!("Failed to read change events: {}", error))?;
@@ -2906,6 +2931,7 @@ pub fn initialize_database(db_path: &Path) -> rusqlite::Result<()> {
             -- become directly queryable. See `migrate_event_columns` for the
             -- upgrade path that adds these to databases created before they existed.
             track_name TEXT,
+            track_id TEXT,
             track_type TEXT,
             device_name TEXT,
             device_chain TEXT,
@@ -3016,6 +3042,7 @@ pub fn initialize_database(db_path: &Path) -> rusqlite::Result<()> {
             session_id TEXT NOT NULL,
             parameter_id TEXT,             -- null if no matching tree param (legacy)
             track_name TEXT,
+            track_id TEXT,                 -- Live's stable track pointer; disambiguates same-named tracks
             device_name TEXT,
             parameter_name TEXT,
             before_value REAL,
@@ -3281,6 +3308,7 @@ fn migrate_event_columns(connection: &Connection) -> rusqlite::Result<()> {
     // formatted ALTER statements carry no injection risk.
     const COLUMNS: &[(&str, &str)] = &[
         ("track_name", "TEXT"),
+        ("track_id", "TEXT"),
         ("track_type", "TEXT"),
         ("device_name", "TEXT"),
         ("device_chain", "TEXT"),
@@ -3322,6 +3350,7 @@ fn migrate_parameter_change_columns(connection: &Connection) -> rusqlite::Result
         ("before_display_value", "TEXT"),
         ("after_display_value", "TEXT"),
         ("is_quantized", "INTEGER"),
+        ("track_id", "TEXT"),
     ];
 
     for (name, sql_type) in COLUMNS {
@@ -3384,6 +3413,7 @@ mod tests {
             payload: None,
             session_id: Some(session_id.into()),
             track_name: None,
+            track_id: None,
             track_type: None,
             device_name: None,
             parameter_name: None,
@@ -3886,6 +3916,7 @@ mod tests {
 
         for expected in [
             "track_name",
+            "track_id",
             "track_type",
             "device_chain",
             "previous_parameter_value",
@@ -4010,6 +4041,84 @@ mod tests {
         event.parameter_value = Some(value);
         event.parameter_value_percent = Some(value * 100.0);
         event
+    }
+
+    /// Same as `param_change`, but also carries the bridge's `track_id` — the
+    /// value real captures send on every parameter change.
+    fn param_change_with_id(
+        session_id: &str,
+        timestamp_ms: u64,
+        track: &str,
+        track_id: &str,
+        device: &str,
+        parameter: &str,
+        value: f64,
+    ) -> RecallEvent {
+        let mut event = param_change(session_id, timestamp_ms, track, device, parameter, value);
+        event.track_id = Some(track_id.into());
+        event
+    }
+
+    #[test]
+    fn materialize_keeps_same_named_tracks_separate_when_track_id_present() {
+        // Ableton auto-names a track after its first device, so two different
+        // tracks can both end up called "Serum 2". Their ableton track ids
+        // ("100" and "101" below) are what tells them apart.
+        let (storage, path) = temp_storage();
+        let session_id = storage
+            .resume_or_create_active_session()
+            .unwrap()
+            .session_id
+            .unwrap();
+
+        let snapshot = serde_json::json!({
+            "tracks": [
+                {
+                    "index": 0, "id": "100", "name": "Serum 2", "has_midi_input": true,
+                    "devices": [
+                        { "id": "200", "name": "Serum 2", "role": "instrument", "is_active": true,
+                          "parameters": [{ "id": "300", "name": "Cutoff", "value": 0.2, "min": 0.0, "max": 1.0 }] }
+                    ]
+                },
+                {
+                    "index": 1, "id": "101", "name": "Serum 2", "has_midi_input": true,
+                    "devices": [
+                        { "id": "210", "name": "Serum 2", "role": "instrument", "is_active": true,
+                          "parameters": [{ "id": "310", "name": "Cutoff", "value": 0.4, "min": 0.0, "max": 1.0 }] }
+                    ]
+                }
+            ]
+        });
+
+        storage
+            .save_events_batch(&[
+                snapshot_event(&session_id, snapshot),
+                param_change_with_id(&session_id, 1_000, "Serum 2", "100", "Serum 2", "Cutoff", 0.2),
+                param_change_with_id(&session_id, 2_000, "Serum 2", "101", "Serum 2", "Cutoff", 0.4),
+            ])
+            .unwrap();
+
+        storage.materialize_session_schema(&session_id).unwrap();
+
+        let changes = storage.get_parameter_changes(&session_id).unwrap();
+        assert_eq!(changes.len(), 2);
+        // Each is the first (and only) change for its own track: neither
+        // inherits a "before" value from the other, because despite sharing a
+        // name they are different tracks.
+        assert!(
+            changes.iter().all(|c| c.before_value.is_none()),
+            "same-named tracks must not share a before/after chain: {:?}",
+            changes,
+        );
+        assert_eq!(changes[0].track_id.as_deref(), Some("100"));
+        assert_eq!(changes[1].track_id.as_deref(), Some("101"));
+        // parameter_id links to each track's own Cutoff param, not either
+        // other's.
+        assert_ne!(changes[0].parameter_id, changes[1].parameter_id);
+        assert!(changes[0].parameter_id.is_some());
+        assert!(changes[1].parameter_id.is_some());
+
+        cleanup(&path);
     }
 
     #[test]

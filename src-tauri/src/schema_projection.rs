@@ -161,6 +161,12 @@ pub struct ParameterChange {
     pub id: String,
     pub parameter_id: Option<String>,
     pub track_name: Option<String>,
+    // Live's stable per-track pointer. Two changes can share track_name (Ableton
+    // auto-names a track after its first device, e.g. "Serum 2") but never this —
+    // it's what the before/after grouping and the frontend's track credit
+    // actually key on when present. None for events captured before the bridge
+    // sent it; those fall back to track_name.
+    pub track_id: Option<String>,
     pub device_name: Option<String>,
     pub parameter_name: Option<String>,
     pub before_value: Option<f64>,
@@ -449,6 +455,7 @@ pub struct ChangeEvent {
     pub event_id: i64,
     pub timestamp_ms: u64,
     pub track_name: Option<String>,
+    pub track_id: Option<String>,
     pub device_name: Option<String>,
     pub parameter_name: Option<String>,
     pub value: Option<f64>,
@@ -460,6 +467,23 @@ pub struct ChangeEvent {
     pub is_quantized: Option<bool>,
 }
 
+/// The string a change's track is grouped by: Live's stable track_id when the
+/// event carries one, else the free-text track_name. Two different tracks can
+/// share a name (Ableton auto-names a track after its first device, e.g. two
+/// separate "Serum 2" tracks) but never a track_id, so preferring it here is
+/// what keeps their before/after chains from being spliced together. Events
+/// captured before the bridge sent track_id (or with no track at all) fall
+/// back to the name, matching the pre-existing behavior for legacy sessions.
+/// `storage.rs` uses this same resolution when building `parameter_lookup` so
+/// the two keyings agree.
+pub fn track_identity_key(track_id: Option<&str>, track_name: Option<&str>) -> String {
+    track_id
+        .filter(|id| !id.is_empty())
+        .or(track_name)
+        .unwrap_or_default()
+        .to_string()
+}
+
 /// Compute before/after values for a session's parameter changes.
 ///
 /// Events are grouped by (track, device, parameter) and walked in time order:
@@ -467,7 +491,8 @@ pub struct ChangeEvent {
 /// The first change in a group has `before = None` (the pre-session value is
 /// unknown — the snapshot reflects the *final* state, so it can't stand in for the
 /// initial one without lying). `parameter_id` is linked when the named parameter
-/// exists in the materialized tree.
+/// exists in the materialized tree. The grouping key's track component is
+/// `track_identity_key`, not the raw name — see its doc comment.
 pub fn build_parameter_changes(
     mut changes: Vec<ChangeEvent>,
     parameter_lookup: &HashMap<(String, String, String), String>,
@@ -490,7 +515,7 @@ pub fn build_parameter_changes(
         };
 
         let key = (
-            change.track_name.clone().unwrap_or_default(),
+            track_identity_key(change.track_id.as_deref(), change.track_name.as_deref()),
             change.device_name.clone().unwrap_or_default(),
             parameter_name.clone(),
         );
@@ -513,6 +538,7 @@ pub fn build_parameter_changes(
             id: format!("pc::{}", change.event_id),
             parameter_id: parameter_lookup.get(&key).cloned(),
             track_name: change.track_name.clone(),
+            track_id: change.track_id.clone(),
             device_name: change.device_name.clone(),
             parameter_name: Some(parameter_name),
             before_value,
@@ -673,6 +699,7 @@ mod tests {
                 event_id: 1,
                 timestamp_ms: 100,
                 track_name: Some("Bass 1".into()),
+                track_id: None,
                 device_name: Some("Synth".into()),
                 parameter_name: Some("Cutoff".into()),
                 value: Some(0.20),
@@ -687,6 +714,7 @@ mod tests {
                 event_id: 2,
                 timestamp_ms: 200,
                 track_name: Some("Bass 1".into()),
+                track_id: None,
                 device_name: Some("Synth".into()),
                 parameter_name: Some("Cutoff".into()),
                 value: Some(0.55),
@@ -725,6 +753,7 @@ mod tests {
                 event_id: 1,
                 timestamp_ms: 100,
                 track_name: Some("T".into()),
+                track_id: None,
                 device_name: Some("D".into()),
                 parameter_name: Some("A".into()),
                 value: Some(1.0),
@@ -739,6 +768,7 @@ mod tests {
                 event_id: 2,
                 timestamp_ms: 150,
                 track_name: Some("T".into()),
+                track_id: None,
                 device_name: Some("D".into()),
                 parameter_name: Some("B".into()),
                 value: Some(9.0),
@@ -762,6 +792,7 @@ mod tests {
             event_id: 1,
             timestamp_ms: 100,
             track_name: Some("Bass 1".into()),
+            track_id: None,
             device_name: Some("Synth".into()),
             parameter_name: Some("Cutoff".into()),
             value: Some(0.8),
@@ -780,6 +811,62 @@ mod tests {
         assert_eq!(rows[0].after_value, Some(0.8));
         assert_eq!(rows[0].before_value_percent, Some(20.0));
         assert_eq!(rows[0].after_value_percent, Some(80.0));
+    }
+
+    #[test]
+    fn same_track_name_different_track_id_do_not_share_history() {
+        // Two distinct Ableton tracks that happen to share a name (Ableton
+        // auto-names a track after its first device, so it's easy to end up
+        // with two separate "Serum 2" tracks) must not be treated as the same
+        // track just because the name collides.
+        let changes = vec![
+            ChangeEvent {
+                event_id: 1,
+                timestamp_ms: 100,
+                track_name: Some("Serum 2".into()),
+                track_id: Some("111".into()),
+                device_name: Some("Serum 2".into()),
+                parameter_name: Some("Cutoff".into()),
+                value: Some(0.20),
+                previous_value: None,
+                value_percent: None,
+                previous_value_percent: None,
+                display_value: None,
+                previous_display_value: None,
+                is_quantized: None,
+            },
+            ChangeEvent {
+                event_id: 2,
+                timestamp_ms: 200,
+                track_name: Some("Serum 2".into()),
+                track_id: Some("222".into()),
+                device_name: Some("Serum 2".into()),
+                parameter_name: Some("Cutoff".into()),
+                value: Some(0.90),
+                previous_value: None,
+                value_percent: None,
+                previous_value_percent: None,
+                display_value: None,
+                previous_display_value: None,
+                is_quantized: None,
+            },
+        ];
+
+        let rows = build_parameter_changes(changes, &HashMap::new());
+        assert_eq!(rows.len(), 2);
+        // Both are the first change in their own group: neither inherits the
+        // other's "before" value, because they're different tracks despite
+        // sharing a name.
+        assert!(rows.iter().all(|r| r.before_value.is_none()));
+        assert_eq!(rows[0].track_id.as_deref(), Some("111"));
+        assert_eq!(rows[1].track_id.as_deref(), Some("222"));
+    }
+
+    #[test]
+    fn track_identity_key_prefers_id_falls_back_to_name() {
+        assert_eq!(track_identity_key(Some("42"), Some("Serum 2")), "42");
+        assert_eq!(track_identity_key(None, Some("Serum 2")), "Serum 2");
+        assert_eq!(track_identity_key(None, None), "");
     }
 
     #[test]

@@ -290,6 +290,9 @@ fn normalize_udp_json(mut value: Value) -> Result<Value, String> {
             "selected_track_name",
         ],
     );
+    // Live's stable per-track pointer, same identifier space as the schema
+    // snapshot's `ableton_id`. See protocol.rs::RecallEvent::track_id.
+    let track_id = find_string(object, payload_obj, &["track_id", "trackId"]);
     let track_type = find_string(object, payload_obj, &["track_type", "trackType"]);
     let device_name = find_string(
         object,
@@ -373,6 +376,10 @@ fn normalize_udp_json(mut value: Value) -> Result<Value, String> {
     match track_name {
         Some(v) => object.insert("track_name".to_string(), Value::String(v)),
         None => object.insert("track_name".to_string(), Value::Null),
+    };
+    match track_id {
+        Some(v) => object.insert("track_id".to_string(), Value::String(v)),
+        None => object.insert("track_id".to_string(), Value::Null),
     };
     match track_type {
         Some(v) => object.insert("track_type".to_string(), Value::String(v)),
@@ -1554,12 +1561,26 @@ mod tests {
     }
 
     #[test]
+    fn normalize_passes_track_id_through() {
+        // track_id is Live's stable per-track pointer — distinct from track_name,
+        // which two different tracks can share (e.g. both auto-named "Serum 2").
+        let obj = normalized(json!({
+            "event_type": "parameter_changed",
+            "track_name": "Serum 2",
+            "track_id": "140312043829216"
+        }));
+        assert_eq!(obj["track_name"], json!("Serum 2"));
+        assert_eq!(obj["track_id"], json!("140312043829216"));
+    }
+
+    #[test]
     fn normalize_sets_absent_canonical_fields_to_null() {
         // The frontend relies on a flat, predictable shape — every canonical field
         // is always present, even when null, so it never has to dig through payload.
         let obj = normalized(json!({ "event_type": "tempo_changed", "bpm": 124.0 }));
         assert_eq!(obj["bpm"], json!(124.0));
         assert!(obj["track_name"].is_null());
+        assert!(obj["track_id"].is_null());
         assert!(obj["track_type"].is_null());
         assert!(obj["sample_name"].is_null());
         assert!(obj["device_name"].is_null());

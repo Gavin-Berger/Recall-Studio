@@ -24,6 +24,13 @@ pub struct RecallEvent {
     // Fields are optional because older v1 events may not include them.
     #[serde(default)]
     pub track_name: Option<String>,
+    // Live's stable per-track pointer (bridge sends `str(track._live_ptr)`), the
+    // same identifier space as `TrackObj.ableton_id` in the schema snapshot. Two
+    // tracks can share a `track_name` (Ableton auto-names a track after the first
+    // device dropped on it, e.g. "Serum 2") but never share this. Absent on older
+    // bridge builds that predate it — callers must fall back to track_name.
+    #[serde(default)]
+    pub track_id: Option<String>,
     // The kind of track the event is about: "audio", "midi", "return", "group",
     // or "master". Lets the timeline say *what* a producer was working on, not
     // just its name — audio vs MIDI vs a bus are different creative contexts.

@@ -70,6 +70,11 @@ export type ParameterChange = {
   id: string;
   parameter_id: string | null;
   track_name: string | null;
+  // Live's stable per-track pointer. Two changes can share track_name (Ableton
+  // auto-names a track after its first device, e.g. two separate "Serum 2"
+  // tracks) but never this — prefer it for grouping/identity. Null for changes
+  // captured before the bridge sent it.
+  track_id: string | null;
   device_name: string | null;
   parameter_name: string | null;
   before_value: number | null;

@@ -30,6 +30,7 @@ function makeChange(overrides: Partial<ParameterChange> = {}): ParameterChange {
     id: "pc1",
     parameter_id: null,
     track_name: "Bass",
+    track_id: null,
     device_name: "Operator",
     parameter_name: "Filter Freq",
     before_value: 100,
@@ -133,12 +134,9 @@ describe("formatTakeTitle", () => {
 });
 
 describe("trackColor", () => {
-  it("uses the track's own hex when valid", () => {
-    expect(trackColor({ color: "#ff0000", type: "midi" } as never)).toBe("#ff0000");
-  });
-
-  it("falls back per track type when color is missing/invalid", () => {
-    expect(trackColor({ color: null, type: "audio" } as never)).toBe("#aaccf0");
+  it("returns the neutral lane color for every track (DESIGN v2 monochrome)", () => {
+    expect(trackColor({ color: "#ff0000", type: "midi" } as never)).toBe("#868d9c");
+    expect(trackColor({ color: null, type: "audio" } as never)).toBe("#868d9c");
   });
 });
 

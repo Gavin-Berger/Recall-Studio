@@ -5787,7 +5787,11 @@
   animation: recall-live-pulse var(--motion-live) ease-in-out infinite;
 }
 
-@media (max-width: 560px) {
+/* Matches the 860px breakpoint above, where .recall-sidebar first switches to
+   a row: without wrapping, .recall-sidebar__nav's overflow-x:auto makes its
+   flex auto-min-width resolve to 0 (spec behavior for non-visible overflow),
+   so nav collapses to nothing between 561-860px instead of just scrolling. */
+@media (max-width: 860px) {
   .recall-sidebar {
     flex-wrap: wrap;
     gap: 8px;

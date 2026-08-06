@@ -32,6 +32,11 @@ const TCP_LISTEN_ADDR: &str = "127.0.0.1:9001";
 // legal snapshot is never truncated mid-JSON into an unparseable packet.
 const RECV_BUFFER_BYTES: usize = 16_384;
 
+// Ceiling on a single TCP line (one event). 4x the bridge's own MAX_EVENT_BYTES
+// (8192) cap, so a legal event never comes close. BufReader::lines() has no such
+// cap — a client that never sends a newline would grow its buffer without bound.
+const MAX_TCP_LINE_BYTES: usize = 32_768;
+
 // Bounded queue between the receive loop and the persistence worker. Sized to
 // absorb multi-hundred-event bursts while the worker drains. When full, the
 // enqueue policy (see classify/enqueue) protects critical creative events and
@@ -1148,6 +1153,65 @@ pub fn start_udp_listener(
     });
 }
 
+/// Outcome of reading one newline-delimited line with a size ceiling.
+enum BoundedLine {
+    /// A complete line within the ceiling, newline stripped.
+    Line(Vec<u8>),
+    /// A line exceeded `max_bytes` before a newline was found. The bytes seen
+    /// so far — up to and including the eventual newline — have already been
+    /// discarded; the stream is resynchronized and ready for the next line.
+    Oversized,
+    /// The connection closed with no more data.
+    Eof,
+}
+
+/// Read one line up to `max_bytes`, without `BufReader::lines()`'s unbounded
+/// growth: a client that never sends a newline would otherwise grow that
+/// buffer without limit. Reads via `fill_buf`/`consume` so the ceiling is
+/// enforced across the read incrementally, not only after a whole line (however
+/// large) has already been buffered.
+fn read_bounded_line<R: BufRead>(reader: &mut R, max_bytes: usize) -> std::io::Result<BoundedLine> {
+    let mut buf: Vec<u8> = Vec::new();
+    let mut oversized = false;
+
+    loop {
+        let available = reader.fill_buf()?;
+        if available.is_empty() {
+            // EOF: whatever is buffered (if anything) is an incomplete final
+            // line with no terminating newline — not a real event, drop it.
+            return Ok(BoundedLine::Eof);
+        }
+
+        if let Some(pos) = available.iter().position(|&b| b == b'\n') {
+            if !oversized && buf.len() + pos <= max_bytes {
+                buf.extend_from_slice(&available[..pos]);
+            } else {
+                oversized = true;
+            }
+            reader.consume(pos + 1);
+            return Ok(if oversized {
+                BoundedLine::Oversized
+            } else {
+                BoundedLine::Line(buf)
+            });
+        }
+
+        // No newline in this chunk yet. Keep consuming to make progress and
+        // find the eventual newline, but stop copying into `buf` once the
+        // ceiling is crossed so memory use stays bounded regardless of how
+        // long the oversized line turns out to be.
+        if !oversized {
+            if buf.len() + available.len() > max_bytes {
+                oversized = true;
+            } else {
+                buf.extend_from_slice(available);
+            }
+        }
+        let consumed = available.len();
+        reader.consume(consumed);
+    }
+}
+
 // Everything done with one datagram. Split out of the receive loop so it can be
 // wrapped in catch_unwind — a panic here costs one packet, not the session.
 // Accept control-surface connections and read newline-delimited JSON.
@@ -1202,12 +1266,21 @@ fn run_tcp_listener(
 
         println!("Recall Studio: capture client connected from {}", addr);
 
-        let reader = BufReader::new(stream);
+        let mut reader = BufReader::new(stream);
         let mut sequence_tracker = SequenceTracker::default();
 
-        for line in reader.lines() {
-            let line = match line {
-                Ok(line) => line,
+        loop {
+            let line = match read_bounded_line(&mut reader, MAX_TCP_LINE_BYTES) {
+                Ok(BoundedLine::Eof) => break,
+                Ok(BoundedLine::Oversized) => {
+                    metrics.incr_oversized();
+                    metrics.set_last_error(format!(
+                        "Dropped a TCP line over {} bytes with no newline in range — capture kept running",
+                        MAX_TCP_LINE_BYTES
+                    ));
+                    continue;
+                }
+                Ok(BoundedLine::Line(bytes)) => bytes,
                 Err(error) => {
                     // Client vanished mid-stream (Live quit, script reloaded).
                     // Expected, not exceptional — go back to accepting.
@@ -1216,7 +1289,7 @@ fn run_tcp_listener(
                 }
             };
 
-            if line.trim().is_empty() {
+            if line.iter().all(|b| b.is_ascii_whitespace()) {
                 continue;
             }
 
@@ -1227,7 +1300,7 @@ fn run_tcp_listener(
             // session.
             let outcome = catch_unwind(AssertUnwindSafe(|| {
                 process_packet(
-                    line.as_bytes(),
+                    &line,
                     addr,
                     &mut sequence_tracker,
                     &state,
@@ -1362,6 +1435,7 @@ mod tests {
     //! flat, fully-populated shape the rest of the app relies on.
     use super::*;
     use serde_json::json;
+    use std::io::Cursor;
 
     /// A raw bridge packet, shaped as it arrives on the wire: `payload` is still
     /// a nested object here, which is the whole point of the sequence tests.
@@ -1603,5 +1677,71 @@ mod tests {
         assert_eq!(event.event_type, "sample_added");
         assert_eq!(event.track_type.as_deref(), Some("audio"));
         assert_eq!(event.sample_name.as_deref(), Some("vox.wav"));
+    }
+
+    // ── read_bounded_line ────────────────────────────────────────────────────
+
+    #[test]
+    fn bounded_line_reads_a_normal_line() {
+        let mut reader = BufReader::new(Cursor::new(b"hello world\n".as_slice()));
+        match read_bounded_line(&mut reader, 32_768).unwrap() {
+            BoundedLine::Line(bytes) => assert_eq!(bytes, b"hello world"),
+            _ => panic!("expected a normal Line"),
+        }
+    }
+
+    #[test]
+    fn bounded_line_reports_eof_on_a_closed_stream() {
+        let mut reader = BufReader::new(Cursor::new(b"".as_slice()));
+        assert!(matches!(
+            read_bounded_line(&mut reader, 32_768).unwrap(),
+            BoundedLine::Eof
+        ));
+    }
+
+    #[test]
+    fn bounded_line_drops_a_line_past_the_ceiling_without_unbounded_growth() {
+        // A client that never sends a newline (or sends one far past the
+        // ceiling) must not grow the buffer without limit — this is the exact
+        // failure BufReader::lines() has. 10x the ceiling, no newline at all.
+        let oversized = vec![b'x'; 10_000];
+        let mut reader = BufReader::new(Cursor::new(oversized.as_slice()));
+        // No newline present, so this hits EOF after discarding everything —
+        // proving the read completed (didn't hang or allocate 10,000 bytes
+        // into the returned line) rather than that it returns Oversized here.
+        let outcome = read_bounded_line(&mut reader, 100).unwrap();
+        assert!(matches!(outcome, BoundedLine::Eof));
+    }
+
+    #[test]
+    fn bounded_line_flags_oversized_and_resyncs_to_the_next_line() {
+        // One line over the ceiling, immediately followed by a normal one.
+        // The oversized line's bytes must be fully discarded (not returned,
+        // not leaked into the next line) and the stream must resync cleanly.
+        let mut input = vec![b'x'; 200];
+        input.push(b'\n');
+        input.extend_from_slice(b"ok\n");
+        let mut reader = BufReader::new(Cursor::new(input.as_slice()));
+
+        assert!(matches!(
+            read_bounded_line(&mut reader, 100).unwrap(),
+            BoundedLine::Oversized
+        ));
+
+        match read_bounded_line(&mut reader, 100).unwrap() {
+            BoundedLine::Line(bytes) => assert_eq!(bytes, b"ok"),
+            _ => panic!("expected the next line to resync cleanly after the oversized one"),
+        }
+    }
+
+    #[test]
+    fn bounded_line_boundary_case_exactly_at_the_ceiling_is_not_oversized() {
+        let mut input = vec![b'x'; 100];
+        input.push(b'\n');
+        let mut reader = BufReader::new(Cursor::new(input.as_slice()));
+        match read_bounded_line(&mut reader, 100).unwrap() {
+            BoundedLine::Line(bytes) => assert_eq!(bytes.len(), 100),
+            _ => panic!("a line exactly at the ceiling must not be flagged oversized"),
+        }
     }
 }

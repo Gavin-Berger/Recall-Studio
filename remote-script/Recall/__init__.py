@@ -72,6 +72,19 @@ MAX_PARAMS_PER_DEVICE = 128
 MAX_CLIPS_PER_TRACK = 64
 MAX_NOTES_READ = 4096
 
+
+def _snapshot_fingerprint(payload):
+    """Deterministic fingerprint of a snapshot payload, for change detection.
+
+    sort_keys makes two dicts with the same content fingerprint identically
+    regardless of key insertion order -- the payload is rebuilt fresh on every
+    call, so relying on dict ordering being stable would be fragile. Module-level
+    (not a method) so it is exercised directly by tests without constructing a
+    Recall/ControlSurface instance, which has side effects (opens a socket,
+    starts a thread) inappropriate for a unit test.
+    """
+    return json.dumps(payload, sort_keys=True)
+
 # How long a parameter must sit still before its gesture counts as finished.
 # Listeners fire ~every 3ms during a ride, so emitting each one buries the
 # timeline in near-identical rows. 350ms is long enough to bridge the pauses
@@ -136,6 +149,10 @@ class Recall(ControlSurface):
         self._slot_names = {}
         self._watched_clips = (0, 0)
         self._note_edits_seen = 0
+        # _send_snapshot's dedup cache. refresh_state() fires on more than just
+        # "the open set changed" (see its docstring), so without this an
+        # unchanged set re-sends its whole snapshot on every one of those calls.
+        self._last_snapshot_fingerprint = None
 
         with self.component_guard():
             self._open_socket()
@@ -377,6 +394,12 @@ class Recall(ControlSurface):
         load and then only when the track list actually changes. Reading the LOM
         from here is cheap (no LiveAPI object construction per property), which
         is what made the equivalent walk dangerous in Max.
+
+        Deduped against the last snapshot sent, the same way the M4L bridge
+        deduped with lastLiveSetFingerprint: refresh_state() is called by Live
+        for more than the "set changed" case its docstring names, so without
+        this an unchanged set re-sends its full snapshot -- tracks, devices,
+        parameters, all of it -- on every one of those extra calls.
         """
         song = self.song
 
@@ -392,6 +415,11 @@ class Recall(ControlSurface):
             ],
             "master_track": self._serialize_track(song.master_track, 0),
         }
+
+        fingerprint = _snapshot_fingerprint(payload)
+        if fingerprint == self._last_snapshot_fingerprint:
+            return
+        self._last_snapshot_fingerprint = fingerprint
 
         self._emit("live_set_snapshot", payload)
 

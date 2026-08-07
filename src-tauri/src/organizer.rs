@@ -947,14 +947,20 @@ mod tests {
     }
 
     fn temp_assets() -> PathBuf {
+        // Counter, not a timestamp. Windows' system clock granularity is ~15ms, so
+        // two tests starting inside the same tick got an IDENTICAL path and raced
+        // on create_dir_all — an intermittent
+        // "Cannot create a file when that file already exists" (OS error 183) that
+        // failed roughly one run in ten. `storage.rs` already uses this pattern.
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static COUNTER: AtomicUsize = AtomicUsize::new(0);
+
         let dir = std::env::temp_dir().join(format!(
             "recall-organizer-test-{}-{}",
             std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
+            COUNTER.fetch_add(1, Ordering::Relaxed)
         ));
+        let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
     }

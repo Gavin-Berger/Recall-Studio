@@ -1,0 +1,94 @@
+/* Co-located with the component, matching SchemaTimeline.css and
+   ProjectBriefingScreen.css, and deliberately NOT in components.css — this
+   surface was built while that file was being reworked elsewhere. */
+
+.setup-notice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  padding: 10px 16px;
+  background: var(--panel-2);
+  /* Signal on the leading edge only. This is a real condition worth noticing,
+     but Recall never competes for the producer's attention (DESIGN.md S1), so
+     the colour marks the strip rather than filling it. */
+  border-left: 2px solid var(--signal);
+  border-bottom: 1px solid var(--line);
+  /* Arrival, once. Nothing here loops: DESIGN.md S6 allows exactly one pulsing
+     element in the app and it is the connection dot, because that is the only
+     genuinely live fact on screen. A blinking update banner would borrow the
+     plugin world's "something is happening NOW" grammar for a message about a
+     file that changed while you were away. */
+  animation: setup-notice-arrive var(--m-arrive) var(--ease-arrive) both;
+}
+
+@keyframes setup-notice-arrive {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.setup-notice__text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.setup-notice__title {
+  font-family: var(--font-sans);
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--paper-strong);
+}
+
+.setup-notice__detail {
+  font-size: 0.8rem;
+  line-height: 1.45;
+  /* --faint is banned under 19px (3.36:1, fails WCAG AA). --muted clears it. */
+  color: var(--muted);
+}
+
+.setup-notice__action {
+  flex-shrink: 0;
+  padding: 7px 14px;
+  font-family: var(--font-sans);
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--paper-strong);
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition:
+    border-color var(--m-settle) var(--ease-arrive),
+    background var(--m-settle) var(--ease-arrive);
+}
+
+.setup-notice__action:hover {
+  border-color: var(--signal);
+  background: var(--panel-3);
+}
+
+.setup-notice__action:focus-visible {
+  outline: 2px solid var(--signal);
+  outline-offset: 2px;
+}
+
+/* The strip stacks before the text wraps awkwardly. Narrow windows are a real
+   case here: the nav already collapses between 561-860px. */
+@media (max-width: 560px) {
+  .setup-notice {
+    align-items: flex-start;
+  }
+
+  .setup-notice__action {
+    align-self: stretch;
+  }
+}

@@ -1760,4 +1760,128 @@ mod tests {
             _ => panic!("a line exactly at the ceiling must not be flagged oversized"),
         }
     }
+
+    // ── Connection liveness ────────────────────────────────────────────────
+    //
+    // REGRESSION GUARD. The Python control surface shipped without ever emitting
+    // a `heartbeat`, while this file has always derived `connected` from nothing
+    // else — so `connected` was permanently false and the version chip never
+    // rendered, for every user, for the whole life of the TCP capture path.
+    // Nothing caught it because no test crossed the language boundary: the Rust
+    // side was correct in isolation and the Python side was correct in
+    // isolation, and the CONTRACT between them was what broke.
+    //
+    // These tests pin that contract using the exact wire shape
+    // remote-script/Recall/__init__.py::_send_heartbeat_if_due now sends. If the
+    // script's payload shape or event name drifts again, these fail.
+
+    fn fresh_connection_state() -> Arc<Mutex<ConnectionState>> {
+        Arc::new(Mutex::new(ConnectionState {
+            last_heartbeat_ms: None,
+            last_message: None,
+            bridge_version: None,
+            open_als_path: None,
+            session_als_path: None,
+        }))
+    }
+
+    /// Exactly what the control surface puts on the wire: `payload` is a nested
+    /// OBJECT (not a pre-stringified one), which normalize flattens on the way in.
+    fn control_surface_heartbeat() -> Value {
+        json!({
+            "protocol": "recall.v2",
+            "source": "control_surface",
+            "event_type": "heartbeat",
+            "timestamp_ms": 1_700_000_000_000u64,
+            "payload": { "bridge_version": "0.2.0" }
+        })
+    }
+
+    #[test]
+    fn a_control_surface_heartbeat_marks_the_bridge_connected() {
+        let state = fresh_connection_state();
+        let packet = Value::Object(normalized(control_surface_heartbeat()));
+
+        update_connection_if_heartbeat(&packet, &state);
+
+        let status = get_status(Arc::clone(&state));
+        assert!(
+            status.connected,
+            "a heartbeat that just arrived must read as connected"
+        );
+        assert!(status.last_heartbeat_ms.is_some());
+    }
+
+    #[test]
+    fn the_bridge_version_is_read_out_of_the_heartbeat_payload() {
+        // The script sends `payload` as an object; normalize stringifies it, and
+        // update_connection_if_heartbeat parses it back. This asserts that whole
+        // round trip, which is where the version chip was being lost.
+        let state = fresh_connection_state();
+        let packet = Value::Object(normalized(control_surface_heartbeat()));
+
+        update_connection_if_heartbeat(&packet, &state);
+
+        assert_eq!(
+            get_status(state).bridge_version.as_deref(),
+            Some("0.2.0"),
+            "bridge_version must survive the object -> string -> object round trip"
+        );
+    }
+
+    #[test]
+    fn a_non_heartbeat_event_does_not_mark_the_bridge_connected() {
+        // The bug in reverse: the control surface emits plenty of other events,
+        // and none of them may stand in for a heartbeat. If this ever passes by
+        // accident, liveness has silently become "did anything happen recently",
+        // which reads as disconnected whenever Live sits idle — the exact moment
+        // the setup screen needs the truth.
+        let state = fresh_connection_state();
+        let packet = Value::Object(normalized(json!({
+            "protocol": "recall.v2",
+            "source": "control_surface",
+            "event_type": "tempo_changed",
+            "payload": { "bpm": 128.0 }
+        })));
+
+        update_connection_if_heartbeat(&packet, &state);
+
+        let status = get_status(state);
+        assert!(!status.connected);
+        assert!(status.last_heartbeat_ms.is_none());
+    }
+
+    #[test]
+    fn a_stale_heartbeat_reads_as_disconnected() {
+        // 5s window in get_status. A bridge that stopped talking must stop
+        // claiming to be connected, or the setup screen would confirm success
+        // for a script Live has already unloaded.
+        let state = fresh_connection_state();
+        {
+            let mut connection = state.lock().unwrap();
+            connection.last_heartbeat_ms = Some(now_ms().saturating_sub(6_000));
+        }
+
+        assert!(!get_status(state).connected);
+    }
+
+    #[test]
+    fn a_heartbeat_without_a_version_still_marks_connected() {
+        // Liveness and version are independent: an older script that heartbeats
+        // without a version must still register as connected rather than being
+        // treated as absent.
+        let state = fresh_connection_state();
+        let packet = Value::Object(normalized(json!({
+            "protocol": "recall.v2",
+            "source": "control_surface",
+            "event_type": "heartbeat",
+            "payload": {}
+        })));
+
+        update_connection_if_heartbeat(&packet, &state);
+
+        let status = get_status(state);
+        assert!(status.connected);
+        assert_eq!(status.bridge_version, None);
+    }
 }

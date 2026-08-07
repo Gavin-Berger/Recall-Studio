@@ -32,6 +32,11 @@ const BACKEND_DELETE_CAPTURE_COMMAND = "delete_saved_session";
 const BACKEND_START_CAPTURE_FOR_PROJECT_COMMAND = "start_capture_for_project";
 const BACKEND_NEW_TAKE_FOR_PROJECT_COMMAND = "new_take_for_project";
 
+type FolderMetadataRefresh = {
+  refreshed: number;
+  unavailable: number;
+};
+
 const POLL_INTERVAL_MS = 1000;
 const PRODUCER_NAME_STORAGE_KEY = "recall-studio.producer-name";
 
@@ -275,6 +280,12 @@ function App() {
     return added;
   }
 
+  async function handleRefreshFolderMetadata(): Promise<FolderMetadataRefresh> {
+    const result = await invoke<FolderMetadataRefresh>("refresh_project_folder_metadata");
+    await reloadProjects();
+    return result;
+  }
+
   async function handleRenameProject(projectId: string, displayName: string) {
     await invoke(BACKEND_RENAME_PROJECT_COMMAND, { projectId, displayName });
     await reloadProjects();
@@ -364,6 +375,7 @@ function App() {
           onCreateProject={handleCreateProject}
           onConnectFolder={handleConnectFolder}
           onRescanFolder={handleRescanFolder}
+          onRefreshFolderMetadata={handleRefreshFolderMetadata}
           onOpenVersions={handleOpenVersions}
           onStartCapture={handleStartCapture}
           onNewTake={handleNewTake}

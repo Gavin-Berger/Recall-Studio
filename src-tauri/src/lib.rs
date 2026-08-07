@@ -13,7 +13,10 @@ use protocol::RecallEvent;
 use schema_projection::{
     CreativeMoment, CreativeMomentTarget, NoteEdit, ParameterChange, ProjectSchema,
 };
-use session::{SavedProject, SavedSession, SavedSessionMetadata, SessionState, SessionStatus};
+use session::{
+    ProjectFolderMetadata, SavedProject, SavedSession, SavedSessionMetadata, SessionState,
+    SessionStatus,
+};
 use std::io::{Read, Seek, Write};
 use std::sync::{Arc, Mutex};
 use storage::{initialize_database, SessionCuration, StorageState, StorageStatus};
@@ -834,6 +837,143 @@ fn folder_contains_als(dir: &std::path::Path) -> bool {
         .unwrap_or(false)
 }
 
+const AUDIO_FILE_EXTENSIONS: &[&str] = &[
+    "wav", "wave", "aif", "aiff", "flac", "mp3", "m4a", "aac", "ogg",
+];
+
+fn time_as_ms(time: std::io::Result<std::time::SystemTime>) -> Option<u64> {
+    time.ok()
+        .and_then(|value| value.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|value| value.as_millis() as u64)
+}
+
+/// Read the practical facts Windows Explorer gives a producer about a project
+/// folder. We deliberately do this only on an explicit refresh: traversing a
+/// project with large sample libraries on every UI poll would make the library
+/// feel slow. Symlinks/junctions are not followed so a linked sample drive cannot
+/// make the scan unexpectedly leave the project folder or loop back into it.
+fn scan_project_folder_metadata(dir: &std::path::Path) -> Result<ProjectFolderMetadata, String> {
+    let root = std::fs::metadata(dir)
+        .map_err(|error| format!("Failed to inspect project folder: {}", error))?;
+    if !root.is_dir() {
+        return Err("That project source is not a folder.".to_string());
+    }
+
+    let mut file_count = 0usize;
+    let mut total_size_bytes = 0u64;
+    let mut als_file_count = 0usize;
+    let mut audio_file_count = 0usize;
+    let mut latest_file_modified_at_ms: Option<u64> = None;
+    let mut pending = vec![dir.to_path_buf()];
+
+    while let Some(current) = pending.pop() {
+        let entries = match std::fs::read_dir(&current) {
+            Ok(entries) => entries,
+            // A sample folder can be unavailable while a network drive sleeps or
+            // a plugin owns a file. Keep the rest of the project useful instead
+            // of failing an entire library refresh.
+            Err(_) => continue,
+        };
+
+        for entry in entries.flatten() {
+            let file_type = match entry.file_type() {
+                Ok(file_type) => file_type,
+                Err(_) => continue,
+            };
+            if file_type.is_symlink() {
+                continue;
+            }
+
+            let path = entry.path();
+            if file_type.is_dir() {
+                pending.push(path);
+                continue;
+            }
+            if !file_type.is_file() {
+                continue;
+            }
+
+            let metadata = match entry.metadata() {
+                Ok(metadata) => metadata,
+                Err(_) => continue,
+            };
+            file_count += 1;
+            total_size_bytes = total_size_bytes.saturating_add(metadata.len());
+            if let Some(modified_at_ms) = time_as_ms(metadata.modified()) {
+                latest_file_modified_at_ms = Some(
+                    latest_file_modified_at_ms
+                        .map(|current| current.max(modified_at_ms))
+                        .unwrap_or(modified_at_ms),
+                );
+            }
+
+            let extension = path
+                .extension()
+                .and_then(|value| value.to_str())
+                .unwrap_or_default();
+            if extension.eq_ignore_ascii_case("als") {
+                als_file_count += 1;
+            }
+            if AUDIO_FILE_EXTENSIONS
+                .iter()
+                .any(|candidate| extension.eq_ignore_ascii_case(candidate))
+            {
+                audio_file_count += 1;
+            }
+        }
+    }
+
+    Ok(ProjectFolderMetadata {
+        created_at_ms: time_as_ms(root.created()),
+        modified_at_ms: time_as_ms(root.modified()),
+        latest_file_modified_at_ms,
+        file_count,
+        total_size_bytes,
+        als_file_count,
+        audio_file_count,
+        scanned_at_ms: time_as_ms(Ok(std::time::SystemTime::now())).unwrap_or(0),
+    })
+}
+
+#[cfg(test)]
+mod project_folder_metadata_tests {
+    use super::*;
+
+    fn temp_dir() -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "recall-folder-metadata-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+        std::fs::create_dir_all(&path).unwrap();
+        path
+    }
+
+    #[test]
+    fn scans_project_files_without_counting_directories() {
+        let root = temp_dir();
+        let nested = root.join("Samples");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(root.join("song.als"), b"als").unwrap();
+        std::fs::write(nested.join("kick.wav"), b"audio").unwrap();
+        std::fs::write(nested.join("notes.txt"), b"text").unwrap();
+
+        let metadata = scan_project_folder_metadata(&root).unwrap();
+
+        assert_eq!(metadata.file_count, 3);
+        assert_eq!(metadata.total_size_bytes, 12);
+        assert_eq!(metadata.als_file_count, 1);
+        assert_eq!(metadata.audio_file_count, 1);
+        assert!(metadata.latest_file_modified_at_ms.is_some());
+        assert!(metadata.scanned_at_ms > 0);
+
+        std::fs::remove_dir_all(root).ok();
+    }
+}
+
 /// An `.als` file found inside a project folder: its display name (file stem), its
 /// full path, and its last-modified time in ms (0 if unreadable). The modified time
 /// orders scanned takes so versions line up chronologically.
@@ -976,7 +1116,10 @@ fn rescan_project(storage: &StorageState, project_id: &str) -> Result<usize, Str
         .into_iter()
         .map(|file| (file.name, file.path, file.modified_ms))
         .collect();
-    storage.rescan_project_takes(project_id, &files)
+    let added = storage.rescan_project_takes(project_id, &files)?;
+    let folder_metadata = scan_project_folder_metadata(std::path::Path::new(&folder))?;
+    storage.save_project_folder_metadata(project_id, &folder_metadata)?;
+    Ok(added)
 }
 
 /// Re-scan a project's folder for new `.als` versions. The "Rescan" button.
@@ -984,6 +1127,57 @@ fn rescan_project(storage: &StorageState, project_id: &str) -> Result<usize, Str
 fn rescan_project_folder(state: State<'_, AppState>, project_id: String) -> Result<usize, String> {
     let storage = state.storage.lock().expect("Storage state lock failed");
     rescan_project(&storage, &project_id)
+}
+
+#[derive(serde::Serialize)]
+struct FolderMetadataRefresh {
+    refreshed: usize,
+    unavailable: usize,
+}
+
+/// Refresh cached Windows Explorer facts for one project or every connected
+/// project. The scan is deliberately user-triggered, so normal library polling
+/// never walks a producer's sample-heavy folders.
+#[tauri::command]
+fn refresh_project_folder_metadata(
+    state: State<'_, AppState>,
+    project_id: Option<String>,
+) -> Result<FolderMetadataRefresh, String> {
+    let projects = {
+        let storage = state.storage.lock().expect("Storage state lock failed");
+        storage.list_projects(false)?
+    };
+    let requested_id = project_id.as_deref();
+    if let Some(id) = requested_id {
+        if !projects.iter().any(|project| project.id == id) {
+            return Err(format!("Project not found: {}", id));
+        }
+    }
+
+    let mut refreshed = 0usize;
+    let mut unavailable = 0usize;
+    for project in projects {
+        if requested_id.is_some_and(|id| id != project.id) {
+            continue;
+        }
+        let Some(folder) = project.ableton_path else {
+            unavailable += 1;
+            continue;
+        };
+        match scan_project_folder_metadata(std::path::Path::new(&folder)) {
+            Ok(metadata) => {
+                let storage = state.storage.lock().expect("Storage state lock failed");
+                storage.save_project_folder_metadata(&project.id, &metadata)?;
+                refreshed += 1;
+            }
+            Err(_) => unavailable += 1,
+        }
+    }
+
+    Ok(FolderMetadataRefresh {
+        refreshed,
+        unavailable,
+    })
 }
 
 /// A `.als` version in a project folder, for the relink picker.
@@ -1517,6 +1711,7 @@ pub fn run() {
             create_project,
             connect_project_folder,
             rescan_project_folder,
+            refresh_project_folder_metadata,
             list_project_als_files,
             relink_take,
             rename_project,

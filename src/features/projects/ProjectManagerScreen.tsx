@@ -6,11 +6,15 @@ import {
   useState,
 } from "react";
 import { RecallMark } from "../../components/RecallMark";
-import { BridgeSetup } from "../home/BridgeSetup";
 import { abletonSetName, describeBridgeSet, formatSessionDate, formatSessionDuration } from "../sessionFormat";
 import { RelinkDialog, type AlsFileChoice } from "./RelinkDialog";
 import { detectTakeMismatch } from "./takeMismatch";
-import type { ConnectionStatus, SavedProject, SavedSessionMetadata } from "../../types/recall";
+import type {
+  ConnectionStatus,
+  ProjectFolderMetadata,
+  SavedProject,
+  SavedSessionMetadata,
+} from "../../types/recall";
 
 type ProjectManagerScreenProps = {
   connection: ConnectionStatus;
@@ -22,6 +26,7 @@ type ProjectManagerScreenProps = {
   onCreateProject: (displayName: string) => Promise<void>;
   onConnectFolder: (projectId?: string | null) => Promise<number>;
   onRescanFolder: (projectId: string) => Promise<number>;
+  onRefreshFolderMetadata: () => Promise<{ refreshed: number; unavailable: number }>;
   onOpenVersions: (projectId: string) => void;
   onStartCapture: (projectId?: string | null) => Promise<void>;
   onNewTake: (projectId?: string | null) => Promise<void>;
@@ -46,6 +51,8 @@ const DEFAULT_DIR: Record<SortKey, SortDir> = {
   updated: "desc",
 };
 
+const PROJECT_BATCH_SIZE = 8;
+
 export function ProjectManagerScreen({
   connection,
   projects,
@@ -56,6 +63,7 @@ export function ProjectManagerScreen({
   onCreateProject,
   onConnectFolder,
   onRescanFolder,
+  onRefreshFolderMetadata,
   onOpenVersions,
   onStartCapture,
   onNewTake,
@@ -78,7 +86,7 @@ export function ProjectManagerScreen({
   const [sortDir, setSortDir] = useState<SortDir>("desc");
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
   const [creating, setCreating] = useState(false);
-  const [bridgeOpen, setBridgeOpen] = useState(!connection.connected);
+  const [projectLimit, setProjectLimit] = useState(PROJECT_BATCH_SIZE);
 
   const isBusy = busyLabel !== null || loading;
   const activeSessionId = activeSession?.id ?? null;
@@ -110,6 +118,9 @@ export function ProjectManagerScreen({
       : unassignedSessions;
     return [...list].sort((a, b) => b.started_at_ms - a.started_at_ms);
   }, [unassignedSessions, trimmedQuery]);
+
+  const displayedProjects = visibleProjects.slice(0, projectLimit);
+  const remainingProjectCount = Math.max(visibleProjects.length - displayedProjects.length, 0);
 
   // While filtering, reveal every match by treating filtered projects as expanded.
   const isExpanded = (projectId: string) => Boolean(trimmedQuery) || expanded.has(projectId);
@@ -143,6 +154,7 @@ export function ProjectManagerScreen({
       setSortKey(key);
       setSortDir(DEFAULT_DIR[key]);
     }
+    setProjectLimit(PROJECT_BATCH_SIZE);
   }
 
   async function handleCreateDraft(name: string) {
@@ -190,8 +202,6 @@ export function ProjectManagerScreen({
         </div>
       </section>
 
-      <BridgeStrip connection={connection} open={bridgeOpen} onToggle={() => setBridgeOpen((open) => !open)} />
-
       {/* A take's project binding is permanent once set, so opening a different
           set in Ableton silently files the new work under the old song. Say so,
           and offer the one action that fixes it. */}
@@ -230,7 +240,7 @@ export function ProjectManagerScreen({
             <div>
               <span className="eyebrow">Project Library</span>
               <span className="project-explorer__count">
-                {projects.length} {countLabel(projects.length, "project")}
+                Showing {displayedProjects.length} of {visibleProjects.length} {countLabel(visibleProjects.length, "project")}
                 {" · "}
                 {allCaptures.length} {countLabel(allCaptures.length, "take")}
                 {activeSession ? " · 1 recording" : ""}
@@ -243,7 +253,10 @@ export function ProjectManagerScreen({
               <SearchIcon />
               <input
                 value={query}
-                onChange={(event) => setQuery(event.target.value)}
+                onChange={(event) => {
+                  setQuery(event.target.value);
+                  setProjectLimit(PROJECT_BATCH_SIZE);
+                }}
                 placeholder="Filter projects"
                 aria-label="Filter projects"
               />
@@ -252,7 +265,10 @@ export function ProjectManagerScreen({
                   type="button"
                   className="project-explorer__search-clear"
                   aria-label="Clear filter"
-                  onClick={() => setQuery("")}
+                  onClick={() => {
+                    setQuery("");
+                    setProjectLimit(PROJECT_BATCH_SIZE);
+                  }}
                 >
                   <CloseIcon />
                 </button>
@@ -283,6 +299,31 @@ export function ProjectManagerScreen({
             >
               <FolderIcon />
               Connect Folder
+            </button>
+            <button
+              type="button"
+              className="home-action"
+              disabled={isBusy}
+              title="Read file details from every connected project folder"
+              onClick={() =>
+                void runAction("Reading connected folders...", async () => {
+                  const result = await onRefreshFolderMetadata();
+                  if (result.refreshed === 0) {
+                    setFlash("No connected project folders were available to scan.");
+                    return;
+                  }
+                  setFlash(
+                    `Updated file details for ${result.refreshed} ${countLabel(result.refreshed, "project")}${
+                      result.unavailable > 0
+                        ? ` · ${result.unavailable} ${countLabel(result.unavailable, "folder")} unavailable`
+                        : ""
+                    }.`,
+                  );
+                })
+              }
+            >
+              <RescanIcon />
+              Refresh files
             </button>
             {/* Only meaningful while something is recording. Switching Ableton
                 projects does not move the running take, so this is how you close
@@ -325,7 +366,7 @@ export function ProjectManagerScreen({
           <SortHeader label="Name" sortKey="name" activeKey={sortKey} dir={sortDir} onSort={toggleSort} />
           <SortHeader label="Takes" sortKey="takes" activeKey={sortKey} dir={sortDir} onSort={toggleSort} align="end" />
           <SortHeader label="Updated" sortKey="updated" activeKey={sortKey} dir={sortDir} onSort={toggleSort} />
-          <span className="px-cell px-set px-head__static">Ableton</span>
+          <span className="px-cell px-set px-head__static">Files</span>
           <span className="px-cell px-actions" />
         </div>
 
@@ -337,7 +378,24 @@ export function ProjectManagerScreen({
               <DraftRow busy={isBusy} onCommit={handleCreateDraft} onCancel={() => setCreating(false)} />
             )}
 
-            {visibleProjects.map((project) => (
+            {visibleProjects.length > 0 && (
+              <div className="project-explorer__section">
+                <span className="eyebrow">
+                  {trimmedQuery
+                    ? "Search results"
+                    : sortKey === "updated"
+                      ? sortDir === "desc"
+                        ? "Recently updated"
+                        : "Earlier projects"
+                      : "Project list"}
+                </span>
+                <span className="project-explorer__section-count">
+                  {displayedProjects.length} visible{remainingProjectCount > 0 ? ` \u00b7 ${remainingProjectCount} more` : ""}
+                </span>
+              </div>
+            )}
+
+            {displayedProjects.map((project) => (
               <ProjectRow
                 key={project.id}
                 project={project}
@@ -363,6 +421,49 @@ export function ProjectManagerScreen({
                 runAction={runAction}
               />
             ))}
+
+            {(remainingProjectCount > 0 || displayedProjects.length > PROJECT_BATCH_SIZE) && (
+              <div className="project-explorer__more">
+                <div>
+                  <span className="eyebrow">More in your library</span>
+                  <span className="project-explorer__more-count">
+                    {remainingProjectCount > 0
+                      ? `${remainingProjectCount} ${countLabel(remainingProjectCount, "project")} not shown yet`
+                      : "All matching projects are visible"}
+                  </span>
+                </div>
+                <div className="project-explorer__more-actions">
+                  {displayedProjects.length > PROJECT_BATCH_SIZE && (
+                    <button
+                      type="button"
+                      className="project-explorer__more-link"
+                      onClick={() => setProjectLimit(PROJECT_BATCH_SIZE)}
+                    >
+                      Show fewer
+                    </button>
+                  )}
+                  {remainingProjectCount > 0 && (
+                    <>
+                      <button
+                        type="button"
+                        className="project-explorer__more-link"
+                        onClick={() => setProjectLimit(visibleProjects.length)}
+                      >
+                        Show all
+                      </button>
+                      <button
+                        type="button"
+                        className="project-explorer__more-btn"
+                        onClick={() => setProjectLimit((limit) => limit + PROJECT_BATCH_SIZE)}
+                      >
+                        <FolderIcon />
+                        Show {Math.min(PROJECT_BATCH_SIZE, remainingProjectCount)} more
+                      </button>
+                    </>
+                  )}
+                </div>
+              </div>
+            )}
 
             {!creating && visibleProjects.length === 0 && (
               <div className="project-explorer__empty">
@@ -412,43 +513,6 @@ export function ProjectManagerScreen({
         )}
       </section>
     </div>
-  );
-}
-
-function BridgeStrip({
-  connection,
-  open,
-  onToggle,
-}: {
-  connection: ConnectionStatus;
-  open: boolean;
-  onToggle: () => void;
-}) {
-  const live = connection.connected;
-  return (
-    <section className={`bridge-strip ${live ? "bridge-strip--live" : "bridge-strip--off"} ${open ? "is-open" : ""}`}>
-      <button type="button" className="bridge-strip__bar" onClick={onToggle} aria-expanded={open}>
-        <span className="bridge-strip__status">
-          <span className="bridge-strip__dot" />
-          <span className="bridge-strip__label">
-            {live
-              ? connection.bridge_version
-                ? `Ableton bridge connected · v${connection.bridge_version}`
-                : "Ableton bridge connected"
-              : "Ableton bridge not connected"}
-          </span>
-        </span>
-        <span className="bridge-strip__hint">
-          {live ? "Setup" : "Connect Ableton"}
-          <Chevron open={open} />
-        </span>
-      </button>
-      {open && (
-        <div className="bridge-strip__body">
-          <BridgeSetup connection={connection} />
-        </div>
-      )}
-    </section>
   );
 }
 
@@ -558,34 +622,9 @@ function ProjectRow({
     void runAction("Archiving project...", () => onArchiveProject(project.id));
   }
 
-  // Clicking a project leads to its versions view — the version rail is the hero
-  // surface. Quick inline peeking at takes stays on the chevron / Space key.
-  function handleRowClick(event: React.MouseEvent) {
-    if ((event.target as HTMLElement).closest("button, input, .row-menu")) return;
-    onOpenVersions(project.id);
-  }
-
-  function handleRowKey(event: React.KeyboardEvent) {
-    if ((event.target as HTMLElement).closest("button, input, .row-menu")) return;
-    if (event.key === "Enter") {
-      event.preventDefault();
-      onOpenVersions(project.id);
-    } else if (event.key === " " && hasTakes) {
-      event.preventDefault();
-      onToggle();
-    }
-  }
-
   return (
     <div className={`px-group ${recording ? "is-recording" : ""}`}>
-      <div
-        className={`px-row px-row--project ${expanded ? "is-open" : ""} is-clickable`}
-        role="button"
-        tabIndex={0}
-        aria-expanded={hasTakes ? expanded : undefined}
-        onClick={handleRowClick}
-        onKeyDown={handleRowKey}
-      >
+      <div className={`px-row px-row--project ${expanded ? "is-open" : ""}`}>
         <span className="px-cell px-cell--chev">
           {hasTakes && (
             <button
@@ -613,11 +652,7 @@ function ProjectRow({
               onClose={() => setEditing(false)}
             />
           ) : (
-            <span
-              className="px-name__text"
-              title={project.display_name}
-              onDoubleClick={() => setEditing(true)}
-            >
+            <span className="px-name__text" title={project.display_name}>
               {project.display_name}
             </span>
           )}
@@ -633,91 +668,101 @@ function ProjectRow({
               <span className="px-dot" />
               Recording
             </span>
+          ) : project.folder_metadata ? (
+            <span className="px-file-facts" title={folderFactsTitle(project.folder_metadata, project.ableton_path)}>
+              {folderFactsSummary(project.folder_metadata)}
+            </span>
           ) : project.ableton_name || project.ableton_path ? (
-            <span className="px-tag" title={project.ableton_path ?? project.ableton_name ?? undefined}>
-              Ableton set
+            <span
+              className="px-file-facts px-file-facts--pending"
+              title={`${project.ableton_path ?? project.ableton_name}\nUse Refresh files to read this folder.`}
+            >
+              Not scanned
             </span>
           ) : (
             <span className="px-dash">—</span>
           )}
         </span>
 
-        <span className="px-cell px-actions">
+        <span className="px-cell px-actions" role="group" aria-label="Project actions">
           <button
             type="button"
-            className="px-btn px-btn--primary"
-            disabled={busy}
+            className="px-icon-btn"
+            aria-label="Open project"
+            title="Open project"
             onClick={() => onOpenVersions(project.id)}
-            title="See this song's versions and what changed"
           >
-            {recording ? "Open" : (
-              <>
-                <PlayIcon />
-                Open
-              </>
-            )}
+            <OpenProjectIcon />
           </button>
-          <RowMenu ariaLabel="Project actions" disabled={busy}>
-            {(close) => (
-              <>
-                <button
-                  type="button"
-                  className="row-menu__item"
-                  onClick={() => {
-                    setEditing(true);
-                    close();
-                  }}
-                >
-                  Rename
-                </button>
-                <button
-                  type="button"
-                  className="row-menu__item"
-                  onClick={() => {
-                    void runAction("Connecting folder...", () => onConnectFolder(project.id).then(() => undefined));
-                    close();
-                  }}
-                >
-                  {project.ableton_name || project.ableton_path ? "Replace Ableton folder…" : "Connect Ableton folder…"}
-                </button>
-                {project.ableton_path && (
-                  <button
-                    type="button"
-                    className="row-menu__item"
-                    onClick={() => {
-                      void runAction("Rescanning folder...", () => onRescanFolder(project.id).then(() => undefined));
-                      close();
-                    }}
-                  >
-                    Rescan folder for new versions
-                  </button>
-                )}
-                {recording && (
-                  <button
-                    type="button"
-                    className="row-menu__item"
-                    onClick={() => {
-                      void runAction("Starting new take...", () => onNewTake(project.id));
-                      close();
-                    }}
-                  >
-                    Start another take
-                  </button>
-                )}
-                <div className="row-menu__sep" />
-                <button
-                  type="button"
-                  className="row-menu__item row-menu__item--danger"
-                  onClick={() => {
-                    handleArchive();
-                    close();
-                  }}
-                >
-                  Archive project
-                </button>
-              </>
-            )}
-          </RowMenu>
+          <button
+            type="button"
+            className="px-icon-btn"
+            disabled={busy}
+            aria-label="Rename project"
+            title="Rename project"
+            onClick={(event) => {
+              event.stopPropagation();
+              setEditing(true);
+            }}
+          >
+            <PencilIcon />
+          </button>
+          <button
+            type="button"
+            className="px-icon-btn"
+            disabled={busy}
+            aria-label={project.ableton_path ? "Replace Ableton folder" : "Connect Ableton folder"}
+            title={project.ableton_path ? "Replace Ableton folder" : "Connect Ableton folder"}
+            onClick={(event) => {
+              event.stopPropagation();
+              void runAction("Connecting folder...", () => onConnectFolder(project.id).then(() => undefined));
+            }}
+          >
+            <FolderLinkIcon />
+          </button>
+          {project.ableton_path && (
+            <button
+              type="button"
+              className="px-icon-btn"
+              disabled={busy}
+              aria-label="Rescan folder for new versions"
+              title="Rescan folder for new versions"
+              onClick={(event) => {
+                event.stopPropagation();
+                void runAction("Rescanning folder...", () => onRescanFolder(project.id).then(() => undefined));
+              }}
+            >
+              <RescanIcon />
+            </button>
+          )}
+          {recording && (
+            <button
+              type="button"
+              className="px-icon-btn"
+              disabled={busy}
+              aria-label="Start another take"
+              title="Start another take"
+              onClick={(event) => {
+                event.stopPropagation();
+                void runAction("Starting new take...", () => onNewTake(project.id));
+              }}
+            >
+              <NewTakeIcon />
+            </button>
+          )}
+          <button
+            type="button"
+            className="px-icon-btn px-icon-btn--danger"
+            disabled={busy}
+            aria-label="Archive project"
+            title="Archive project"
+            onClick={(event) => {
+              event.stopPropagation();
+              handleArchive();
+            }}
+          >
+            <ArchiveIcon />
+          </button>
         </span>
       </div>
 
@@ -1007,12 +1052,12 @@ function EditableName({
     inputRef.current?.select();
   }, []);
 
-  function commit() {
+  async function commit() {
     if (done.current) return;
     done.current = true;
     const next = draft.trim();
     if (next && next !== value) {
-      void onCommit(next);
+      await onCommit(next);
     }
     onClose();
   }
@@ -1025,10 +1070,13 @@ function EditableName({
       disabled={busy}
       onChange={(event) => setDraft(event.target.value)}
       onClick={(event) => event.stopPropagation()}
-      onBlur={commit}
+      onBlur={() => void commit()}
       onKeyDown={(event) => {
         event.stopPropagation();
-        if (event.key === "Enter") commit();
+        if (event.key === "Enter") {
+          event.preventDefault();
+          void commit();
+        }
         if (event.key === "Escape") {
           done.current = true;
           onClose();
@@ -1068,7 +1116,7 @@ function RowMenu({
   }, [open]);
 
   return (
-    <div className={`row-menu ${open ? "is-open" : ""}`} ref={ref}>
+    <div className={`row-menu ${open ? "is-open" : ""}`} ref={ref} onClick={(event) => event.stopPropagation()}>
       <button
         type="button"
         className="row-menu__trigger"
@@ -1112,6 +1160,33 @@ function captureName(session: SavedSessionMetadata): string {
   return session.capture_name ?? session.name;
 }
 
+function formatFileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  const units = ["KB", "MB", "GB", "TB"];
+  const exponent = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length);
+  const value = bytes / 1024 ** exponent;
+  return `${value >= 10 || exponent === 0 ? value.toFixed(0) : value.toFixed(1)} ${units[exponent - 1]}`;
+}
+
+function folderFactsSummary(metadata: ProjectFolderMetadata): string {
+  const sets = `${metadata.als_file_count} ${countLabel(metadata.als_file_count, "set")}`;
+  return `${sets} · ${formatFileSize(metadata.total_size_bytes)}`;
+}
+
+function folderFactsTitle(metadata: ProjectFolderMetadata, path: string | null): string {
+  const facts = [
+    path,
+    `${metadata.file_count.toLocaleString()} ${countLabel(metadata.file_count, "file")}`,
+    `${metadata.als_file_count} ${countLabel(metadata.als_file_count, "Ableton set")}`,
+    `${metadata.audio_file_count} ${countLabel(metadata.audio_file_count, "audio file")}`,
+    formatFileSize(metadata.total_size_bytes),
+    metadata.latest_file_modified_at_ms
+      ? `Latest file change: ${formatSessionDate(metadata.latest_file_modified_at_ms)}`
+      : null,
+  ].filter(Boolean);
+  return facts.join("\n");
+}
+
 function countLabel(count: number, noun: string): string {
   return `${noun}${count === 1 ? "" : "s"}`;
 }
@@ -1138,6 +1213,60 @@ function FolderIcon({ open = false }: { open?: boolean }) {
   );
 }
 
+function PencilIcon() {
+  return (
+    <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+      <path d="M3.2 11.8l.7-2.5 6.5-6.5a1.3 1.3 0 011.8 1.8L5.7 11.1l-2.5.7z" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round" />
+      <path d="M9.4 3.8l2.8 2.8" fill="none" stroke="currentColor" strokeWidth="1.4" />
+    </svg>
+  );
+}
+
+function OpenProjectIcon() {
+  return (
+    <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+      <path d="M3 2.8h5.1v2H5v8.4h8.2V10h2v4.2c0 .6-.5 1-1 1H4c-.6 0-1-.4-1-1V3.8c0-.6.4-1 1-1z" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" />
+      <path d="M8.2 2.2h5.6v5.6M13.6 2.4L7.4 8.6" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function FolderLinkIcon() {
+  return (
+    <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+      <path d="M2.1 4.7c0-.6.5-1 1-1H6l1 1.2h5.9c.6 0 1 .4 1 1v5.7c0 .6-.4 1-1 1H3.1c-.6 0-1-.4-1-1V4.7z" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" />
+      <path d="M6.2 9.7h3.6M8.6 7.9l1.8 1.8-1.8 1.8" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function RescanIcon() {
+  return (
+    <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+      <path d="M12.8 6.4A5.2 5.2 0 103 11.2" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+      <path d="M12.8 2.8v3.6H9.2" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function NewTakeIcon() {
+  return (
+    <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+      <circle cx="8" cy="8" r="5.4" fill="none" stroke="currentColor" strokeWidth="1.3" />
+      <path d="M8 5.2v5.6M5.2 8h5.6" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function ArchiveIcon() {
+  return (
+    <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+      <path d="M2.5 5.4h11v7.1c0 .6-.5 1-1 1h-9c-.6 0-1-.4-1-1V5.4zM2 3.1h12v2.3H2z" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" />
+      <path d="M6.2 8.8h3.6" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+    </svg>
+  );
+}
+
 function SearchIcon() {
   return (
     <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
@@ -1151,14 +1280,6 @@ function PlusIcon() {
   return (
     <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">
       <path d="M8 3v10M3 8h10" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
-    </svg>
-  );
-}
-
-function PlayIcon() {
-  return (
-    <svg viewBox="0 0 16 16" width="11" height="11" aria-hidden="true">
-      <path d="M5 3.5l7 4.5-7 4.5z" fill="currentColor" />
     </svg>
   );
 }

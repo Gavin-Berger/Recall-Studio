@@ -82,5 +82,17 @@ export type SavedProject = {
   capture_count: number;
   active_capture_count: number;
   captures: SavedSessionMetadata[];
+  folder_metadata?: ProjectFolderMetadata | null;
+};
+
+export type ProjectFolderMetadata = {
+  created_at_ms: number | null;
+  modified_at_ms: number | null;
+  latest_file_modified_at_ms: number | null;
+  file_count: number;
+  total_size_bytes: number;
+  als_file_count: number;
+  audio_file_count: number;
+  scanned_at_ms: number;
 };
 

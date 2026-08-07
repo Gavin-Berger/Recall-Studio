@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type KeyboardEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { save } from "@tauri-apps/plugin-dialog";
 import "./SchemaTimeline.css";
@@ -37,6 +37,7 @@ import {
   describeNoteEdit,
   ExportIcon,
   exportPdf,
+  formatClock,
   formatDuration,
   formatWhen,
   formatPercent,
@@ -90,6 +91,7 @@ export function SchemaTimeline({
   const [copied, setCopied] = useState(false);
   // Selected export format for copy/save.
   const [exportFormat, setExportFormat] = useState<ExportFormat>("md");
+  const activityLogEndRef = useRef<HTMLDivElement>(null);
 
   const load = useCallback(
     async (rematerialize: boolean, quiet = false) => {
@@ -422,11 +424,9 @@ export function SchemaTimeline({
   // first; then deliberate mode flips; then the biggest net parameter swings.
   // Parameter changes are collapsed to one net move per device+param so the same
   // knob doesn't flood the rail.
-  // Activity blocks: contiguous stretches of work on one track, the unit the
-  // timeline now summarizes in. This replaced the per-move "Worth Keeping" rail,
-  // which scored individual knob tweaks and asked you to curate them — the wrong
-  // altitude. Producers remember sections of work ("I was on the lead"), not
-  // isolated moves, so we segment the move stream into those sections instead.
+  // Activity-log entries are contiguous stretches of work on one track. Grouping
+  // prevents a knob ride from flooding the log while retaining the timestamped
+  // record of which part of the session happened when.
   const sessionBlocks = useMemo<SessionBlock[]>(() => {
     const resolveTrackId = (change: ParameterChange): string | null =>
       (change.parameter_id ? lookups.paramTrack.get(change.parameter_id) : undefined) ??
@@ -1161,69 +1161,69 @@ export function SchemaTimeline({
           )}
 
           {sessionBlocks.length > 0 && (
-            <div className="tl-blocks">
-              <div className="tl-blocks__head">
-                <span className="tl-blocks__kick">What you worked on</span>
-                <span className="tl-blocks__sub">stretches of activity, newest first</span>
+            <section className="tl-activity-log" aria-label="Activity log">
+              <div className="tl-activity-log__head">
+                <div>
+                  <span className="tl-activity-log__kick">Activity log</span>
+                  <span className="tl-activity-log__sub">clock time, newest first</span>
+                </div>
+                <button
+                  type="button"
+                  className="tl-activity-log__jump-bottom"
+                  onClick={() =>
+                    activityLogEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" })
+                  }
+                >
+                  Jump to bottom
+                </button>
               </div>
-              <div className="tl-blocks__list">
+              <ol className="tl-activity-log__list">
                 {[...sessionBlocks].reverse().map((block) => {
                   const track = block.trackId
                     ? tracks.find((t) => t.id === block.trackId)
                     : null;
                   const color = track ? trackColor(track) : "#5e93ff";
-                  const durationMs = Math.max(0, block.endMs - block.startMs);
-                  const params =
-                    block.topParams.length > 0
-                      ? block.topParams.map((p) => p.name).join(" · ")
-                      : "adjustments";
+                  const detail = [
+                    block.moveCount === 1 ? "1 move" : `${block.moveCount} moves`,
+                    block.devices[0],
+                    ...block.topParams.map((param) => param.name),
+                  ]
+                    .filter(Boolean)
+                    .join(" · ");
                   return (
-                    <button
-                      type="button"
-                      key={block.id}
-                      className="tl-block"
-                      style={{ ["--lane-color" as string]: color }}
-                      onClick={() => block.trackId && setSelectedTrackId(block.trackId)}
-                      title={
-                        block.trackId
-                          ? `Focus ${block.trackName ?? "track"}`
-                          : undefined
-                      }
-                    >
-                      <span className="tl-block__rail" aria-hidden="true" />
-                      <span className="tl-block__main">
-                        <span className="tl-block__top">
-                          <span className="tl-block__track">
+                    <li key={block.id}>
+                      <button
+                        type="button"
+                        className="tl-activity-log__row"
+                        style={{ ["--lane-color" as string]: color }}
+                        onClick={() => block.trackId && setSelectedTrackId(block.trackId)}
+                        title={
+                          block.trackId
+                            ? `Focus ${block.trackName ?? "track"}`
+                            : undefined
+                        }
+                      >
+                        <time
+                          className="tl-activity-log__time"
+                          dateTime={new Date(block.startMs).toISOString()}
+                          title={new Date(block.startMs).toLocaleString()}
+                        >
+                          {formatClock(block.startMs)}
+                        </time>
+                        <span className="tl-activity-log__marker" aria-hidden="true" />
+                        <span className="tl-activity-log__body">
+                          <span className="tl-activity-log__track">
                             {block.trackName ?? "Untitled track"}
                           </span>
-                          <span className="tl-block__count">
-                            {block.moveCount} move{block.moveCount === 1 ? "" : "s"}
-                          </span>
+                          <span className="tl-activity-log__detail">{detail}</span>
                         </span>
-                        <span className="tl-block__params">
-                          {params}
-                          {block.devices.length > 0 && (
-                            <span className="tl-block__dev"> · {block.devices[0]}</span>
-                          )}
-                        </span>
-                      </span>
-                      <span className="tl-block__time">
-                        <span className="tl-block__when">
-                          {formatWhen(block.startMs, bounds.sessionStart, bounds.span)}
-                        </span>
-                        {durationMs >= 1000 && (
-                          <span className="tl-block__dur">
-                            {durationMs >= 60_000
-                              ? `${Math.round(durationMs / 60_000)}m`
-                              : `${Math.round(durationMs / 1000)}s`}
-                          </span>
-                        )}
-                      </span>
-                    </button>
+                      </button>
+                    </li>
                   );
                 })}
-              </div>
-            </div>
+              </ol>
+              <div ref={activityLogEndRef} className="tl-activity-log__end" aria-hidden="true" />
+            </section>
           )}
 
           {/* MIDI notes — its own section rather than only per-track rows.

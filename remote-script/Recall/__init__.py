@@ -56,6 +56,19 @@ PROTOCOL = "recall.v2"
 SEND_QUEUE_MAX = 2048
 RECONNECT_DELAY_SEC = 2.0
 
+# How often the bridge tells the app it is still alive.
+#
+# The app decides "connected" from ONE fact: a `heartbeat` event seen inside a
+# 5-second window (src-tauri/src/udp_listener.rs::get_status). Every other event
+# this script sends is a consequence of the producer doing something, so without
+# a heartbeat a set sitting open and untouched reads as disconnected -- which is
+# exactly the state a user is in the moment they finish setup and look at the app
+# to see whether it worked.
+#
+# 2s sits well inside the 5s window: a single missed tick still leaves two more
+# before the indicator could flip.
+HEARTBEAT_INTERVAL_SEC = 2.0
+
 # Ceiling on listeners registered per device. A wavetable synth can expose
 # thousands of parameters; registering all of them on every selection change is
 # the one place this design could get expensive. The parameters a producer
@@ -85,6 +98,30 @@ def _snapshot_fingerprint(payload):
     """
     return json.dumps(payload, sort_keys=True)
 
+
+def _heartbeat_due(now, last_sent_at, interval=None):
+    """Whether enough time has passed to send another heartbeat.
+
+    Module-level for the same reason as _snapshot_fingerprint: the decision is
+    pure, and testing it does not require a Recall instance (which opens a socket
+    and starts a thread on construction).
+
+    The backwards-clock guard is not hypothetical. time.time() follows the system
+    clock, so an NTP correction or a manual change can move `now` behind
+    `last_sent_at`. Without the guard the elapsed time reads negative, never
+    reaches the interval, and heartbeats stop FOREVER -- the app would show
+    "disconnected" for a perfectly healthy bridge until Live restarted. Treat a
+    backwards jump as due and resync from there.
+    """
+    if interval is None:
+        interval = HEARTBEAT_INTERVAL_SEC
+
+    elapsed = now - last_sent_at
+    if elapsed < 0:
+        return True
+    return elapsed >= interval
+
+
 # How long a parameter must sit still before its gesture counts as finished.
 # Listeners fire ~every 3ms during a ride, so emitting each one buries the
 # timeline in near-identical rows. 350ms is long enough to bridge the pauses
@@ -110,7 +147,11 @@ SOURCE = "control_surface"
 # convention other DAWs use.
 NOTE_NAMES = ("C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B")
 
-SCRIPT_VERSION = "0.2.0"
+# 0.3.0 adds the heartbeat. Bumped deliberately: the version chip is how you tell
+# a deployed script from a stale one, and it can only do that if the number moves
+# when the behaviour does. The installed copy sat at 0.2.0 for weeks while the repo
+# changed underneath it, and nothing on screen could have said so.
+SCRIPT_VERSION = "0.3.0"
 
 
 class Recall(ControlSurface):
@@ -153,6 +194,11 @@ class Recall(ControlSurface):
         # "the open set changed" (see its docstring), so without this an
         # unchanged set re-sends its whole snapshot on every one of those calls.
         self._last_snapshot_fingerprint = None
+        # 0.0 rather than time.time() so the first update_display tick sends a
+        # heartbeat immediately: the app cannot show "connected" (or which build
+        # is running) until one arrives, and the producer is watching for exactly
+        # that the moment they select Recall in Live's preferences.
+        self._last_heartbeat_at = 0.0
 
         with self.component_guard():
             self._open_socket()
@@ -1118,6 +1164,35 @@ class Recall(ControlSurface):
         super().update_display()
         self._flush_settled_gestures()
         self._flush_settled_note_edits()
+        # Guarded because this runs on Live's thread on every tick. An unhandled
+        # exception in a per-tick callback is the failure class behind the 0.20.1
+        # bridge rollback (commit 886856c) -- a heartbeat is health reporting and
+        # must never be able to take Live down with it.
+        try:
+            self._send_heartbeat_if_due()
+        except Exception as error:  # noqa: BLE001
+            logger.info("Recall Studio: heartbeat failed: {}".format(error))
+
+    def _send_heartbeat_if_due(self):
+        """Tell the app the bridge is alive, even when nothing is happening.
+
+        WHY THIS EXISTS AT ALL: the app derives `connected` solely from having
+        seen a `heartbeat` inside the last 5 seconds. That contract came from the
+        M4L bridge and this script never adopted it, so `connected` was
+        permanently false and the version chip never rendered -- see
+        udp_listener.rs:522 (early-returns on anything that is not a heartbeat)
+        and :1433 (connected reads only last_heartbeat_ms).
+
+        The payload rides as an object; the listener stringifies it during
+        normalize (udp_listener.rs:271) before reading bridge_version back out
+        of it (:533), so no special casing is needed on this side.
+        """
+        now = time.time()
+        if not _heartbeat_due(now, self._last_heartbeat_at):
+            return
+
+        self._last_heartbeat_at = now
+        self._emit("heartbeat", {"bridge_version": SCRIPT_VERSION})
 
     def _flush_settled_gestures(self, force=False):
         if not self._gestures:

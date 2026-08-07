@@ -1582,11 +1582,7 @@
   padding: 4px 0;
 }
 
-/* Activity blocks — "What you worked on". Replaced the Worth Keeping card rail.
-   Each block is a stretch of work on one track: the track's entity color on the
-   left rail (a type signal, never restyled for emphasis), what was touched, and
-   when. Clicking focuses that track. Quiet by default; hover is recognition, not
-   a live pulse. */
+/* Shared headers and stacked rows for the MIDI-note record below. */
 .tl-blocks {
   margin-top: 20px;
 }
@@ -1613,29 +1609,6 @@
   display: flex;
   flex-direction: column;
   gap: 6px;
-}
-
-.tl-block {
-  display: flex;
-  align-items: stretch;
-  gap: 12px;
-  width: 100%;
-  padding: 10px 12px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-sm);
-  background: rgba(255, 255, 255, 0.02);
-  cursor: pointer;
-  text-align: left;
-  transition:
-    border-color var(--motion-response) var(--ease-response),
-    background-color var(--motion-response) var(--ease-response),
-    transform var(--motion-response) var(--ease-response);
-}
-
-.tl-block:hover {
-  border-color: rgba(255, 255, 255, 0.14);
-  background: rgba(255, 255, 255, 0.035);
-  transform: translateX(2px);
 }
 
 .tl-block__rail {
@@ -1667,22 +1640,12 @@
   text-overflow: ellipsis;
 }
 
-.tl-block__count {
-  flex: 0 0 auto;
-  font-size: 12px;
-  color: var(--faint-aa);
-}
-
 .tl-block__params {
   font-size: 12px;
   color: var(--muted);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-}
-
-.tl-block__dev {
-  color: var(--faint-aa);
 }
 
 .tl-block__time {
@@ -1699,9 +1662,162 @@
   color: var(--muted);
 }
 
-.tl-block__dur {
-  font-size: 11px;
+.tl-activity-log {
+  margin-top: 20px;
+  border-top: 1px solid var(--line);
+}
+
+.tl-activity-log__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 0 8px;
+}
+
+.tl-activity-log__head > div {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+}
+
+.tl-activity-log__kick {
+  color: var(--paper);
+  font-size: 0.82rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.tl-activity-log__sub {
   color: var(--faint-aa);
+  font-size: 12px;
+}
+
+.tl-activity-log__jump-bottom {
+  flex: 0 0 auto;
+  min-height: 28px;
+  padding: 0 9px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  transition:
+    border-color var(--motion-response) var(--ease-response),
+    background-color var(--motion-response) var(--ease-response),
+    color var(--motion-response) var(--ease-response);
+}
+
+.tl-activity-log__jump-bottom:hover {
+  border-color: rgba(120, 137, 238, 0.55);
+  background: rgba(94, 147, 255, 0.08);
+  color: var(--paper);
+}
+
+.tl-activity-log__jump-bottom:focus-visible {
+  outline: 2px solid rgba(120, 137, 238, 0.9);
+  outline-offset: 2px;
+}
+
+.tl-activity-log__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.tl-activity-log__end {
+  scroll-margin-bottom: 24px;
+}
+
+.tl-activity-log__row {
+  display: grid;
+  grid-template-columns: 76px 8px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 45px;
+  padding: 7px 4px;
+  border: 0;
+  border-top: 1px solid var(--line-soft);
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+  transition: background-color var(--motion-response) var(--ease-response);
+}
+
+.tl-activity-log__row:hover {
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.tl-activity-log__row:focus-visible {
+  outline: 2px solid rgba(120, 137, 238, 0.9);
+  outline-offset: -2px;
+}
+
+.tl-activity-log__time {
+  color: var(--faint-aa);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.tl-activity-log__marker {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--lane-color, var(--signal));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--lane-color, var(--signal)) 16%, transparent);
+}
+
+.tl-activity-log__body {
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+  min-width: 0;
+}
+
+.tl-activity-log__track {
+  flex: 0 1 auto;
+  overflow: hidden;
+  color: var(--paper);
+  font-size: 0.82rem;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tl-activity-log__detail {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (max-width: 620px) {
+  .tl-activity-log__head > div {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .tl-activity-log__row {
+    grid-template-columns: 66px 8px minmax(0, 1fr);
+  }
+
+  .tl-activity-log__body {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 1px;
+  }
+
 }
 
 /* MIDI notes section. Same row anatomy as an activity block (entity-colored

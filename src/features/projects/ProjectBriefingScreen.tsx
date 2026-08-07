@@ -73,6 +73,35 @@ type TrackCard = {
   state: "active" | "quiet" | "empty";
 };
 
+function ProjectsIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.75" aria-hidden="true">
+      <rect x="4" y="4" width="6" height="6" rx="1" />
+      <rect x="14" y="4" width="6" height="6" rx="1" />
+      <rect x="4" y="14" width="6" height="6" rx="1" />
+      <rect x="14" y="14" width="6" height="6" rx="1" />
+    </svg>
+  );
+}
+
+function VersionHistoryIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" strokeWidth="1.75" aria-hidden="true">
+      <path d="M4 12a8 8 0 1 0 2.2-5.5" />
+      <path d="M4 5.5v4.3h4.3" />
+      <path d="M12 8v4.5l3 1.8" />
+    </svg>
+  );
+}
+
+function ResumeIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true">
+      <path d="M8 5.7a1 1 0 0 1 1.52-.86l8.1 5.3a1 1 0 0 1 0 1.68l-8.1 5.3A1 1 0 0 1 8 16.28V5.7Z" />
+    </svg>
+  );
+}
+
 export function ProjectBriefingScreen({
   project,
   onBack,
@@ -267,7 +296,8 @@ export function ProjectBriefingScreen({
         <span className="brief__eyebrow">Project re-entry</span>
         <h1>No project selected.</h1>
         <p>Open a project to see where you left off.</p>
-        <button type="button" className="brief__btn brief__btn--primary" onClick={onBack}>
+        <button type="button" className="brief__btn brief__btn--primary brief__btn--with-icon" onClick={onBack}>
+          <ProjectsIcon />
           Back to projects
         </button>
       </div>
@@ -278,10 +308,18 @@ export function ProjectBriefingScreen({
     <div className="brief">
       <header className="brief__top">
         <div className="brief__id">
-          <button type="button" className="brief__back" onClick={onBack}>
-            ← Projects
-          </button>
-          <span className="brief__eyebrow">Project re-entry</span>
+          <div className="brief__crumb">
+            <button
+              type="button"
+              className="brief__icon-btn brief__back"
+              onClick={onBack}
+              aria-label="Back to project library"
+              title="Project library"
+            >
+              <ProjectsIcon />
+            </button>
+            <span className="brief__eyebrow">Project briefing</span>
+          </div>
           <h1 className="brief__title">{project.display_name}</h1>
           <p className="brief__meta">
             {lastWorkedMs ? (
@@ -301,16 +339,24 @@ export function ProjectBriefingScreen({
           </p>
         </div>
         <div className="brief__actions">
-          <button type="button" className="brief__btn" onClick={onOpenAllVersions}>
-            All versions
+          <button
+            type="button"
+            className="brief__icon-btn"
+            onClick={onOpenAllVersions}
+            aria-label="View all versions"
+            title="All versions"
+          >
+            <VersionHistoryIcon />
           </button>
           {latestTakeId && (
             <button
               type="button"
-              className="brief__btn brief__btn--primary"
+              className="brief__btn brief__btn--primary brief__btn--with-icon"
               onClick={() => onOpenTimeline(latestTakeId)}
+              title="Resume your latest take"
             >
-              Pick up where you left off →
+              <ResumeIcon />
+              Resume
             </button>
           )}
         </div>

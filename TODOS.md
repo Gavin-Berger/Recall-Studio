@@ -173,3 +173,64 @@ download and install it (ROADMAP §5). It is not a marketing site and must not g
 one.
 
 **Depends on / blocked by:** ROADMAP Phase 5. Not before beta.
+
+---
+
+## D7 · Relabel the dev heartbeat senders so they can't fake a green connection
+
+**What:** Rename `send-heartbeat.cjs` (repo root) and `scripts/send-heart.cjs` to
+something that cannot be mistaken for production behaviour — `fake-heartbeat-DEV-ONLY.cjs`
+or similar — or retire them once the control surface sends a real heartbeat.
+
+**Why:** Both scripts inject synthetic `heartbeat` events into the app. The best available
+explanation for how the control surface shipped for weeks without ever setting
+`connected` (caught by `/plan-eng-review` 2026-08-07) is that testing with these made the
+connection look alive. A tool that can produce a false green undermines the one signal the
+new setup screen is built on.
+
+**Pros:** Removes the exact mechanism that let a broken bridge contract hide. Minutes of work.
+
+**Cons:** They are genuinely useful — testing the Rust ingestion path without launching
+Ableton is much faster. Deleting outright costs real convenience, which is why relabelling
+beats removal.
+
+**Context (for whoever picks this up in 3 months):** The Python control surface emits
+`bridge_started`, `live_set_snapshot`, `tempo_changed` and others, but never `heartbeat` —
+while `udp_listener.rs:522` returns early on anything that isn't `heartbeat`, so
+`last_heartbeat_ms` was never set and `get_status()` returned `connected: false`
+permanently. The M4L bridge did send heartbeats, which is why the Rust side was written
+this way. Once the control surface sends its own, green means something again — and these
+scripts become the only way to lie about it.
+
+**Depends on / blocked by:** T1 of the first-run setup work (heartbeat emission in
+`remote-script/Recall/__init__.py`).
+
+---
+
+## D8 · Decide the fate of the Max for Live directory
+
+**What:** Decide what happens to `m4l/RECALL.amxd`, `m4l/recall_m4l_bridge.js`,
+`scripts/install-m4l.ps1`, and `scripts/deploy-bridge.mjs`. Delete, move to `legacy/`, or
+keep with a README note stating they are product-retired.
+
+**Why:** M4L was retired from the shipping product on 2026-08-07 when setup moved to the
+Python control surface. `install.rs` currently references these files, so rewriting it for
+the remote script leaves them orphaned with no decision attached. Files nobody dares delete
+are how a repo accumulates permanent uncertainty.
+
+**Pros:** Costs one deliberate decision now instead of an anxious one later. Makes the
+intent legible to future-you, who will otherwise have to re-derive whether they are
+load-bearing.
+
+**Cons:** These are the trail of real research — the Serum preset-capture finding and the
+Extensions SDK probe both came out of that work. Deletion has a cost that isn't code, and
+git history is a weaker record than a file you can open.
+
+**Context (for whoever picks this up in 3 months):** M4L was the original capture path.
+The control surface replaced it on 2026-07-21 because the undocumented Python API sees
+far more of Live's state. M4L is not merely worse — it is a different capability set, and
+the Extensions SDK probe (proven 2026-06-26) sits alongside it. Retiring from the product
+is not the same as concluding the research was wrong. Recommended resolution is a `legacy/`
+move plus a one-paragraph README, not deletion.
+
+**Depends on / blocked by:** T2 of the first-run setup work (rewriting `install.rs`).

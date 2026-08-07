@@ -74,7 +74,7 @@ export function ContributionRecord({
           <li key={sitting.id} className="story-sit">
             <details>
               <summary className="story-sit__sum">
-                <span className="disc" aria-hidden="true">›</span>
+                <span className="disclosure-mark" aria-hidden="true" />
                 <span className="story-sit__when">
                   {clock(sitting.startMs)}
                   <small>{formatSessionDate(sitting.startMs)}</small>
@@ -112,7 +112,7 @@ export function ContributionRecord({
               <li key={track.trackKey} className="track-row">
                 <details>
                   <summary className="track-row__sum">
-                    <span className="disc" aria-hidden="true">›</span>
+                    <span className="disclosure-mark" aria-hidden="true" />
                     <span className="track-row__name">{track.trackName}</span>
                     <span className="track-row__meta">
                       {plural(track.changeCount, "change")} · {plural(track.deviceCount, "plugin")}
@@ -132,7 +132,8 @@ export function ContributionRecord({
                           </span>
                           <span className="recap-row__ba">
                             <span className="ba__from">{net.beforeDisplay}</span>
-                            <span className="ba__arrow">→</span>
+                            <span className="ba__change" aria-hidden="true" />
+                            <span className="sr-only">changed to</span>
                             <span className="ba__to">{net.afterDisplay}</span>
                             {net.count > 1 ? <span className="ba__n">{net.count}×</span> : null}
                           </span>

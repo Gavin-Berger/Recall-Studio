@@ -55,6 +55,18 @@ pub struct SavedSession {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProjectFolderMetadata {
+    pub created_at_ms: Option<u64>,
+    pub modified_at_ms: Option<u64>,
+    pub latest_file_modified_at_ms: Option<u64>,
+    pub file_count: usize,
+    pub total_size_bytes: u64,
+    pub als_file_count: usize,
+    pub audio_file_count: usize,
+    pub scanned_at_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SavedProject {
     pub id: String,
     pub display_name: String,
@@ -67,6 +79,10 @@ pub struct SavedProject {
     pub capture_count: usize,
     pub active_capture_count: usize,
     pub captures: Vec<SavedSessionMetadata>,
+    /// A cached snapshot of the connected Windows folder. This is refreshed by
+    /// an explicit scan rather than every library poll, because traversing a
+    /// sample-heavy Ableton project can be expensive.
+    pub folder_metadata: Option<ProjectFolderMetadata>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

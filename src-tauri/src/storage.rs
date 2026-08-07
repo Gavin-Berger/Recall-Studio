@@ -5,7 +5,8 @@ use crate::schema_projection::{
     ParsedParam, ParsedTrack, ProjectSchema, TrackObj, TrackType,
 };
 use crate::session::{
-    SavedProject, SavedSession, SavedSessionEvent, SavedSessionMetadata, SessionStatus,
+    ProjectFolderMetadata, SavedProject, SavedSession, SavedSessionEvent, SavedSessionMetadata,
+    SessionStatus,
 };
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde::Serialize;
@@ -723,11 +724,21 @@ impl StorageState {
         let mut statement = connection
             .prepare(
                 "
-                SELECT id, display_name, ableton_name, ableton_path, archived_at_ms,
-                       created_at_ms, updated_at_ms
+                SELECT
+                    projects.id, projects.display_name, projects.ableton_name, projects.ableton_path,
+                    projects.archived_at_ms, projects.created_at_ms, projects.updated_at_ms,
+                    project_folder_metadata.created_at_ms,
+                    project_folder_metadata.modified_at_ms,
+                    project_folder_metadata.latest_file_modified_at_ms,
+                    project_folder_metadata.file_count,
+                    project_folder_metadata.total_size_bytes,
+                    project_folder_metadata.als_file_count,
+                    project_folder_metadata.audio_file_count,
+                    project_folder_metadata.scanned_at_ms
                 FROM projects
-                WHERE (?1 = 1 OR archived_at_ms IS NULL)
-                ORDER BY updated_at_ms DESC, created_at_ms DESC
+                LEFT JOIN project_folder_metadata ON project_folder_metadata.project_id = projects.id
+                WHERE (?1 = 1 OR projects.archived_at_ms IS NULL)
+                ORDER BY projects.updated_at_ms DESC, projects.created_at_ms DESC
                 ",
             )
             .map_err(|error| format!("Failed to prepare projects query: {}", error))?;
@@ -742,6 +753,14 @@ impl StorageState {
                     row.get::<_, Option<i64>>(4)?.map(|value| value as u64),
                     row.get::<_, i64>(5)? as u64,
                     row.get::<_, i64>(6)? as u64,
+                    row.get::<_, Option<i64>>(7)?.map(|value| value as u64),
+                    row.get::<_, Option<i64>>(8)?.map(|value| value as u64),
+                    row.get::<_, Option<i64>>(9)?.map(|value| value as u64),
+                    row.get::<_, Option<i64>>(10)?.map(|value| value as usize),
+                    row.get::<_, Option<i64>>(11)?.map(|value| value as u64),
+                    row.get::<_, Option<i64>>(12)?.map(|value| value as usize),
+                    row.get::<_, Option<i64>>(13)?.map(|value| value as usize),
+                    row.get::<_, Option<i64>>(14)?.map(|value| value as u64),
                 ))
             })
             .map_err(|error| format!("Failed to read projects: {}", error))?;
@@ -756,6 +775,14 @@ impl StorageState {
                 archived_at_ms,
                 created_at_ms,
                 updated_at_ms,
+                folder_created_at_ms,
+                folder_modified_at_ms,
+                latest_file_modified_at_ms,
+                folder_file_count,
+                folder_total_size_bytes,
+                folder_als_file_count,
+                folder_audio_file_count,
+                folder_scanned_at_ms,
             ) = row.map_err(|error| format!("Failed to collect project row: {}", error))?;
 
             let mut project_captures = captures_by_project.remove(&id).unwrap_or_default();
@@ -771,6 +798,16 @@ impl StorageState {
                 .map(|capture| capture.last_updated_at_ms)
                 .max()
                 .unwrap_or(updated_at_ms);
+            let folder_metadata = folder_scanned_at_ms.map(|scanned_at_ms| ProjectFolderMetadata {
+                created_at_ms: folder_created_at_ms,
+                modified_at_ms: folder_modified_at_ms,
+                latest_file_modified_at_ms,
+                file_count: folder_file_count.unwrap_or(0),
+                total_size_bytes: folder_total_size_bytes.unwrap_or(0),
+                als_file_count: folder_als_file_count.unwrap_or(0),
+                audio_file_count: folder_audio_file_count.unwrap_or(0),
+                scanned_at_ms,
+            });
 
             projects.push(SavedProject {
                 id,
@@ -784,6 +821,7 @@ impl StorageState {
                 capture_count,
                 active_capture_count,
                 captures: project_captures,
+                folder_metadata,
             });
         }
 
@@ -1172,6 +1210,57 @@ impl StorageState {
             return Err(format!("Project not found: {}", project_id));
         }
 
+        // A different source folder makes the previous Explorer snapshot
+        // misleading. The caller will save a fresh one after the new folder is
+        // scanned.
+        connection
+            .execute(
+                "DELETE FROM project_folder_metadata WHERE project_id = ?1",
+                params![project_id],
+            )
+            .map_err(|error| format!("Failed to clear project folder metadata: {}", error))?;
+
+        Ok(())
+    }
+
+    /// Persist the last explicit Explorer-style scan for a connected project.
+    pub fn save_project_folder_metadata(
+        &self,
+        project_id: &str,
+        metadata: &ProjectFolderMetadata,
+    ) -> Result<(), String> {
+        let connection = self.open_connection()?;
+        connection
+            .execute(
+                "
+                INSERT INTO project_folder_metadata (
+                    project_id, created_at_ms, modified_at_ms, latest_file_modified_at_ms,
+                    file_count, total_size_bytes, als_file_count, audio_file_count, scanned_at_ms
+                )
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                ON CONFLICT(project_id) DO UPDATE SET
+                    created_at_ms = excluded.created_at_ms,
+                    modified_at_ms = excluded.modified_at_ms,
+                    latest_file_modified_at_ms = excluded.latest_file_modified_at_ms,
+                    file_count = excluded.file_count,
+                    total_size_bytes = excluded.total_size_bytes,
+                    als_file_count = excluded.als_file_count,
+                    audio_file_count = excluded.audio_file_count,
+                    scanned_at_ms = excluded.scanned_at_ms
+                ",
+                params![
+                    project_id,
+                    metadata.created_at_ms.map(|value| value as i64),
+                    metadata.modified_at_ms.map(|value| value as i64),
+                    metadata.latest_file_modified_at_ms.map(|value| value as i64),
+                    metadata.file_count as i64,
+                    metadata.total_size_bytes as i64,
+                    metadata.als_file_count as i64,
+                    metadata.audio_file_count as i64,
+                    metadata.scanned_at_ms as i64,
+                ],
+            )
+            .map_err(|error| format!("Failed to save project folder metadata: {}", error))?;
         Ok(())
     }
 
@@ -2939,6 +3028,21 @@ pub fn initialize_database(db_path: &Path) -> rusqlite::Result<()> {
 
         CREATE INDEX IF NOT EXISTS idx_projects_ableton_name
         ON projects(ableton_name);
+
+        -- Explorer-style facts are an explicitly refreshed cache of each
+        -- connected folder, not a second copy of the project itself.
+        CREATE TABLE IF NOT EXISTS project_folder_metadata (
+            project_id TEXT PRIMARY KEY,
+            created_at_ms INTEGER,
+            modified_at_ms INTEGER,
+            latest_file_modified_at_ms INTEGER,
+            file_count INTEGER NOT NULL,
+            total_size_bytes INTEGER NOT NULL,
+            als_file_count INTEGER NOT NULL,
+            audio_file_count INTEGER NOT NULL,
+            scanned_at_ms INTEGER NOT NULL,
+            FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE
+        );
 
         CREATE TABLE IF NOT EXISTS sessions (
             id TEXT PRIMARY KEY,

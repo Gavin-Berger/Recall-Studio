@@ -36,20 +36,41 @@
   border-bottom: 1px solid var(--line);
 }
 
-.brief__back {
-  display: inline-block;
+.brief__crumb {
+  display: flex;
+  align-items: center;
+  gap: 9px;
   margin-bottom: 10px;
-  padding: 0;
-  border: 0;
-  background: none;
-  color: var(--muted);
-  font: inherit;
-  font-size: 12.5px;
-  cursor: pointer;
 }
 
-.brief__back:hover {
-  color: var(--paper);
+.brief__icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--panel-2);
+  color: var(--muted);
+  cursor: pointer;
+  transition:
+    border-color var(--m-settle) var(--ease-arrive),
+    background-color var(--m-settle) var(--ease-arrive),
+    color var(--m-settle) var(--ease-arrive);
+}
+
+.brief__icon-btn:hover {
+  border-color: #3a4056;
+  background: var(--panel-3);
+  color: var(--paper-strong);
+}
+
+.brief__icon-btn:focus-visible,
+.brief__btn:focus-visible {
+  outline: 2px solid #7889ee;
+  outline-offset: 2px;
 }
 
 .brief__title {
@@ -77,12 +98,17 @@
 
 .brief__actions {
   display: flex;
+  align-items: center;
   gap: 8px;
   flex-shrink: 0;
 }
 
 .brief__btn {
   appearance: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
   border: 1px solid var(--line);
   background: var(--panel-2);
   color: var(--paper);
@@ -96,6 +122,10 @@
   transition:
     border-color var(--m-settle) var(--ease-arrive),
     background-color var(--m-settle) var(--ease-arrive);
+}
+
+.brief__btn--with-icon svg {
+  flex-shrink: 0;
 }
 
 .brief__btn:hover {
@@ -311,7 +341,7 @@
 
 /* ── Contribution record ────────────────────────────────
    The "what you did, how, and when" surface. Monochrome (§2): the numbers and
-   before→after values do the work in mono; no accent but --signal for anything
+   before/after values do the work in mono; no accent but --signal for anything
    live and --moment for a pinned mark. */
 .brief__story {
   border-top: 1px solid var(--line);
@@ -365,15 +395,35 @@
   display: none;
 }
 
-.brief__story .disc {
+.brief__story .disclosure-mark {
+  position: relative;
   flex-shrink: 0;
-  width: 14px;
-  color: var(--faint-aa);
-  transition: transform var(--m-settle) var(--ease-arrive);
+  width: 17px;
+  height: 17px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--panel-2);
 }
 
-.brief__story details[open] > summary .disc {
-  transform: rotate(90deg);
+.brief__story .disclosure-mark::before,
+.brief__story .disclosure-mark::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 7px;
+  height: 1px;
+  background: var(--faint-aa);
+  transform: translate(-50%, -50%);
+  transition: opacity var(--m-settle) var(--ease-arrive);
+}
+
+.brief__story .disclosure-mark::after {
+  transform: translate(-50%, -50%) rotate(90deg);
+}
+
+.brief__story details[open] > summary .disclosure-mark::after {
+  opacity: 0;
 }
 
 /* The arc — one row per sitting, expandable to the full track list. */
@@ -390,8 +440,8 @@
 
 .story-sit__sum {
   display: grid;
-  grid-template-columns: 14px 132px 1fr auto;
-  gap: 16px;
+  grid-template-columns: 17px 132px 1fr auto;
+  gap: 14px;
   align-items: baseline;
   padding: 12px 2px;
 }
@@ -435,7 +485,7 @@
 }
 
 .story-sit__detail {
-  padding: 0 2px 14px 30px;
+  padding: 0 2px 14px 31px;
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -541,9 +591,14 @@
   color: var(--muted);
 }
 
-.ba__arrow {
-  padding: 0 7px;
-  color: var(--faint-aa);
+.ba__change {
+  display: inline-block;
+  width: 4px;
+  height: 4px;
+  margin: 0 9px 2px;
+  border-radius: 50%;
+  background: #69729a;
+  box-shadow: 0 0 0 3px rgba(105, 114, 154, 0.12);
 }
 
 .ba__to {

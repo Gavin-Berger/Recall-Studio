@@ -6,12 +6,13 @@ type InstallTarget = { path: string; exists: boolean };
 type InstallDetection = {
   candidates: InstallTarget[];
   recommended: string | null;
-  bridge_version: string | null;
+  script_version: string | null;
 };
 type InstallResult = {
   installed_dir: string;
   files: string[];
-  bridge_version: string | null;
+  removed: string[];
+  script_version: string | null;
 };
 
 type BridgeSetupProps = {
@@ -34,7 +35,7 @@ export function BridgeSetup({ connection }: BridgeSetupProps) {
         if (cancelled) return;
         if (detection.recommended) setPath(detection.recommended);
         setCandidates(detection.candidates.filter((candidate) => candidate.exists));
-        setShippedVersion(detection.bridge_version);
+        setShippedVersion(detection.script_version);
         setDetected(true);
       })
       .catch(() => {
@@ -68,7 +69,7 @@ export function BridgeSetup({ connection }: BridgeSetupProps) {
       <header className="bridge-setup__header">
         <div>
           <span className="eyebrow">Ableton bridge</span>
-          <h2>The Max for Live bridge keeps Recall in sync with Ableton.</h2>
+          <h2>The Recall control surface keeps Recall in sync with Ableton.</h2>
         </div>
         <div className="bridge-setup__versions">
           {shippedVersion && (
@@ -99,8 +100,8 @@ export function BridgeSetup({ connection }: BridgeSetupProps) {
         <div className="bridge-setup__block">
           <h3>Install</h3>
           <p className="bridge-setup__hint">
-            Installs the bridge device into your Ableton User Library. Change
-            the path if you keep your Library somewhere else.
+            Installs the Recall control surface into your Ableton User Library.
+            Change the path if you keep your Library somewhere else.
           </p>
           <label className="bridge-setup__field">
             <span>Ableton User Library</span>
@@ -139,14 +140,31 @@ export function BridgeSetup({ connection }: BridgeSetupProps) {
           {result && (
             <div className="bridge-setup__ok">
               <p>
-                Installed{result.bridge_version ? ` v${result.bridge_version}` : ""} to{" "}
+                Installed{result.script_version ? ` v${result.script_version}` : ""} to{" "}
                 <code>{result.installed_dir}</code>.
               </p>
-              <p>
-                In Live: User Library → Presets → Audio Effects → Max Audio Effect →
-                drag <strong>RECALL</strong> onto your master track (or any audio track).
-                The connection light above turns green when it's talking to Recall.
-              </p>
+              {/* Two of these three steps are things Recall physically cannot do:
+                  Live only scans Remote Scripts at startup, and the Control Surface
+                  slot has no API. Spelling them out is the whole job here — a
+                  producer who skips the restart sees an install that "worked" and
+                  a bridge that never connects. */}
+              {/* Reuses the __list class: it keeps default markers and only sets
+                  padding/gap, so an <ol> gets numbers for free and this doesn't
+                  need a new rule in components.css. */}
+              <ol className="bridge-setup__list">
+                <li>
+                  <strong>Restart Ableton Live.</strong> It only looks for new
+                  control surfaces when it starts up.
+                </li>
+                <li>
+                  Open <strong>Preferences → Link/Tempo/MIDI</strong>.
+                </li>
+                <li>
+                  In an empty <strong>Control Surface</strong> slot, choose{" "}
+                  <strong>Recall</strong>.
+                </li>
+              </ol>
+              <p>The connection light above turns green once Live is talking to Recall.</p>
             </div>
           )}
           {error && <p className="bridge-setup__err">{error}</p>}

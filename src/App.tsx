@@ -1,14 +1,18 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke, isTauri } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import "./App.css";
 
 import { AppShell } from "./components/AppShell";
 import type { AppSurface } from "./components/AppShell";
+import { SettingsDialog } from "./components/SettingsDialog";
+import type { StudioTheme } from "./components/SettingsDialog";
 import { ProductionCheatSheet } from "./components/ProductionCheatSheet";
 import { SchemaTimeline } from "./components/schema/SchemaTimeline";
 import {
   NotesScreen,
+  PlannerScreen,
   ProjectBriefingScreen,
   ProjectManagerScreen,
   ProjectOrganizerScreen,
@@ -17,8 +21,25 @@ import {
   StartupScreen,
 } from "./features";
 import { ReportDialog } from "./features/diagnostics/ReportDialog";
+import { organizerRepository } from "./features/organizer/repository";
+import { listPlannerTasks } from "./features/planner/api";
+import {
+  dailyPlanContent,
+  delayUntilDailyPlan,
+  loadDailyPlanReminder,
+  requestDailyPlanPermission,
+  sendDailyPlanNotification,
+  storeDailyPlanReminder,
+} from "./features/planner/notifications";
+import { localDateKey } from "./features/planner/planner";
 import { abletonSetName } from "./features/sessionFormat";
-import type { ConnectionStatus, SavedProject, SavedSessionMetadata, SessionStatus } from "./types";
+import type {
+  ConnectionStatus,
+  DailyPlanReminderSettings,
+  SavedProject,
+  SavedSessionMetadata,
+  SessionStatus,
+} from "./types";
 
 const BACKEND_CONNECTION_COMMAND = "get_connection_status";
 const BACKEND_LIST_SESSIONS_COMMAND = "list_saved_sessions";
@@ -38,7 +59,9 @@ type FolderMetadataRefresh = {
 };
 
 const POLL_INTERVAL_MS = 1000;
+const BACKGROUND_POLL_INTERVAL_MS = 30_000;
 const PRODUCER_NAME_STORAGE_KEY = "recall-studio.producer-name";
+const THEME_STORAGE_KEY = "recall-studio.theme";
 
 function loadProducerName(): string {
   try {
@@ -54,6 +77,27 @@ function storeProducerName(name: string) {
   } catch {
     // Local storage can be unavailable in a few embedded/browser contexts.
   }
+}
+
+function loadTheme(): StudioTheme {
+  try {
+    return window.localStorage.getItem(THEME_STORAGE_KEY) === "mono" ? "mono" : "blue";
+  } catch {
+    return "blue";
+  }
+}
+
+function storeTheme(theme: StudioTheme) {
+  try {
+    window.localStorage.setItem(THEME_STORAGE_KEY, theme);
+  } catch {
+    // Local storage can be unavailable in a few embedded/browser contexts.
+  }
+}
+
+function isTypingTarget(target: EventTarget | null): boolean {
+  const element = target instanceof HTMLElement ? target : null;
+  return Boolean(element?.closest("input, textarea, select, [contenteditable='true']"));
 }
 
 function App() {
@@ -74,6 +118,109 @@ function App() {
   const [libraryReady, setLibraryReady] = useState(false);
   const [enteredStudio, setEnteredStudio] = useState(false);
   const [producerName, setProducerName] = useState(loadProducerName);
+  const [theme, setTheme] = useState<StudioTheme>(loadTheme);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [dailyPlanReminder, setDailyPlanReminder] = useState<DailyPlanReminderSettings>(loadDailyPlanReminder);
+  const [inTrayBackground, setInTrayBackground] = useState(false);
+  const pollInterval = inTrayBackground ? BACKGROUND_POLL_INTERVAL_MS : POLL_INTERVAL_MS;
+
+  useEffect(() => {
+    document.documentElement.dataset.recallTheme = theme;
+    storeTheme(theme);
+  }, [theme]);
+
+  useEffect(() => {
+    if (!isTauri()) return;
+    let unlisten: (() => void) | undefined;
+    void listen<boolean>("recall://window-visibility", (event) => {
+      setInTrayBackground(!event.payload);
+    }).then((dispose) => {
+      unlisten = dispose;
+    });
+    return () => unlisten?.();
+  }, []);
+
+  const sendTodayStudioPlan = useCallback(async (): Promise<boolean> => {
+    try {
+      const [tasks, releases] = await Promise.all([
+        listPlannerTasks(),
+        organizerRepository().load(),
+      ]);
+      return await sendDailyPlanNotification(dailyPlanContent(tasks, releases, localDateKey(new Date())));
+    } catch (error) {
+      console.error("Failed to send the daily studio plan:", error);
+      return false;
+    }
+  }, []);
+
+  const handleDailyPlanReminderChange = useCallback(async (next: DailyPlanReminderSettings): Promise<boolean> => {
+    try {
+      if (next.enabled && !dailyPlanReminder.enabled && !(await requestDailyPlanPermission())) {
+        return false;
+      }
+      setDailyPlanReminder(next);
+      storeDailyPlanReminder(next);
+      return true;
+    } catch (error) {
+      console.error("Failed to update daily studio plan reminder:", error);
+      return false;
+    }
+  }, [dailyPlanReminder.enabled]);
+
+  // The timer is deliberately one-shot and rescheduled only after it fires.
+  // It costs no recurring background work between reminders, while the tray
+  // keeps the app alive after the main window has been closed.
+  useEffect(() => {
+    if (!dailyPlanReminder.enabled) return;
+    let cancelled = false;
+    let timer: number | undefined;
+
+    const scheduleNext = () => {
+      timer = window.setTimeout(async () => {
+        if (cancelled) return;
+        await sendTodayStudioPlan();
+        if (!cancelled) scheduleNext();
+      }, delayUntilDailyPlan(new Date(), dailyPlanReminder.time));
+    };
+
+    scheduleNext();
+    return () => {
+      cancelled = true;
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, [dailyPlanReminder.enabled, dailyPlanReminder.time, sendTodayStudioPlan]);
+
+  useEffect(() => {
+    function handleKeyboardNavigation(event: KeyboardEvent) {
+      if (event.key === "Escape" && settingsOpen) {
+        event.preventDefault();
+        setSettingsOpen(false);
+        return;
+      }
+      if ((event.ctrlKey || event.metaKey) && event.key === ",") {
+        event.preventDefault();
+        setSettingsOpen(true);
+        return;
+      }
+      if (!event.altKey || event.ctrlKey || event.metaKey || isTypingTarget(event.target)) return;
+      const destinations: Record<string, AppSurface> = {
+        "1": "projects",
+        "2": "recap",
+        "3": "timeline",
+        "4": "organizer",
+        "5": "planner",
+        "6": "notes",
+        "7": "glossary",
+      };
+      const destination = destinations[event.key];
+      if (!destination) return;
+      event.preventDefault();
+      setSurface(destination);
+    }
+
+    window.addEventListener("keydown", handleKeyboardNavigation);
+    return () => window.removeEventListener("keydown", handleKeyboardNavigation);
+  }, [settingsOpen]);
 
   const activeSession = useMemo(
     () => savedSessions.find((session) => session.ended_at_ms === null) ?? null,
@@ -92,6 +239,13 @@ function App() {
   const selectedProject = useMemo(
     () => savedProjects.find((project) => project.id === selectedProjectId) ?? null,
     [savedProjects, selectedProjectId],
+  );
+  const currentTimelineProject = useMemo(
+    () =>
+      currentSession?.project_id
+        ? savedProjects.find((project) => project.id === currentSession.project_id) ?? null
+        : null,
+    [currentSession?.project_id, savedProjects],
   );
   const totalMoments = useMemo(
     () => savedSessions.reduce((total, session) => total + session.creative_event_count, 0),
@@ -137,13 +291,13 @@ function App() {
     }
 
     pollConnection();
-    const interval = window.setInterval(pollConnection, POLL_INTERVAL_MS);
+    const interval = window.setInterval(pollConnection, pollInterval);
 
     return () => {
       mounted = false;
       window.clearInterval(interval);
     };
-  }, []);
+  }, [pollInterval]);
 
   useEffect(() => {
     let mounted = true;
@@ -162,13 +316,13 @@ function App() {
     }
 
     refreshSavedSessions();
-    const interval = window.setInterval(refreshSavedSessions, POLL_INTERVAL_MS);
+    const interval = window.setInterval(refreshSavedSessions, pollInterval);
 
     return () => {
       mounted = false;
       window.clearInterval(interval);
     };
-  }, [reloadLibrary]);
+  }, [pollInterval, reloadLibrary]);
 
   function handleOpenTimeline(sessionId?: string) {
     setSelectedSessionId(sessionId ?? effectiveSessionId);
@@ -364,6 +518,7 @@ function App() {
       connected={connection.connected}
       onOpenStartup={() => setEnteredStudio(false)}
       onOpenReport={() => setReportOpen(true)}
+      onOpenSettings={() => setSettingsOpen(true)}
       projects={
         <ProjectManagerScreen
           connection={connection}
@@ -422,15 +577,38 @@ function App() {
           onOpenProjects={() => setSurface("projects")}
         />
       }
-      timeline={<SchemaTimeline sessionId={effectiveSessionId} session={currentSession} />}
+      timeline={
+        <SchemaTimeline
+          sessionId={effectiveSessionId}
+          session={currentSession}
+          project={currentTimelineProject}
+          producerName={producerName}
+        />
+      }
       organizer={
         <ProjectOrganizerScreen
           showNowPlaying={surface !== "organizer"}
           onOpenOrganizer={() => setSurface("organizer")}
         />
       }
+      planner={
+        <PlannerScreen
+          projects={savedProjects}
+          onOpenOrganizer={() => setSurface("organizer")}
+          onOpenTimeline={handleOpenTimeline}
+        />
+      }
       notes={<NotesScreen />}
       glossary={<ProductionCheatSheet />}
+    />
+    <SettingsDialog
+      open={settingsOpen}
+      theme={theme}
+      onThemeChange={setTheme}
+      dailyPlanReminder={dailyPlanReminder}
+      onDailyPlanReminderChange={handleDailyPlanReminderChange}
+      onSendTestReminder={sendTodayStudioPlan}
+      onClose={() => setSettingsOpen(false)}
     />
     <ReportDialog
       open={reportOpen}

@@ -1,3 +1,4 @@
+use crate::planner::PlannerTask;
 use crate::protocol::RecallEvent;
 use crate::schema_projection::{
     build_parameter_changes, parse_note_edit, parse_session_tree, ChangeEvent, CreativeMoment,
@@ -223,6 +224,152 @@ impl StorageState {
         let mut connection = self.open_connection()?;
         let assets = self.organizer_assets_dir()?;
         crate::organizer::delete_project(&mut connection, project_id, &assets)
+    }
+
+    pub fn list_planner_tasks(&self) -> Result<Vec<PlannerTask>, String> {
+        let connection = self.open_connection()?;
+        let mut statement = connection
+            .prepare(
+                "SELECT id, title, due_date, due_time, task_type, project_id, notes, completed,
+                        created_at_ms, updated_at_ms
+                 FROM planner_tasks
+                 ORDER BY completed ASC, due_date ASC, COALESCE(due_time, '99:99') ASC,
+                          created_at_ms ASC",
+            )
+            .map_err(|error| format!("Failed to prepare planner task query: {error}"))?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok(PlannerTask {
+                    id: row.get(0)?,
+                    title: row.get(1)?,
+                    due_date: row.get(2)?,
+                    due_time: row.get(3)?,
+                    task_type: row.get(4)?,
+                    project_id: row.get(5)?,
+                    notes: row.get(6)?,
+                    completed: row.get::<_, i64>(7)? != 0,
+                    created_at_ms: row.get::<_, i64>(8)? as u64,
+                    updated_at_ms: row.get::<_, i64>(9)? as u64,
+                })
+            })
+            .map_err(|error| format!("Failed to read planner tasks: {error}"))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|error| format!("Failed to collect planner tasks: {error}"))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_planner_task(
+        &self,
+        id: &str,
+        title: &str,
+        due_date: &str,
+        due_time: Option<&str>,
+        task_type: &str,
+        project_id: Option<&str>,
+        notes: Option<&str>,
+    ) -> Result<PlannerTask, String> {
+        let connection = self.open_connection()?;
+        let now = now_ms();
+        let task = PlannerTask {
+            id: id.to_string(),
+            title: title.to_string(),
+            due_date: due_date.to_string(),
+            due_time: due_time.map(str::to_string),
+            task_type: task_type.to_string(),
+            project_id: project_id.map(str::to_string),
+            notes: notes.map(str::to_string),
+            completed: false,
+            created_at_ms: now,
+            updated_at_ms: now,
+        };
+        connection
+            .execute(
+                "INSERT INTO planner_tasks
+                 (id, title, due_date, due_time, task_type, project_id, notes, completed,
+                  created_at_ms, updated_at_ms)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0, ?8, ?8)",
+                params![
+                    task.id,
+                    task.title,
+                    task.due_date,
+                    task.due_time,
+                    task.task_type,
+                    task.project_id,
+                    task.notes,
+                    now as i64,
+                ],
+            )
+            .map_err(|error| format!("Failed to create planner task: {error}"))?;
+        Ok(task)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn update_planner_task(
+        &self,
+        id: &str,
+        title: &str,
+        due_date: &str,
+        due_time: Option<&str>,
+        task_type: &str,
+        project_id: Option<&str>,
+        notes: Option<&str>,
+        completed: bool,
+    ) -> Result<PlannerTask, String> {
+        let connection = self.open_connection()?;
+        let now = now_ms();
+        let updated = connection
+            .execute(
+                "UPDATE planner_tasks
+                 SET title = ?2, due_date = ?3, due_time = ?4, task_type = ?5,
+                     project_id = ?6, notes = ?7, completed = ?8, updated_at_ms = ?9
+                 WHERE id = ?1",
+                params![
+                    id,
+                    title,
+                    due_date,
+                    due_time,
+                    task_type,
+                    project_id,
+                    notes,
+                    completed as i64,
+                    now as i64,
+                ],
+            )
+            .map_err(|error| format!("Failed to update planner task: {error}"))?;
+        if updated == 0 {
+            return Err(format!("Planner task not found: {id}"));
+        }
+        let created_at_ms = connection
+            .query_row(
+                "SELECT created_at_ms FROM planner_tasks WHERE id = ?1",
+                params![id],
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(|error| format!("Failed to read updated planner task: {error}"))?
+            as u64;
+        Ok(PlannerTask {
+            id: id.to_string(),
+            title: title.to_string(),
+            due_date: due_date.to_string(),
+            due_time: due_time.map(str::to_string),
+            task_type: task_type.to_string(),
+            project_id: project_id.map(str::to_string),
+            notes: notes.map(str::to_string),
+            completed,
+            created_at_ms,
+            updated_at_ms: now,
+        })
+    }
+
+    pub fn delete_planner_task(&self, id: &str) -> Result<(), String> {
+        let connection = self.open_connection()?;
+        let deleted = connection
+            .execute("DELETE FROM planner_tasks WHERE id = ?1", params![id])
+            .map_err(|error| format!("Failed to delete planner task: {error}"))?;
+        if deleted == 0 {
+            return Err(format!("Planner task not found: {id}"));
+        }
+        Ok(())
     }
 
     pub fn resume_or_create_active_session(&self) -> Result<SessionStatus, String> {
@@ -3029,6 +3176,29 @@ pub fn initialize_database(db_path: &Path) -> rusqlite::Result<()> {
         CREATE INDEX IF NOT EXISTS idx_projects_ableton_name
         ON projects(ableton_name);
 
+        -- A small, local studio planner. Tasks deliberately link to projects by
+        -- id without requiring one, because releases, admin, and practice work
+        -- are all real work even when they do not belong to one Ableton set.
+        CREATE TABLE IF NOT EXISTS planner_tasks (
+            id TEXT PRIMARY KEY,
+            title TEXT NOT NULL,
+            due_date TEXT NOT NULL,
+            due_time TEXT,
+            task_type TEXT NOT NULL,
+            project_id TEXT,
+            notes TEXT,
+            completed INTEGER NOT NULL DEFAULT 0,
+            created_at_ms INTEGER NOT NULL,
+            updated_at_ms INTEGER NOT NULL,
+            FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE SET NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_planner_tasks_due
+        ON planner_tasks(completed, due_date, due_time);
+
+        CREATE INDEX IF NOT EXISTS idx_planner_tasks_project
+        ON planner_tasks(project_id);
+
         -- Explorer-style facts are an explicitly refreshed cache of each
         -- connected folder, not a second copy of the project itself.
         CREATE TABLE IF NOT EXISTS project_folder_metadata (
@@ -3575,6 +3745,49 @@ mod tests {
             bpm: None,
             playing: None,
         }
+    }
+
+    #[test]
+    fn planner_tasks_round_trip_through_local_storage() {
+        let (storage, path) = temp_storage();
+        let created = storage
+            .create_planner_task(
+                "plan-1",
+                "Print mix notes",
+                "2026-08-09",
+                Some("10:30"),
+                "mix",
+                None,
+                Some("Listen on headphones and car speakers."),
+            )
+            .unwrap();
+        assert!(!created.completed);
+        assert_eq!(storage.list_planner_tasks().unwrap().len(), 1);
+
+        let updated = storage
+            .update_planner_task(
+                "plan-1",
+                "Print final mix notes",
+                "2026-08-10",
+                None,
+                "master",
+                None,
+                None,
+                true,
+            )
+            .unwrap();
+        assert!(updated.completed);
+        assert_eq!(updated.created_at_ms, created.created_at_ms);
+
+        let listed = storage.list_planner_tasks().unwrap();
+        assert_eq!(listed[0].title, "Print final mix notes");
+        assert_eq!(listed[0].task_type, "master");
+        assert_eq!(listed[0].due_date, "2026-08-10");
+        assert!(listed[0].due_time.is_none());
+
+        storage.delete_planner_task("plan-1").unwrap();
+        assert!(storage.list_planner_tasks().unwrap().is_empty());
+        cleanup(&path);
     }
 
     #[test]

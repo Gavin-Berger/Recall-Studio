@@ -3,6 +3,7 @@
 
 export { NotesScreen } from "./notes/NotesScreen";
 export { ProjectOrganizerScreen } from "./organizer/ProjectOrganizerScreen";
+export { PlannerScreen } from "./planner/PlannerScreen";
 export { ProjectBriefingScreen } from "./projects/ProjectBriefingScreen";
 export { ProjectManagerScreen } from "./projects/ProjectManagerScreen";
 export { ProjectVersionsScreen } from "./projects/ProjectVersionsScreen";

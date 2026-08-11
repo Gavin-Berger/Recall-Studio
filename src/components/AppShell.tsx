@@ -12,6 +12,7 @@ export type AppSurface =
   | "recap"
   | "timeline"
   | "organizer"
+  | "planner"
   | "notes"
   | "glossary";
 
@@ -19,15 +20,17 @@ type NavItem = {
   id: AppSurface;
   label: string;
   hint: string;
+  shortcut: string;
 };
 
 const NAV_ITEMS: NavItem[] = [
-  { id: "projects", label: "Projects", hint: "Songs & versions" },
-  { id: "recap", label: "Recap", hint: "Session summary" },
-  { id: "timeline", label: "Timeline", hint: "Workspace" },
-  { id: "organizer", label: "Organizer", hint: "Mixes & releases" },
-  { id: "notes", label: "Notes", hint: "Producer notebook" },
-  { id: "glossary", label: "Reference", hint: "Sound terms" },
+  { id: "projects", label: "Projects", hint: "Songs & versions", shortcut: "Alt+1" },
+  { id: "recap", label: "Recap", hint: "Session summary", shortcut: "Alt+2" },
+  { id: "timeline", label: "Timeline", hint: "Workspace", shortcut: "Alt+3" },
+  { id: "organizer", label: "Organizer", hint: "Mixes & releases", shortcut: "Alt+4" },
+  { id: "planner", label: "Planner", hint: "Calendar & tasks", shortcut: "Alt+5" },
+  { id: "notes", label: "Notes", hint: "Producer notebook", shortcut: "Alt+6" },
+  { id: "glossary", label: "Reference", hint: "Sound terms", shortcut: "Alt+7" },
 ];
 
 type AppShellProps = {
@@ -40,10 +43,12 @@ type AppShellProps = {
   recap: ReactNode;
   timeline: ReactNode;
   organizer: ReactNode;
+  planner: ReactNode;
   notes: ReactNode;
   glossary: ReactNode;
   onOpenStartup: () => void;
   onOpenReport: () => void;
+  onOpenSettings: () => void;
 };
 
 export function AppShell({
@@ -56,10 +61,12 @@ export function AppShell({
   recap,
   timeline,
   organizer,
+  planner,
   notes,
   glossary,
   onOpenStartup,
   onOpenReport,
+  onOpenSettings,
 }: AppShellProps) {
   return (
     <main className={`recall-app recall-app--${surface}`}>
@@ -96,6 +103,9 @@ export function AppShell({
                   type="button"
                   className={`recall-sidebar__item ${active ? "is-active" : ""}`}
                   onClick={() => onChangeSurface(item.id)}
+                  aria-current={active ? "page" : undefined}
+                  aria-keyshortcuts={item.shortcut}
+                  title={`${item.label} · ${item.shortcut}`}
                 >
                   <span className="recall-sidebar__item-label">{item.label}</span>
                   <span className="recall-sidebar__item-hint">{item.hint}</span>
@@ -103,6 +113,17 @@ export function AppShell({
               );
             })}
           </div>
+
+          <button
+            type="button"
+            className="recall-sidebar__utility"
+            onClick={onOpenSettings}
+            aria-keyshortcuts="Control+,"
+            title="Settings · Ctrl+,"
+          >
+            <SettingsIcon />
+            <span>Settings</span>
+          </button>
 
           {/* Always reachable: when something breaks, the way to report it must
               not be buried inside the screen that broke. */}
@@ -137,6 +158,8 @@ export function AppShell({
                 <div className="home-surface">{versions}</div>
               ) : surface === "recap" ? (
                 <div className="home-surface">{recap}</div>
+              ) : surface === "planner" ? (
+                <div className="home-surface">{planner}</div>
               ) : surface === "notes" ? (
                 <div className="home-surface">{notes}</div>
               ) : surface === "glossary" ? (
@@ -161,5 +184,20 @@ export function AppShell({
         </div>
       </div>
     </main>
+  );
+}
+
+function SettingsIcon() {
+  return (
+    <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true">
+      <path
+        d="M6.4 2.2h3.2l.4 1.4c.4.2.7.4 1 .6l1.4-.3 1.6 2.7-1 1c.1.4.1.8 0 1.2l1 1-1.6 2.7-1.4-.3c-.3.2-.6.4-1 .6l-.4 1.4H6.4L6 12.4c-.4-.2-.7-.4-1-.6l-1.4.3L2 9.4l1-1a4.8 4.8 0 010-1.2l-1-1 1.6-2.7 1.4.3c.3-.2.6-.4 1-.6l.4-1.4z"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.15"
+        strokeLinejoin="round"
+      />
+      <circle cx="8" cy="8" r="2" fill="none" stroke="currentColor" strokeWidth="1.15" />
+    </svg>
   );
 }

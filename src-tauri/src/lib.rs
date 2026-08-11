@@ -2,6 +2,7 @@ mod event_catalog;
 mod install;
 mod metrics;
 mod organizer;
+mod planner;
 mod protocol;
 mod schema_projection;
 mod session;
@@ -9,6 +10,7 @@ mod storage;
 mod udp_listener;
 
 use metrics::{BridgeMetrics, BridgeMetricsSnapshot};
+use planner::PlannerTask;
 use protocol::RecallEvent;
 use schema_projection::{
     CreativeMoment, CreativeMomentTarget, NoteEdit, ParameterChange, ProjectSchema,
@@ -20,7 +22,11 @@ use session::{
 use std::io::{Read, Seek, Write};
 use std::sync::{Arc, Mutex};
 use storage::{initialize_database, SessionCuration, StorageState, StorageStatus};
-use tauri::{Manager, State};
+use tauri::{
+    menu::{Menu, MenuItem},
+    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
+    Emitter, Manager, State,
+};
 use udp_listener::{get_status, start_udp_listener, ConnectionState, ConnectionStatus};
 
 struct AppState {
@@ -29,6 +35,113 @@ struct AppState {
     session: Arc<Mutex<SessionState>>,
     storage: Arc<Mutex<StorageState>>,
     metrics: Arc<BridgeMetrics>,
+}
+
+struct PlannerTaskFields {
+    title: String,
+    due_date: String,
+    due_time: Option<String>,
+    task_type: String,
+    project_id: Option<String>,
+    notes: Option<String>,
+}
+
+// Showing the window belongs in one small helper because both a tray click and
+// the "Open Recall" menu item should bring back the exact same app window.
+fn show_main_window(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+        let _ = window.emit("recall://window-visibility", true);
+    }
+}
+
+fn optional_trimmed(value: Option<String>, limit: usize, label: &str) -> Result<Option<String>, String> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    if trimmed.len() > limit {
+        return Err(format!("{label} is too long."));
+    }
+    Ok(Some(trimmed.to_string()))
+}
+
+fn valid_planner_date(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    if bytes.len() != 10 || bytes[4] != b'-' || bytes[7] != b'-' {
+        return false;
+    }
+    let year = std::str::from_utf8(&bytes[0..4]).ok().and_then(|part| part.parse::<u32>().ok());
+    let month = std::str::from_utf8(&bytes[5..7]).ok().and_then(|part| part.parse::<u32>().ok());
+    let day = std::str::from_utf8(&bytes[8..10]).ok().and_then(|part| part.parse::<u32>().ok());
+    let (Some(year), Some(month), Some(day)) = (year, month, day) else {
+        return false;
+    };
+    if year == 0 || !(1..=12).contains(&month) {
+        return false;
+    }
+    let days_in_month = match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if year % 400 == 0 || (year % 4 == 0 && year % 100 != 0) => 29,
+        2 => 28,
+        _ => return false,
+    };
+    (1..=days_in_month).contains(&day)
+}
+
+fn normalize_planner_task(
+    title: String,
+    due_date: String,
+    due_time: Option<String>,
+    task_type: String,
+    project_id: Option<String>,
+    notes: Option<String>,
+) -> Result<PlannerTaskFields, String> {
+    let title = title.trim();
+    if title.is_empty() {
+        return Err("Give the task a name.".into());
+    }
+    if title.len() > 160 {
+        return Err("Task names must be 160 characters or fewer.".into());
+    }
+    if !valid_planner_date(&due_date) {
+        return Err("Choose a valid due date.".into());
+    }
+    let due_time = optional_trimmed(due_time, 5, "Task time")?;
+    if let Some(time) = &due_time {
+        let bytes = time.as_bytes();
+        let valid = bytes.len() == 5
+            && bytes[2] == b':'
+            && std::str::from_utf8(&bytes[0..2])
+                .ok()
+                .and_then(|part| part.parse::<u32>().ok())
+                .is_some_and(|hour| hour <= 23)
+            && std::str::from_utf8(&bytes[3..5])
+                .ok()
+                .and_then(|part| part.parse::<u32>().ok())
+                .is_some_and(|minute| minute <= 59);
+        if !valid {
+            return Err("Choose a valid task time.".into());
+        }
+    }
+    let task_type = task_type.trim().to_ascii_lowercase();
+    if !matches!(task_type.as_str(), "artist" | "mix" | "master" | "admin") {
+        return Err("Choose an artist, mix, master, or admin task type.".into());
+    }
+    Ok(PlannerTaskFields {
+        title: title.to_string(),
+        due_date,
+        due_time,
+        task_type,
+        project_id: optional_trimmed(project_id, 128, "Project reference")?,
+        notes: optional_trimmed(notes, 4000, "Task notes")?,
+    })
 }
 
 /// Write a UTF-8 text document to disk. Used by the timeline's share/export so a
@@ -413,14 +526,17 @@ mod organizer_preview_tests {
     use super::*;
 
     fn temp_dir(label: &str) -> std::path::PathBuf {
+        // Counter, not a timestamp — see organizer.rs::temp_assets. Windows' ~15ms
+        // clock granularity hands two tests in the same tick an identical path.
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static COUNTER: AtomicUsize = AtomicUsize::new(0);
+
         let path = std::env::temp_dir().join(format!(
             "recall-{label}-{}-{}",
             std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
+            COUNTER.fetch_add(1, Ordering::Relaxed)
         ));
+        let _ = std::fs::remove_dir_all(&path);
         std::fs::create_dir_all(&path).unwrap();
         path
     }
@@ -520,6 +636,78 @@ fn save_organizer_project(
 fn delete_organizer_project(state: State<'_, AppState>, project_id: String) -> Result<(), String> {
     let storage = state.storage.lock().expect("Storage state lock failed");
     storage.delete_organizer_project(&project_id)
+}
+
+#[tauri::command]
+fn list_planner_tasks(state: State<'_, AppState>) -> Result<Vec<PlannerTask>, String> {
+    let storage = state.storage.lock().expect("Storage state lock failed");
+    storage.list_planner_tasks()
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+fn create_planner_task(
+    state: State<'_, AppState>,
+    id: String,
+    title: String,
+    due_date: String,
+    due_time: Option<String>,
+    task_type: String,
+    project_id: Option<String>,
+    notes: Option<String>,
+) -> Result<PlannerTask, String> {
+    let id = id.trim();
+    if id.is_empty() || id.len() > 128 {
+        return Err("Could not create this task. Please try again.".into());
+    }
+    let fields = normalize_planner_task(title, due_date, due_time, task_type, project_id, notes)?;
+    let storage = state.storage.lock().expect("Storage state lock failed");
+    storage.create_planner_task(
+        id,
+        &fields.title,
+        &fields.due_date,
+        fields.due_time.as_deref(),
+        &fields.task_type,
+        fields.project_id.as_deref(),
+        fields.notes.as_deref(),
+    )
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+fn update_planner_task(
+    state: State<'_, AppState>,
+    id: String,
+    title: String,
+    due_date: String,
+    due_time: Option<String>,
+    task_type: String,
+    project_id: Option<String>,
+    notes: Option<String>,
+    completed: bool,
+) -> Result<PlannerTask, String> {
+    let id = id.trim();
+    if id.is_empty() || id.len() > 128 {
+        return Err("Could not update this task. Please try again.".into());
+    }
+    let fields = normalize_planner_task(title, due_date, due_time, task_type, project_id, notes)?;
+    let storage = state.storage.lock().expect("Storage state lock failed");
+    storage.update_planner_task(
+        id,
+        &fields.title,
+        &fields.due_date,
+        fields.due_time.as_deref(),
+        &fields.task_type,
+        fields.project_id.as_deref(),
+        fields.notes.as_deref(),
+        completed,
+    )
+}
+
+#[tauri::command]
+fn delete_planner_task(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    let storage = state.storage.lock().expect("Storage state lock failed");
+    storage.delete_planner_task(id.trim())
 }
 
 #[tauri::command]
@@ -940,14 +1128,16 @@ mod project_folder_metadata_tests {
     use super::*;
 
     fn temp_dir() -> std::path::PathBuf {
+        // Counter, not a timestamp — see organizer.rs::temp_assets.
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static COUNTER: AtomicUsize = AtomicUsize::new(0);
+
         let path = std::env::temp_dir().join(format!(
             "recall-folder-metadata-{}-{}",
             std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos(),
+            COUNTER.fetch_add(1, Ordering::Relaxed)
         ));
+        let _ = std::fs::remove_dir_all(&path);
         std::fs::create_dir_all(&path).unwrap();
         path
     }
@@ -1622,7 +1812,48 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init())
+        // Closing Recall keeps its one existing process alive in the system
+        // tray. That lets the daily agenda fire while the studio is tucked
+        // away; choosing Quit from the tray remains an explicit full exit.
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                let _ = window.emit("recall://window-visibility", false);
+                let _ = window.hide();
+            }
+        })
         .setup(move |app| {
+            let open_item = MenuItem::with_id(app, "open", "Open Recall", true, None::<&str>)?;
+            let quit_item = MenuItem::with_id(app, "quit", "Quit Recall", true, None::<&str>)?;
+            let tray_menu = Menu::with_items(app, &[&open_item, &quit_item])?;
+            let tray_icon = app
+                .default_window_icon()
+                .cloned()
+                .expect("Recall Studio requires a default window icon for the system tray");
+
+            TrayIconBuilder::with_id("recall-studio")
+                .icon(tray_icon)
+                .tooltip("Recall Studio")
+                .menu(&tray_menu)
+                .show_menu_on_left_click(false)
+                .on_menu_event(|app, event| match event.id.as_ref() {
+                    "open" => show_main_window(app),
+                    "quit" => app.exit(0),
+                    _ => {}
+                })
+                .on_tray_icon_event(|tray, event| {
+                    if let TrayIconEvent::Click {
+                        button: MouseButton::Left,
+                        button_state: MouseButtonState::Up,
+                        ..
+                    } = event
+                    {
+                        show_main_window(tray.app_handle());
+                    }
+                })
+                .build(app)?;
+
             let app_data_dir = app
                 .path()
                 .app_data_dir()
@@ -1643,6 +1874,31 @@ pub fn run() {
             }
 
             println!("SQLite database initialized at {:?}", db_path);
+
+            // Keep the installed control surface in step with the one this build
+            // ships. Installing a new Recall replaces the bundled resource but
+            // never the copy in the producer's Ableton User Library, so without
+            // this an updated app quietly keeps talking to last month's script.
+            //
+            // Deliberately best-effort and never fatal: a missing library (external
+            // drive unplugged) or a failed write must not stop the app starting.
+            // The producer falls back to the setup screen, which can explain
+            // itself, rather than meeting an error on launch.
+            let repair = install::auto_repair_installed_script(app.handle());
+            match (&repair.error, repair.repaired, repair.attempted) {
+                (Some(error), _, _) => {
+                    eprintln!("Recall Studio: control surface auto-repair skipped: {error}")
+                }
+                (None, true, _) => println!(
+                    "Recall Studio: control surface updated to {} at {:?} — Ableton must restart to load it",
+                    repair.script_version.as_deref().unwrap_or("unknown"),
+                    repair.install_dir.as_deref().unwrap_or("?")
+                ),
+                (None, false, true) => println!("Recall Studio: control surface already current"),
+                (None, false, false) => {
+                    println!("Recall Studio: no control surface installed yet — setup will ask")
+                }
+            }
 
             let active_status = {
                 let storage = storage_state_for_setup
@@ -1696,6 +1952,10 @@ pub fn run() {
             list_organizer_projects,
             save_organizer_project,
             delete_organizer_project,
+            list_planner_tasks,
+            create_planner_task,
+            update_planner_task,
+            delete_planner_task,
             get_connection_status,
             get_recent_events,
             start_session,
@@ -1737,6 +1997,7 @@ pub fn run() {
             set_creative_moment_targets,
             delete_creative_moment,
             install::detect_bridge_install_targets,
+            install::is_remote_script_installed,
             install::install_bridge
         ])
         .run(tauri::generate_context!())

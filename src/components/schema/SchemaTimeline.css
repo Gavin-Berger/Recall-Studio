@@ -1,4 +1,4 @@
-/* Schema timeline — the schema-driven experience: entity tree, change/moment
+/* Schema timeline â€” the schema-driven experience: entity tree, change/moment
    stream, and a detail panel. Dark theme to match the rest of Recall Studio. */
 
 /* Full-height host for the timeline surface inside the app shell content cell.
@@ -67,28 +67,28 @@
 
 .schema-filter.is-active {
   background:
-    linear-gradient(180deg, rgba(94, 147, 255, 0.32), rgba(94, 147, 255, 0.16));
-  border-color: rgba(94, 147, 255, 0.55);
-  color: #dfe5ff;
+    linear-gradient(180deg, rgb(var(--signal-rgb) / 0.32), rgb(var(--signal-rgb) / 0.16));
+  border-color: rgb(var(--signal-rgb) / 0.55);
+  color: var(--signal-soft);
 }
 
 .schema-node.is-selected {
   background:
-    linear-gradient(90deg, rgba(94, 147, 255, 0.24), rgba(94, 147, 255, 0.1));
-  border-color: rgba(94, 147, 255, 0.5);
+    linear-gradient(90deg, rgb(var(--signal-rgb) / 0.24), rgb(var(--signal-rgb) / 0.1));
+  border-color: rgb(var(--signal-rgb) / 0.5);
 }
 
 .schema-row.is-selected {
-  border-color: rgba(94, 147, 255, 0.5);
-  background: rgba(94, 147, 255, 0.12);
+  border-color: rgb(var(--signal-rgb) / 0.5);
+  background: rgb(var(--signal-rgb) / 0.12);
 }
 
 .schema-section-list li.is-selected {
-  border-color: rgba(94, 147, 255, 0.52);
-  background: rgba(94, 147, 255, 0.12);
+  border-color: rgb(var(--signal-rgb) / 0.52);
+  background: rgb(var(--signal-rgb) / 0.12);
 }
 
-/* ── Detail ──────────────────────────────────────────────────────────────── */
+/* â”€â”€ Detail â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 .detail {
   display: flex;
@@ -256,7 +256,7 @@
 }
 
 /* ============================================================
-   Timeline page — combined track map + memory dock (P1)
+   Timeline page â€” combined track map + memory dock (P1)
    ============================================================ */
 
 .tl {
@@ -284,7 +284,7 @@
   border: 1px solid rgba(255, 255, 255, 0.085);
   border-radius: 10px;
   background:
-    linear-gradient(135deg, rgba(94, 147, 255, 0.1), transparent 40%),
+    linear-gradient(135deg, rgb(var(--signal-rgb) / 0.1), transparent 40%),
     rgba(15, 18, 29, 0.92);
 }
 
@@ -314,7 +314,7 @@
 }
 
 .tl-eye.is-rec {
-  color: #aec4ff;
+  color: var(--signal-soft);
 }
 
 .tl-eye__dot {
@@ -322,7 +322,7 @@
   height: 7px;
   border-radius: 50%;
   background: var(--signal);
-  box-shadow: 0 0 9px rgba(94, 147, 255, 0.8);
+  box-shadow: 0 0 9px rgb(var(--signal-rgb) / 0.8);
 }
 
 .tl-bar__sub {
@@ -367,8 +367,8 @@
 }
 
 .tl-fmt__opt.is-on {
-  background: rgba(94, 147, 255, 0.18);
-  color: #cdd6ff;
+  background: rgb(var(--signal-rgb) / 0.18);
+  color: var(--signal-soft);
 }
 
 .tl-btn {
@@ -388,14 +388,14 @@
 }
 
 .tl-btn:hover {
-  border-color: rgba(94, 147, 255, 0.4);
-  background: rgba(94, 147, 255, 0.1);
+  border-color: rgb(var(--signal-rgb) / 0.4);
+  background: rgb(var(--signal-rgb) / 0.1);
 }
 
 .tl-btn--primary {
-  border-color: rgba(94, 147, 255, 0.5);
-  background: rgba(94, 147, 255, 0.18);
-  color: #cdd6ff;
+  border-color: rgb(var(--signal-rgb) / 0.5);
+  background: rgb(var(--signal-rgb) / 0.18);
+  color: var(--signal-soft);
 }
 
 .tl-btn:disabled {
@@ -436,8 +436,8 @@
   width: 16px;
   height: 0;
   border-radius: 0;
-  border-top: 2px solid #aab4ff;
-  filter: drop-shadow(0 0 2px rgba(94, 147, 255, 0.5));
+  border-top: 2px solid var(--signal-soft);
+  filter: drop-shadow(0 0 2px rgb(var(--signal-rgb) / 0.5));
 }
 
 .tl-key--note {
@@ -449,7 +449,7 @@
 }
 
 .tl-key--note::before {
-  content: "★";
+  content: "â˜…";
   color: var(--moment);
 }
 
@@ -457,10 +457,10 @@
   width: 3px;
   height: 11px;
   border-radius: 0;
-  background: #7aa2ff;
+  background: var(--signal-bright);
 }
 
-/* ── Session pulse hero strip ─────────────────────────────────────────────── */
+/* â”€â”€ Session pulse hero strip â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .tl-pulse {
   display: flex;
   align-items: center;
@@ -469,7 +469,7 @@
   border: 1px solid rgba(255, 255, 255, 0.09);
   border-radius: 10px;
   background:
-    linear-gradient(135deg, rgba(94, 147, 255, 0.08), transparent 55%),
+    linear-gradient(135deg, rgb(var(--signal-rgb) / 0.08), transparent 55%),
     rgba(13, 16, 26, 0.85);
 }
 
@@ -507,7 +507,7 @@
   flex: 1;
   min-width: 70px;
   height: 34px;
-  color: #aab4ff;
+  color: var(--signal-soft);
   opacity: 0.9;
 }
 
@@ -530,24 +530,24 @@
 }
 
 .tl-pulse__state.is-hot {
-  color: #aec4ff;
-  background: rgba(94, 147, 255, 0.14);
+  color: var(--signal-soft);
+  background: rgb(var(--signal-rgb) / 0.14);
 }
 
 .tl-pulse__state.is-hot .tl-pulse__pip {
-  background: #5e93ff;
-  box-shadow: 0 0 9px rgba(94, 147, 255, 0.85);
+  background: var(--signal);
+  box-shadow: 0 0 9px rgb(var(--signal-rgb) / 0.85);
   animation: tl-pip-pulse 1.4s ease-in-out infinite;
 }
 
 .tl-pulse__state.is-warm {
-  color: #bcd0ff;
-  background: rgba(94, 147, 255, 0.14);
+  color: var(--signal-soft);
+  background: rgb(var(--signal-rgb) / 0.14);
 }
 
 .tl-pulse__state.is-warm .tl-pulse__pip {
-  background: #7fa0ff;
-  box-shadow: 0 0 8px rgba(94, 147, 255, 0.7);
+  background: var(--signal-muted);
+  box-shadow: 0 0 8px rgb(var(--signal-rgb) / 0.7);
 }
 
 .tl-pulse__state.is-calm {
@@ -616,13 +616,13 @@
 
 .tl-lane:hover {
   background:
-    linear-gradient(rgba(94, 147, 255, 0.05), rgba(94, 147, 255, 0.05)),
+    linear-gradient(rgb(var(--signal-rgb) / 0.05), rgb(var(--signal-rgb) / 0.05)),
     repeating-linear-gradient(90deg, transparent, transparent calc(10% - 1px), rgba(255, 255, 255, 0.03) 10%, rgba(255, 255, 255, 0.03) calc(10% + 1px));
 }
 
 .tl-lane.is-sel {
   background:
-    linear-gradient(rgba(94, 147, 255, 0.1), rgba(94, 147, 255, 0.1)),
+    linear-gradient(rgb(var(--signal-rgb) / 0.1), rgb(var(--signal-rgb) / 0.1)),
     repeating-linear-gradient(90deg, transparent, transparent calc(10% - 1px), rgba(255, 255, 255, 0.04) 10%, rgba(255, 255, 255, 0.04) calc(10% + 1px));
 }
 
@@ -652,14 +652,14 @@
   animation: tl-graph-fade 760ms ease-out both;
 }
 
-/* Draws itself in left→right on mount via a normalized (pathLength=1) dash. */
+/* Draws itself in leftâ†’right on mount via a normalized (pathLength=1) dash. */
 .tl-graph__line {
   fill: none;
   stroke: currentColor;
   stroke-width: 1.6px;
   stroke-linejoin: round;
   stroke-linecap: round;
-  filter: drop-shadow(0 0 4px rgba(94, 147, 255, 0.45));
+  filter: drop-shadow(0 0 4px rgb(var(--signal-rgb) / 0.45));
   stroke-dasharray: 1;
   stroke-dashoffset: 1;
   animation: tl-graph-draw 760ms ease-out forwards;
@@ -696,7 +696,7 @@
   line-height: 1;
 }
 
-/* A note edit on the lane. --clip because it IS a clip changing (DESIGN.md §
+/* A note edit on the lane. --clip because it IS a clip changing (DESIGN.md Â§
    entity colors); deliberately a small bar rather than a second star, so the
    producer's own pinned moments stay the loudest marks on the lane. */
 .tl-mk--midi {
@@ -712,8 +712,8 @@
   top: 0;
   bottom: 0;
   width: 2px;
-  background: linear-gradient(#7aa2ff, rgba(94, 147, 255, 0.2));
-  box-shadow: 0 0 8px rgba(94, 147, 255, 0.5);
+  background: linear-gradient(var(--signal-bright), rgb(var(--signal-rgb) / 0.2));
+  box-shadow: 0 0 8px rgb(var(--signal-rgb) / 0.5);
   pointer-events: none;
 }
 
@@ -748,18 +748,18 @@
 }
 
 .tl-hdr:hover {
-  background: rgba(94, 147, 255, 0.06);
+  background: rgb(var(--signal-rgb) / 0.06);
 }
 
 .tl-hdr.is-sel {
-  background: rgba(94, 147, 255, 0.12);
+  background: rgb(var(--signal-rgb) / 0.12);
 }
 
 .tl-hdr.is-sel::after {
   content: "";
   position: absolute;
   inset: 0;
-  outline: 1px solid rgba(205, 214, 255, 0.5);
+  outline: 1px solid rgb(var(--signal-rgb) / 0.5);
   outline-offset: -1px;
   pointer-events: none;
 }
@@ -812,7 +812,7 @@
   font-size: 0.62rem;
   letter-spacing: 0.12em;
   text-transform: uppercase;
-  color: #8aa0e6;
+  color: var(--signal-muted);
   font-weight: 700;
 }
 
@@ -841,14 +841,14 @@
   margin-left: auto;
   padding: 3px 9px;
   border-radius: 7px;
-  background: rgba(94, 147, 255, 0.12);
-  border: 1px solid rgba(94, 147, 255, 0.25);
-  color: #cdd6ff;
+  background: rgb(var(--signal-rgb) / 0.12);
+  border: 1px solid rgb(var(--signal-rgb) / 0.25);
+  color: var(--signal-soft);
   font-size: 0.72rem;
 }
 
 .tl-dock__top b {
-  color: #eef1ff;
+  color: var(--paper-strong);
   font-weight: 700;
 }
 
@@ -949,7 +949,7 @@
 }
 
 .tl-ci--group:hover {
-  background: rgba(94, 147, 255, 0.05);
+  background: rgb(var(--signal-rgb) / 0.05);
 }
 
 .tl-ci__ic {
@@ -963,7 +963,7 @@
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: #aab4ff;
+  background: var(--signal-soft);
 }
 
 .tl-ci__ic--note {
@@ -976,7 +976,7 @@
   color: var(--paper);
 }
 
-/* Two-column body: what (device · param) on the left, value on the right. */
+/* Two-column body: what (device Â· param) on the left, value on the right. */
 .tl-ci__body {
   display: flex;
   align-items: baseline;
@@ -1009,7 +1009,7 @@
 .tl-ba {
   font-family: var(--font-mono);
   font-size: 0.74rem;
-  color: #c7cce0;
+  color: var(--paper);
   display: inline-flex;
   align-items: baseline;
   gap: 6px;
@@ -1024,7 +1024,7 @@
 }
 
 .tl-ba__n {
-  color: #aec4ff;
+  color: var(--signal-soft);
   font-weight: 600;
 }
 
@@ -1037,7 +1037,7 @@
   font-size: 0.66rem;
 }
 
-/* Direction caret: warm when a value was raised, cool when lowered — so the
+/* Direction caret: warm when a value was raised, cool when lowered â€” so the
    list reads like sound, not a column of identical green numbers. */
 .tl-ba__dir {
   font-size: 0.58rem;
@@ -1045,20 +1045,20 @@
 }
 
 .tl-ba__dir.is-up {
-  color: #7aa2ff;
+  color: var(--signal-bright);
 }
 
 .tl-ba__dir.is-down {
-  color: #7fb0ff;
+  color: var(--signal-muted);
 }
 
-/* Mode (quantized) values are categorical, not scalar — render the result as a
+/* Mode (quantized) values are categorical, not scalar â€” render the result as a
    pill so "Bass Shaper" never reads like a number. */
 .tl-ba.is-mode .tl-ba__n {
   padding: 1px 7px;
   border-radius: 6px;
-  background: rgba(94, 147, 255, 0.16);
-  color: #c3d0ff;
+  background: rgb(var(--signal-rgb) / 0.16);
+  color: var(--signal-soft);
 }
 
 .tl-ci__when {
@@ -1136,7 +1136,7 @@
 }
 
 .tl-addnote:focus-within {
-  border-color: rgba(94, 147, 255, 0.55);
+  border-color: rgb(var(--signal-rgb) / 0.55);
 }
 
 .tl-addnote input {
@@ -1169,12 +1169,12 @@
   height: 28px;
 }
 
-/* ── "Worth keeping" rail ─────────────────────────────────────────────────── */
+/* â”€â”€ "Worth keeping" rail â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .tl-keep {
   border: 1px solid rgba(255, 255, 255, 0.09);
   border-radius: 10px;
   background:
-    linear-gradient(135deg, rgba(94, 147, 255, 0.06), transparent 45%),
+    linear-gradient(135deg, rgb(var(--signal-rgb) / 0.06), transparent 45%),
     rgba(11, 14, 22, 0.85);
   padding: 14px;
 }
@@ -1191,7 +1191,7 @@
   font-size: 0.66rem;
   letter-spacing: 0.12em;
   text-transform: uppercase;
-  color: #cdd6ff;
+  color: var(--signal-soft);
   font-weight: 700;
 }
 
@@ -1252,12 +1252,12 @@
 }
 
 .tl-card.is-focused {
-  border-color: rgba(205, 214, 255, 0.55);
-  box-shadow: 0 0 0 1px rgba(205, 214, 255, 0.4), 0 0 14px rgba(94, 147, 255, 0.25);
+  border-color: rgb(var(--signal-rgb) / 0.55);
+  box-shadow: 0 0 0 1px rgb(var(--signal-rgb) / 0.4), 0 0 14px rgb(var(--signal-rgb) / 0.25);
 }
 
 .tl-card--note {
-  background: rgba(94, 147, 255, 0.06);
+  background: rgb(var(--signal-rgb) / 0.06);
 }
 
 .tl-card__top {
@@ -1272,10 +1272,10 @@
   letter-spacing: 0.08em;
   text-transform: uppercase;
   font-weight: 700;
-  color: var(--lane-color, #aab4ff);
+  color: var(--lane-color, var(--signal-soft));
 }
 
-/* Strength meter: how strongly this ranked, 1–3 pips. */
+/* Strength meter: how strongly this ranked, 1â€“3 pips. */
 .tl-card__meter {
   display: inline-flex;
   gap: 2px;
@@ -1290,7 +1290,7 @@
 }
 
 .tl-card__pip.is-on {
-  background: var(--lane-color, #aab4ff);
+  background: var(--lane-color, var(--signal-soft));
 }
 
 .tl-card--note .tl-card__badge {
@@ -1372,13 +1372,13 @@
 }
 
 .tl-card__act:hover {
-  border-color: rgba(94, 147, 255, 0.45);
-  background: rgba(94, 147, 255, 0.12);
+  border-color: rgb(var(--signal-rgb) / 0.45);
+  background: rgb(var(--signal-rgb) / 0.12);
 }
 
 .tl-card__act--keep:hover {
-  border-color: rgba(94, 147, 255, 0.55);
-  background: rgba(94, 147, 255, 0.14);
+  border-color: rgb(var(--signal-rgb) / 0.55);
+  background: rgb(var(--signal-rgb) / 0.14);
   color: var(--moment);
 }
 
@@ -1388,12 +1388,12 @@
   font-weight: 600;
 }
 
-/* ── "The story so far" recap ─────────────────────────────────────────────── */
+/* â”€â”€ "The story so far" recap â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .tl-recap {
   border: 1px solid rgba(255, 255, 255, 0.09);
   border-radius: 10px;
   background:
-    linear-gradient(135deg, rgba(94, 147, 255, 0.07), transparent 55%),
+    linear-gradient(135deg, rgb(var(--signal-rgb) / 0.07), transparent 55%),
     rgba(11, 14, 22, 0.85);
   padding: 16px 18px;
 }
@@ -1403,7 +1403,7 @@
   font-size: 0.66rem;
   letter-spacing: 0.12em;
   text-transform: uppercase;
-  color: #cdd6ff;
+  color: var(--signal-soft);
   font-weight: 700;
   margin-bottom: 9px;
 }
@@ -1431,11 +1431,11 @@
   width: 56px;
   height: 56px;
   border-radius: 15px;
-  border: 1px solid rgba(94, 147, 255, 0.3);
-  background: rgba(94, 147, 255, 0.08);
+  border: 1px solid rgb(var(--signal-rgb) / 0.3);
+  background: rgb(var(--signal-rgb) / 0.08);
   display: grid;
   place-items: center;
-  color: #aab4ff;
+  color: var(--signal-soft);
   margin-bottom: 15px;
 }
 
@@ -1485,7 +1485,7 @@
 
    The distinction is STRUCTURAL, not chromatic. Master already carries
    its own entity color (#9aa3c4) as a type signal, and DESIGN.md forbids
-   recoloring for emphasis — so separation, weight, and letter-spacing do
+   recoloring for emphasis â€” so separation, weight, and letter-spacing do
    the work here instead of a brighter hue.
    --------------------------------------------------------------- */
 
@@ -1516,7 +1516,7 @@
   background: rgba(255, 255, 255, 0.014);
 }
 
-/* Bridge log — a diagnostic readout, not a product surface. Collapsed by
+/* Bridge log â€” a diagnostic readout, not a product surface. Collapsed by
    default and visually quiet so it never competes with the timeline. Exists
    because two capture tiers (M4L and the Python control surface) currently
    both feed the app, and "is anything arriving, and from which" was otherwise
@@ -1713,13 +1713,13 @@
 }
 
 .tl-activity-log__jump-bottom:hover {
-  border-color: rgba(120, 137, 238, 0.55);
-  background: rgba(94, 147, 255, 0.08);
+  border-color: rgb(var(--focus-rgb) / 0.55);
+  background: rgb(var(--signal-rgb) / 0.08);
   color: var(--paper);
 }
 
 .tl-activity-log__jump-bottom:focus-visible {
-  outline: 2px solid rgba(120, 137, 238, 0.9);
+  outline: 2px solid rgb(var(--focus-rgb) / 0.9);
   outline-offset: 2px;
 }
 
@@ -1756,7 +1756,7 @@
 }
 
 .tl-activity-log__row:focus-visible {
-  outline: 2px solid rgba(120, 137, 238, 0.9);
+  outline: 2px solid rgb(var(--focus-rgb) / 0.9);
   outline-offset: -2px;
 }
 
@@ -1853,7 +1853,7 @@
   color: var(--faint-aa);
 }
 
-/* What kind of change it was. A quiet outline, never a filled badge — the kind
+/* What kind of change it was. A quiet outline, never a filled badge â€” the kind
    is a qualifier on the summary beside it, not the headline. */
 .tl-note-kind {
   flex: 0 0 auto;
@@ -1866,7 +1866,7 @@
 }
 
 .tl-note-kind.is-notes_added {
-  border-color: rgba(94, 147, 255, 0.4);
+  border-color: rgb(var(--signal-rgb) / 0.4);
   color: var(--paper);
 }
 
@@ -1878,17 +1878,17 @@
   color: var(--danger);
 }
 
-/* ── Note edits, told apart from parameter moves ────────────────────────────
+/* â”€â”€ Note edits, told apart from parameter moves â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-   A note edit and a knob move are different kinds of act — one changes what is
-   played, the other how it sounds — and until now they shared one row anatomy.
+   A note edit and a knob move are different kinds of act â€” one changes what is
+   played, the other how it sounds â€” and until now they shared one row anatomy.
    Three signals separate them, in decreasing subtlety: a --clip left rail on the
    row, the clip color on the value text (moves are --parameter teal), and the
    pitch bar, which is a positional graphic no other row has. */
 .tl-ci--notes {
   border-left: 2px solid var(--paper);
   padding-left: 8px;
-  background: linear-gradient(90deg, rgba(94, 147, 255, 0.05), transparent 55%);
+  background: linear-gradient(90deg, rgb(var(--signal-rgb) / 0.05), transparent 55%);
   border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
 }
 
@@ -1906,8 +1906,8 @@
   white-space: nowrap;
 }
 
-/* The pitch bar: a fixed 0–127 keyboard span, so bars from different clips are
-   comparable — a sub sits left and short, a lead sits right. Not a meter and not
+/* The pitch bar: a fixed 0â€“127 keyboard span, so bars from different clips are
+   comparable â€” a sub sits left and short, a lead sits right. Not a meter and not
    a progress bar; it encodes POSITION, which is why the middle-C tick matters. */
 .tl-pitch {
   position: relative;
@@ -1924,7 +1924,7 @@
   background: rgba(255, 255, 255, 0.04);
 }
 
-/* Middle C (C3 = 60 in Live's naming) — the reference the eye reads against. */
+/* Middle C (C3 = 60 in Live's naming) â€” the reference the eye reads against. */
 .tl-pitch__mid {
   position: absolute;
   top: 0;
@@ -1933,14 +1933,14 @@
   background: rgba(255, 255, 255, 0.22);
 }
 
-/* Where the part used to sit. Past tense, so it is quiet and never animated —
+/* Where the part used to sit. Past tense, so it is quiet and never animated â€”
    its whole job is to make a transposition legible as a change of place. */
 .tl-pitch__ghost {
   position: absolute;
   top: 2px;
   bottom: 2px;
   border-radius: 2px;
-  background: rgba(94, 147, 255, 0.22);
+  background: rgb(var(--signal-rgb) / 0.22);
 }
 
 .tl-pitch__span {

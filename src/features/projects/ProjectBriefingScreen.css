@@ -247,7 +247,7 @@
 }
 
 .brief-state.is-active {
-  color: #cdd9ff;
+  color: var(--signal-soft);
   background: #16203a;
   border: 1px solid #2f4d86;
 }

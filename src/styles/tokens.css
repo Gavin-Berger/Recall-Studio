@@ -1,12 +1,12 @@
 :root {
-  /* Surfaces — cool graphite ramp (DESIGN.md v2 §2). */
+  /* Surfaces â€” cool graphite ramp (DESIGN.md v2 Â§2). */
   --ink: #0d0f13;
   --ink-2: #12141a;
   --paper: #d6dae4;
   --paper-strong: #f3f5fa;
   --muted: #8b91a0;
   --faint: #666d7c;
-  /* AA-safe replacement for --faint on text under 19px (DESIGN.md §9). */
+  /* AA-safe replacement for --faint on text under 19px (DESIGN.md Â§9). */
   --faint-aa: #868d9c;
   --panel: #161922;
   --panel-2: #1c2029;
@@ -14,12 +14,17 @@
   --line: #2a2f3a;
   --line-soft: #21262f;
 
-  /* The only two accents (DESIGN.md v2 §2). No third accent, no entity rainbow. */
+  /* The only two accents (DESIGN.md v2 Â§2). No third accent, no entity rainbow. */
   --signal: #5e93ff; /* interactive / active / now / focus ring */
-  --moment: #e3b667; /* the producer's pinned mark — the one warm accent */
+  --signal-rgb: 94 147 255;
+  --signal-muted: #8aa0e6;
+  --signal-soft: #aab4ff;
+  --signal-bright: #7aa2ff;
+  --focus-rgb: 120 137 238;
+  --moment: #e3b667; /* the producer's pinned mark â€” the one warm accent */
   --danger: #dc5a6a; /* error / destructive state only */
 
-  /* v1 entity-color system RETIRED (DESIGN.md v2 §2): the alias tokens
+  /* v1 entity-color system RETIRED (DESIGN.md v2 Â§2): the alias tokens
      (--track/--device/--parameter/--clip/--transport/--session/--oxide/--sage/
      --brass/--smoke) are gone. Type is told apart by weight, monospace, and
      luminance now; colour is only --signal, --moment, and --danger. */
@@ -28,7 +33,7 @@
   --radius-sm: 6px;
   --shadow: 0 24px 70px rgba(0, 0, 0, 0.34);
 
-  /* Motion (DESIGN.md §6) — unchanged. Two registers only: arrival and recognition.
+  /* Motion (DESIGN.md Â§6) â€” unchanged. Two registers only: arrival and recognition.
      linear easing is banned; --ease-arrive is the default. */
   --m-settle: 120ms;
   --m-arrive: 220ms;
@@ -36,7 +41,7 @@
   --ease-arrive: cubic-bezier(0.16, 1, 0.3, 1);
   --ease-exit: cubic-bezier(0.4, 0, 1, 1);
 
-  /* Typography (DESIGN.md v2 §3) — IBM Plex, bundled via @fontsource in main.tsx.
+  /* Typography (DESIGN.md v2 Â§3) â€” IBM Plex, bundled via @fontsource in main.tsx.
      No separate display face; --font-display is Plex Sans at a heavier weight. */
   --font-sans: "IBM Plex Sans", "Segoe UI Variable Text", "Segoe UI", sans-serif;
   --font-body: var(--font-sans);
@@ -46,6 +51,18 @@
   color: var(--paper);
   background: var(--ink);
   font-family: var(--font-body);
+}
+
+/* A low-stimulation alternative for long sessions. UI accents become neutral
+   greys while cover art stays untouched because it is project content. */
+:root[data-recall-theme="mono"] {
+  --signal: #c8cbd1;
+  --signal-rgb: 200 203 209;
+  --signal-muted: #a6aab2;
+  --signal-soft: #dde0e5;
+  --signal-bright: #f0f1f4;
+  --focus-rgb: 224 227 232;
+  --moment: #d2d4d8;
 }
 
 * {

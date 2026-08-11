@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { CreativeMoment, ParameterChange } from "../../../types";
+import type { CreativeMoment, NoteEdit, ParameterChange } from "../../../types";
 import {
   activeDurationMs,
   buildLookups,
@@ -209,6 +209,91 @@ describe("buildShareData / buildShareDocument", () => {
     expect(JSON.parse(buildShareDocument(data, "json")).title).toBe("Take");
     expect(buildShareDocument(data, "md")).toContain("# Take");
     expect(buildShareDocument(data, "txt")).toContain("Take");
+  });
+
+  it("puts project context and the Song Story before a chronological, grouped log", () => {
+    const projectData = buildShareData({
+      title: "Aug 6 · 5:00 PM",
+      project: "Night fall",
+      duration: "42 min active",
+      recordedAtMs: 10_000,
+      changes: [],
+      stats: { moves: 3, characterMoves: 0, tracksTouched: 2, keepers: 0 },
+      story: null,
+      blocks: [] as SessionBlock[],
+      sessionStart: 10_000,
+      projectRecord: {
+        name: "Night fall",
+        setName: "nightfall_v4",
+        producerName: "Gberg",
+        captureCount: 2,
+        firstCapturedAtMs: 10_000,
+        lastCapturedAtMs: 30_000,
+      },
+      projectStory: {
+        summary: "2 work sessions · 3 recorded moves · 2 tracks shaped",
+        chapters: [
+          {
+            startMs: 10_000,
+            endMs: 30_000,
+            label: "looks like sound design",
+            work: "shaped Bass and Hi Hats",
+            moves: 3,
+            noteEdits: 1,
+            activeMs: 60_000,
+          },
+        ],
+      },
+      timelineSources: [
+        {
+          id: "take-1",
+          label: "Aug 6 · 5:00 PM",
+          startedAtMs: 10_000,
+          changes: [
+            makeChange({ id: "bass-1", changed_at_ms: 10_000, track_name: "Bass", track_id: "bass" }),
+            makeChange({
+              id: "hats-1",
+              changed_at_ms: 20_000,
+              track_name: "Hi Hats",
+              track_id: "hats",
+              device_name: "Drum Rack",
+              parameter_name: "Decay",
+            }),
+          ],
+          noteEdits: [
+            {
+              id: "midi-1",
+              track_name: "Hi Hats",
+              clip_name: "Verse hats",
+              clip_id: "clip-1",
+              change_kind: "notes_added",
+              note_count: 16,
+              previous_note_count: 12,
+              distinct_pitches: null,
+              pitch_min: null,
+              pitch_max: null,
+              previous_pitch_min: null,
+              previous_pitch_max: null,
+              pitch_range: null,
+              previous_pitch_range: null,
+              velocity_mean: null,
+              length_beats: null,
+              summary: null,
+              changed_at_ms: 30_000,
+            } satisfies NoteEdit,
+          ],
+        },
+      ],
+    });
+    const markdown = buildShareDocument(projectData, "md");
+
+    expect(markdown).toContain("# Night fall");
+    expect(markdown).toContain("**Ableton set:** nightfall_v4");
+    expect(markdown).toContain("**Producer:** Gberg");
+    expect(markdown).toContain("## Song story");
+    expect(markdown).toContain("## Full timeline");
+    expect(markdown).toContain("**Verse hats**: 16 notes (+4)");
+    expect(markdown.indexOf("Bass")).toBeLessThan(markdown.indexOf("Hi Hats"));
   });
 });
 

@@ -11,6 +11,9 @@ import {
 } from "./repository";
 import { ReleasePreview } from "./ReleasePreview";
 import { recordError } from "../diagnostics/errorLog";
+import { createPlannerTask } from "../planner/api";
+import { localDateKey } from "../planner/planner";
+import type { PlannerTaskType } from "../../types";
 import {
   buildReleaseCommentsText,
   buildReleasePreviewHtml,
@@ -32,6 +35,17 @@ import { Waveform } from "./Waveform";
 // dehydrated by the native backend into app-data files.
 
 type ReleaseType = "album" | "ep" | "single";
+
+type ChecklistTarget = "name" | "artist" | "date" | "tracklist" | "delivery";
+
+type ReleaseChecklistItem = {
+  id: string;
+  target: ChecklistTarget;
+  title: string;
+  detail: string;
+};
+
+type QuickTaskType = "artist" | "mix" | "master" | "admin";
 
 const RELEASE_TYPES: ReleaseType[] = ["album", "ep", "single"];
 
@@ -568,10 +582,20 @@ export function ProjectOrganizerScreen({
   const [dragOverTrackId, setDragOverTrackId] = useState<string | null>(null);
   const [timedCommentDrafts, setTimedCommentDrafts] = useState<Record<string, string>>({});
   const [attentionCommentIds, setAttentionCommentIds] = useState<Set<string>>(() => new Set());
+  const [quickTaskTitle, setQuickTaskTitle] = useState("");
+  const [quickTaskType, setQuickTaskType] = useState<QuickTaskType>("artist");
+  const [quickTaskDueDate, setQuickTaskDueDate] = useState(() => localDateKey(new Date()));
+  const [quickTaskSaving, setQuickTaskSaving] = useState(false);
+  const [quickTaskStatus, setQuickTaskStatus] = useState<string | null>(null);
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const coverInputRef = useRef<HTMLInputElement | null>(null);
+  const releaseNameRef = useRef<HTMLInputElement | null>(null);
+  const artistInputRef = useRef<HTMLInputElement | null>(null);
+  const releaseDateInputRef = useRef<HTMLInputElement | null>(null);
+  const tracklistRef = useRef<HTMLDivElement | null>(null);
+  const deliveryRef = useRef<HTMLElement | null>(null);
   const pendingExportTrackId = useRef<string | null>(null);
   const pendingReplaceBounceId = useRef<string | null>(null);
   const pendingExportAutoPlay = useRef(false);
@@ -663,6 +687,40 @@ export function ProjectOrganizerScreen({
         && knownBitDepths.size <= 1,
     };
   }, [selected]);
+  const releaseChecklist = useMemo((): ReleaseChecklistItem[] => {
+    if (!selected) return [];
+
+    const items: ReleaseChecklistItem[] = [];
+    const unnamedTracks = selected.tracks.filter((track) => !track.title.trim()).length;
+    const unlinkedTracks = selected.tracks.filter((track) => !track.alsFile).length;
+
+    if (!selected.name.trim()) {
+      items.push({ id: "name", target: "name", title: "Name this release", detail: "Use a clear title before you start sharing versions." });
+    }
+    if (!selected.artist.trim()) {
+      items.push({ id: "artist", target: "artist", title: "Add the artist credit", detail: "This will carry into the release preview and exported record." });
+    }
+    if (!selected.releaseDate) {
+      items.push({ id: "date", target: "date", title: "Set a release date", detail: "It will automatically appear in the Studio Planner." });
+    }
+    if (selected.tracks.length === 0) {
+      items.push({ id: "tracks", target: "tracklist", title: "Build the tracklist", detail: "Add the songs that belong in this release." });
+    } else {
+      if (unnamedTracks > 0) {
+        items.push({ id: "titles", target: "tracklist", title: `Name ${unnamedTracks} track${unnamedTracks === 1 ? "" : "s"}`, detail: "A named tracklist makes revisions and delivery easier to follow." });
+      }
+      if (unlinkedTracks > 0) {
+        items.push({ id: "sets", target: "tracklist", title: `Link ${unlinkedTracks} Ableton set${unlinkedTracks === 1 ? "" : "s"}`, detail: "Keep each release track connected to its source project." });
+      }
+    }
+    if (releaseStats?.clippedSampleCount) {
+      items.push({ id: "clipping", target: "delivery", title: "Review clipped samples", detail: `${releaseStats.clippedSampleCount.toLocaleString()} full-scale sample${releaseStats.clippedSampleCount === 1 ? "" : "s"} need attention.` });
+    }
+    if (releaseStats && releaseStats.completedCount > 1 && !releaseStats.formatsMatch) {
+      items.push({ id: "format", target: "delivery", title: "Match delivery formats", detail: "Selected mixes use different sample rates, channel counts, or bit depth." });
+    }
+    return items;
+  }, [releaseStats, selected]);
 
   useEffect(() => {
     let cancelled = false;
@@ -698,6 +756,14 @@ export function ProjectOrganizerScreen({
       cancelled = true;
     };
   }, [repository]);
+
+  // A quick task should follow the release the user is looking at, but never
+  // overwrite a date they have intentionally picked while staying on it.
+  useEffect(() => {
+    setQuickTaskTitle("");
+    setQuickTaskDueDate(selected?.releaseDate || localDateKey(new Date()));
+    setQuickTaskStatus(null);
+  }, [selected?.id]);
 
   useEffect(() => {
     setPreviewOpen(false);
@@ -961,6 +1027,54 @@ export function ProjectOrganizerScreen({
   function handleSetNotes(notes: string) {
     if (!selected) return;
     mutateProject(selected.id, (p) => ({ ...p, notes }));
+  }
+
+  function openChecklistTarget(target: ChecklistTarget) {
+    const field = target === "name"
+      ? releaseNameRef.current
+      : target === "artist"
+        ? artistInputRef.current
+        : target === "date"
+          ? releaseDateInputRef.current
+          : null;
+    const section = target === "tracklist"
+      ? tracklistRef.current
+      : target === "delivery"
+        ? deliveryRef.current
+        : null;
+
+    if (field) {
+      field.scrollIntoView({ behavior: "smooth", block: "center" });
+      window.setTimeout(() => field.focus(), 250);
+      return;
+    }
+    section?.scrollIntoView({ behavior: "smooth", block: "center" });
+  }
+
+  async function addQuickPlannerTask(title: string, taskType: PlannerTaskType) {
+    if (!selected || !title.trim() || !quickTaskDueDate) return;
+    setQuickTaskSaving(true);
+    setQuickTaskStatus(null);
+    try {
+      await createPlannerTask({
+        id: crypto.randomUUID(),
+        title: title.trim(),
+        dueDate: quickTaskDueDate,
+        taskType,
+        notes: `Added from Organizer${selected.name.trim() ? ` · ${selected.name.trim()}` : ""}`,
+      });
+      setQuickTaskTitle("");
+      setQuickTaskStatus("Added to Studio Planner.");
+    } catch (taskError) {
+      setQuickTaskStatus(`Couldn't add task: ${String(taskError)}`);
+    } finally {
+      setQuickTaskSaving(false);
+    }
+  }
+
+  function addTrackMixTask(track: OrganizerTrack, index: number) {
+    const trackName = track.title.trim() || `Track ${index + 1}`;
+    void addQuickPlannerTask(`Mix ${trackName}`, "mix");
   }
 
   function handleCoverPicked(event: React.ChangeEvent<HTMLInputElement>) {
@@ -1669,6 +1783,7 @@ export function ProjectOrganizerScreen({
         <section className="organizer__detail" aria-label="Project">
           <div className="organizer__detail-bar">
             <input
+              ref={releaseNameRef}
               className="organizer__name"
               value={selected.name}
               placeholder="Untitled project"
@@ -1727,6 +1842,7 @@ export function ProjectOrganizerScreen({
                 <label className="organizer__project-field">
                   <span className="organizer__field-label">Artist</span>
                   <input
+                    ref={artistInputRef}
                     className="organizer__project-input"
                     value={selected.artist}
                     placeholder="Artist or alias"
@@ -1737,6 +1853,7 @@ export function ProjectOrganizerScreen({
                 <label className="organizer__project-field organizer__project-field--date">
                   <span className="organizer__field-label">Release date</span>
                   <input
+                    ref={releaseDateInputRef}
                     className="organizer__project-input"
                     type="date"
                     value={selected.releaseDate}
@@ -1769,8 +1886,98 @@ export function ProjectOrganizerScreen({
             </div>
           </div>
 
+          <section className={`organizer__finish-line ${releaseChecklist.length === 0 ? "is-clear" : ""}`} aria-label="What is left to do">
+            <div className="organizer__finish-line-head">
+              <div>
+                <span className="organizer__field-label">What&apos;s left</span>
+                <strong>{releaseChecklist.length === 0 ? "This release is ready to review." : `${releaseChecklist.length} thing${releaseChecklist.length === 1 ? "" : "s"} to finish`}</strong>
+              </div>
+              <span className="organizer__finish-line-status">{releaseChecklist.length === 0 ? "Ready" : "In progress"}</span>
+            </div>
+            {releaseChecklist.length === 0 ? (
+              <p className="organizer__finish-line-empty">All core release details, source sets, and delivery checks are in place. Use Preview release when you&apos;re ready to share it.</p>
+            ) : (
+              <ol className="organizer__finish-line-list">
+                {releaseChecklist.map((item) => (
+                  <li key={item.id}>
+                    <button type="button" onClick={() => openChecklistTarget(item.target)}>
+                      <span className="organizer__finish-line-mark" aria-hidden="true" />
+                      <span>
+                        <strong>{item.title}</strong>
+                        <small>{item.detail}</small>
+                      </span>
+                      <span className="organizer__finish-line-go" aria-hidden="true">Go</span>
+                    </button>
+                  </li>
+                ))}
+              </ol>
+            )}
+          </section>
+
+          <section className="organizer__quick-plan" aria-labelledby="quick-plan-title">
+            <div className="organizer__quick-plan-head">
+              <div>
+                <span className="organizer__field-label">Quick task</span>
+                <strong id="quick-plan-title">Plan only what you decide needs attention</strong>
+              </div>
+              <span>Studio Planner</span>
+            </div>
+            <p>Recall keeps release details factual. It will never assume a mix or master is needed—you can add those tasks when they are part of your plan.</p>
+            <div className="organizer__quick-plan-actions" aria-label="Quick task actions">
+              <button
+                type="button"
+                disabled={quickTaskSaving}
+                onClick={() => void addQuickPlannerTask(`Master ${selected.name.trim() || "this release"}`, "master")}
+              >
+                Add mastering task
+              </button>
+              {selected.tracks.slice(0, 3).map((track, index) => (
+                <button key={track.id} type="button" disabled={quickTaskSaving} onClick={() => addTrackMixTask(track, index)}>
+                  Add mix task · {track.title.trim() || `Track ${index + 1}`}
+                </button>
+              ))}
+            </div>
+            <form
+              className="organizer__quick-task-form"
+              onSubmit={(event) => {
+                event.preventDefault();
+                void addQuickPlannerTask(quickTaskTitle, quickTaskType);
+              }}
+            >
+              <input
+                value={quickTaskTitle}
+                onChange={(event) => setQuickTaskTitle(event.target.value)}
+                placeholder="Add your own task"
+                aria-label="Custom task title"
+                maxLength={160}
+                required
+              />
+              <select
+                value={quickTaskType}
+                onChange={(event) => setQuickTaskType(event.target.value as QuickTaskType)}
+                aria-label="Custom task work type"
+              >
+                <option value="artist">Artist work</option>
+                <option value="mix">Mixing</option>
+                <option value="master">Mastering</option>
+                <option value="admin">Studio admin</option>
+              </select>
+              <input
+                type="date"
+                value={quickTaskDueDate}
+                onChange={(event) => setQuickTaskDueDate(event.target.value)}
+                aria-label="Custom task date"
+                required
+              />
+              <button type="submit" className="px-btn px-btn--primary" disabled={quickTaskSaving || !quickTaskTitle.trim()}>
+                {quickTaskSaving ? "Adding…" : "Add to planner"}
+              </button>
+            </form>
+            {quickTaskStatus ? <p className="organizer__quick-task-status" role="status">{quickTaskStatus}</p> : null}
+          </section>
+
           {releaseStats && releaseStats.completedCount > 0 && (
-            <section className="organizer__mastering-overview" aria-label="Release mastering consistency">
+            <section ref={deliveryRef} className="organizer__mastering-overview" aria-label="Release mastering consistency">
               <div>
                 <span className="organizer__field-label">Release consistency</span>
                 <strong>{releaseStats.completedCount} selected mix{releaseStats.completedCount === 1 ? "" : "es"}</strong>
@@ -1810,7 +2017,7 @@ export function ProjectOrganizerScreen({
             </p>
           )}
 
-          <div className="organizer__tracklist">
+          <div ref={tracklistRef} className="organizer__tracklist">
             {selected.tracks.map((track, index) => {
               const expanded = expandedTrackIds.has(track.id);
               const label = track.title.trim() || `Track ${index + 1}`;

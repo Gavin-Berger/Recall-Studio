@@ -20,8 +20,11 @@ import {
   type NoteEdit,
   type ParameterChange,
   type ProjectSchema,
+  type SavedProject,
   type SavedSessionMetadata,
 } from "../../types";
+import { abletonSetName, alsSetName } from "../../features/sessionFormat";
+import { buildSittings, sittingWork, storyLedger } from "../../features/projects/songStory";
 import {
   activeDurationMs,
   ActivitySpark,
@@ -61,15 +64,21 @@ import {
   type ExportFormat,
   type LiveRecallEvent,
   type SessionBlock,
+  type ShareProjectStory,
+  type ShareTimelineSource,
   type LoadStatus,
 } from "./timeline";
 
 export function SchemaTimeline({
   sessionId,
   session,
+  project,
+  producerName,
 }: {
   sessionId: string | null;
   session: SavedSessionMetadata | null;
+  project: SavedProject | null;
+  producerName: string;
 }) {
   const [schema, setSchema] = useState<ProjectSchema | null>(null);
   const [changes, setChanges] = useState<ParameterChange[]>([]);
@@ -91,6 +100,10 @@ export function SchemaTimeline({
   const [copied, setCopied] = useState(false);
   // Selected export format for copy/save.
   const [exportFormat, setExportFormat] = useState<ExportFormat>("md");
+  // Older takes are fetched only to make an export a project record, not a
+  // single-take dump. The current take keeps using the live state below so its
+  // last moves appear immediately while recording.
+  const [projectHistorySources, setProjectHistorySources] = useState<ShareTimelineSource[] | null>(null);
   const activityLogEndRef = useRef<HTMLDivElement>(null);
 
   const load = useCallback(
@@ -127,6 +140,58 @@ export function SchemaTimeline({
     setSelectedTrackId(null);
     void load(true);
   }, [sessionId, load]);
+
+  const projectCaptureKey = useMemo(
+    () => (project?.captures ?? []).map((capture) => capture.id).sort().join("|"),
+    [project?.captures],
+  );
+
+  useEffect(() => {
+    if (!project) {
+      setProjectHistorySources(null);
+      return;
+    }
+
+    const historicCaptures = project.captures.filter((capture) => capture.id !== sessionId);
+    if (historicCaptures.length === 0) {
+      setProjectHistorySources([]);
+      return;
+    }
+
+    let cancelled = false;
+    setProjectHistorySources(null);
+    void Promise.all(
+      historicCaptures.map(async (capture) => {
+        await materializeSessionSchema(capture.id);
+        const [captureChanges, captureNoteEdits, captureMoments] = await Promise.all([
+          getParameterChanges(capture.id),
+          getNoteEdits(capture.id),
+          listCreativeMoments(capture.id),
+        ]);
+        return {
+          id: capture.id,
+          label: formatTakeTitle(capture, null),
+          startedAtMs: capture.started_at_ms,
+          changes: captureChanges,
+          noteEdits: captureNoteEdits,
+          moments: captureMoments,
+        } satisfies ShareTimelineSource;
+      }),
+    )
+      .then((sources) => {
+        if (!cancelled) setProjectHistorySources(sources);
+      })
+      .catch(() => {
+        // A project record is still useful for the open take if an old capture
+        // cannot be re-read. Don't turn a background export enhancement into a
+        // timeline error state.
+        if (!cancelled) setProjectHistorySources([]);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [project?.id, projectCaptureKey, sessionId]);
 
   useEffect(() => {
     if (!sessionId || session?.ended_at_ms !== null) return;
@@ -632,6 +697,92 @@ export function SchemaTimeline({
   // all, rather than a wall-clock timer that keeps climbing while the set idles.
   const durationLabel = activeMs > 0 ? `${formatDuration(activeMs)} active` : null;
 
+  const timelineSources = useMemo<ShareTimelineSource[]>(() => {
+    const currentSource: ShareTimelineSource = {
+      id: sessionId ?? "current-take",
+      label: takeTitle,
+      startedAtMs: session?.started_at_ms ?? null,
+      changes,
+      noteEdits,
+      moments,
+    };
+    // Until historic takes finish loading, export the current take honestly
+    // rather than holding the button hostage. Once loaded, the selected take
+    // is appended as the live source and the story covers the whole project.
+    return project ? [...(projectHistorySources ?? []), currentSource] : [currentSource];
+  }, [changes, moments, noteEdits, project, projectHistorySources, session?.started_at_ms, sessionId, takeTitle]);
+
+  const exportedProjectStory = useMemo<ShareProjectStory | null>(() => {
+    const activities = timelineSources.flatMap((source) => [
+      ...source.changes.map((change) => ({
+        atMs: change.changed_at_ms,
+        trackName: change.track_name,
+        trackId: change.track_id,
+        deviceName: change.device_name,
+        role: null,
+        trackType: null,
+        kind: "move" as const,
+      })),
+      ...(source.noteEdits ?? []).map((edit) => ({
+        atMs: edit.changed_at_ms,
+        trackName: edit.track_name,
+        trackId: null,
+        deviceName: null,
+        role: null,
+        trackType: null,
+        kind: "noteEdit" as const,
+      })),
+    ]);
+    const sittings = buildSittings(activities);
+    if (sittings.length === 0) return null;
+    const ledger = storyLedger(sittings);
+    const pieces = [
+      `${ledger.sittings} work session${ledger.sittings === 1 ? "" : "s"}`,
+      `${ledger.moves} recorded move${ledger.moves === 1 ? "" : "s"}`,
+      ledger.noteEdits > 0 ? `${ledger.noteEdits} MIDI edit${ledger.noteEdits === 1 ? "" : "s"}` : null,
+      ledger.tracksShaped > 0 ? `${ledger.tracksShaped} track${ledger.tracksShaped === 1 ? "" : "s"} shaped` : null,
+      ledger.activeMs > 0 ? `${formatDuration(ledger.activeMs)} active` : null,
+    ].filter((piece): piece is string => Boolean(piece));
+    return {
+      summary: pieces.join(" · "),
+      chapters: sittings.map((sitting) => ({
+        startMs: sitting.startMs,
+        endMs: sitting.endMs,
+        label: sitting.label,
+        work: sittingWork(sitting),
+        moves: sitting.moveCount,
+        noteEdits: sitting.noteEditCount,
+        activeMs: sitting.activeMs,
+      })),
+    };
+  }, [timelineSources]);
+
+  const exportedProjectRecord = useMemo(() => {
+    const captureTimes = (project?.captures ?? []).map((capture) => capture.started_at_ms);
+    const firstCapturedAtMs = captureTimes.length
+      ? Math.min(...captureTimes)
+      : session?.started_at_ms ?? null;
+    const lastCapturedAtMs = captureTimes.length
+      ? Math.max(...(project?.captures ?? []).map((capture) => capture.last_updated_at_ms))
+      : session?.last_updated_at_ms ?? null;
+    const setName = project?.ableton_name?.trim();
+    return {
+      name: project?.display_name ?? projectContext,
+      setName:
+        setName && setName !== "0"
+          ? setName
+          : alsSetName(session?.als_path) ?? abletonSetName(session),
+      producerName: producerName.trim() || null,
+      captureCount: project?.captures.length ?? 1,
+      firstCapturedAtMs,
+      lastCapturedAtMs,
+    };
+  }, [producerName, project, projectContext, session]);
+
+  const preparingProjectRecord = Boolean(
+    project && projectHistorySources === null && project.captures.some((capture) => capture.id !== sessionId),
+  );
+
   async function handleAddNote() {
     if (!sessionId || !selectedTrack) return;
     const text = noteDraft.trim();
@@ -683,11 +834,14 @@ export function SchemaTimeline({
       story: sessionStory,
       blocks: sessionBlocks,
       sessionStart: bounds.sessionStart,
+      timelineSources,
+      projectRecord: exportedProjectRecord,
+      projectStory: exportedProjectStory,
     });
   }
 
   async function handleCopyShare() {
-    if (exportFormat === "pdf") return;
+    if (exportFormat === "pdf" || preparingProjectRecord) return;
     try {
       await navigator.clipboard.writeText(buildShareDocument(currentShareData(), exportFormat));
       setCopied(true);
@@ -698,6 +852,7 @@ export function SchemaTimeline({
   }
 
   async function handleExportShare() {
+    if (preparingProjectRecord) return;
     if (exportFormat === "pdf") {
       exportPdf(currentShareData());
       return;
@@ -779,24 +934,33 @@ export function SchemaTimeline({
                 type="button"
                 className="tl-btn"
                 onClick={() => void handleCopyShare()}
-                disabled={exportFormat === "pdf"}
+                disabled={exportFormat === "pdf" || preparingProjectRecord}
                 title={
-                  exportFormat === "pdf"
-                    ? "PDF can't be copied — use Save"
-                    : `Copy this take as ${exportFormat.toUpperCase()} to the clipboard`
+                  preparingProjectRecord
+                    ? "Preparing the full project record from earlier takes"
+                    : exportFormat === "pdf"
+                      ? "PDF can't be copied — use Save"
+                      : `Copy this project record as ${exportFormat.toUpperCase()} to the clipboard`
                 }
               >
                 <CopyIcon />
-                {copied ? "Copied!" : "Copy"}
+                {preparingProjectRecord ? "Preparing…" : copied ? "Copied!" : "Copy"}
               </button>
               <button
                 type="button"
                 className="tl-btn"
                 onClick={() => void handleExportShare()}
-                title={exportFormat === "pdf" ? "Open the print dialog to save as PDF" : `Save this take as a .${exportFormat} file`}
+                disabled={preparingProjectRecord}
+                title={
+                  preparingProjectRecord
+                    ? "Preparing the full project record from earlier takes"
+                    : exportFormat === "pdf"
+                      ? "Open the print dialog to save this project record as PDF"
+                      : `Save this project record as a .${exportFormat} file`
+                }
               >
                 <ExportIcon />
-                {exportFormat === "pdf" ? "Save PDF" : "Export"}
+                {preparingProjectRecord ? "Preparing…" : exportFormat === "pdf" ? "Save PDF" : "Export"}
               </button>
             </>
           )}
@@ -856,7 +1020,7 @@ export function SchemaTimeline({
               return spark ? (
                 <ActivitySpark
                   paths={spark}
-                  color="#aab4ff"
+                  color="var(--signal-soft)"
                   gradientId="spark-pulse"
                   className="tl-pulse__spark"
                 />
@@ -1182,7 +1346,7 @@ export function SchemaTimeline({
                   const track = block.trackId
                     ? tracks.find((t) => t.id === block.trackId)
                     : null;
-                  const color = track ? trackColor(track) : "#5e93ff";
+                  const color = track ? trackColor(track) : "var(--signal)";
                   const detail = [
                     block.moveCount === 1 ? "1 move" : `${block.moveCount} moves`,
                     block.devices[0],

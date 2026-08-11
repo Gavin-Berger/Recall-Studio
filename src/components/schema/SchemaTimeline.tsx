@@ -74,11 +74,13 @@ export function SchemaTimeline({
   session,
   project,
   producerName,
+  onOpenProjects,
 }: {
   sessionId: string | null;
   session: SavedSessionMetadata | null;
   project: SavedProject | null;
   producerName: string;
+  onOpenProjects: () => void;
 }) {
   const [schema, setSchema] = useState<ProjectSchema | null>(null);
   const [changes, setChanges] = useState<ParameterChange[]>([]);
@@ -87,6 +89,10 @@ export function SchemaTimeline({
   const [status, setStatus] = useState<LoadStatus>("idle");
   const [error, setError] = useState<string | null>(null);
   const [selectedTrackId, setSelectedTrackId] = useState<string | null>(null);
+  // Large Live sets routinely have dozens of quiet tracks. Start with the
+  // musical story â€” the tracks that hold recorded work â€” while keeping the
+  // full arrangement one click away.
+  const [showQuietTracks, setShowQuietTracks] = useState(false);
   const [noteDraft, setNoteDraft] = useState("");
   const [noteStar, setNoteStar] = useState(false);
   // Rolling tail of raw events, newest first — a "is capture actually arriving,
@@ -138,6 +144,7 @@ export function SchemaTimeline({
     setNoteEdits([]);
     setMoments([]);
     setSelectedTrackId(null);
+    setShowQuietTracks(false);
     void load(true);
   }, [sessionId, load]);
 
@@ -392,6 +399,16 @@ export function SchemaTimeline({
       .map((track) => ({ track, items: activities.filter((a) => a.trackId === track.id) }));
   }, [tracks, activities]);
 
+  const activeLaneCount = useMemo(
+    () => lanes.filter((lane) => lane.items.length > 0).length,
+    [lanes],
+  );
+  const quietLaneCount = lanes.length - activeLaneCount;
+  const visibleLanes = useMemo(
+    () => (showQuietTracks || activeLaneCount === 0 ? lanes : lanes.filter((lane) => lane.items.length > 0)),
+    [lanes, showQuietTracks, activeLaneCount],
+  );
+
   // Shared y-scale for the per-lane activity graphs: the busiest channel peaks
   // at the top, so taller curve = more changes. Sorted move timestamps per lane
   // feed a cumulative step-line that builds left→right.
@@ -420,9 +437,11 @@ export function SchemaTimeline({
       return;
     }
     if (!selectedTrackId || !tracks.some((track) => track.id === selectedTrackId)) {
-      setSelectedTrackId(tracks[0].id);
+      // When the focused view opens, land on a track with a real story rather
+      // than the first quiet channel in the Live set.
+      setSelectedTrackId(lanes.find((lane) => lane.items.length > 0)?.track.id ?? tracks[0].id);
     }
-  }, [tracks, selectedTrackId]);
+  }, [tracks, lanes, selectedTrackId]);
 
   const selectedTrack = tracks.find((track) => track.id === selectedTrackId) ?? null;
   const trackActivity = useMemo(
@@ -875,7 +894,17 @@ export function SchemaTimeline({
   if (!sessionId) {
     return (
       <div className="tl-empty-screen">
-        <p>Open a take to relive what you did — and keep what worked.</p>
+        <section className="tl-empty-card" aria-labelledby="timeline-empty-title">
+          <span className="tl-empty-card__eyebrow">Recall timeline</span>
+          <h1 id="timeline-empty-title">Your session story starts with a take.</h1>
+          <p>
+            Choose a capture from Project Desk to see the arrangement, creative moves,
+            and notes that shaped it.
+          </p>
+          <button type="button" className="tl-empty-card__action" onClick={onOpenProjects}>
+            Open Project Desk
+          </button>
+        </section>
       </div>
     );
   }
@@ -1000,8 +1029,8 @@ export function SchemaTimeline({
                 </span>
               )}
               <span className="tl-stat">
-                <b>{pulse.tracksTouched}</b>
-                <span>track{pulse.tracksTouched === 1 ? "" : "s"} touched</span>
+                <b>{activeLaneCount}</b>
+                <span>track{activeLaneCount === 1 ? "" : "s"} with activity</span>
               </span>
               {pulse.keeperCount > 0 && (
                 <span className="tl-stat tl-stat--keep">
@@ -1032,6 +1061,26 @@ export function SchemaTimeline({
             </span>
           </div>
 
+          {lanes.length > 0 && (
+            <div className="tl-capture-scope">
+              <span className="tl-capture-scope__label">
+                <span className="tl-capture-scope__dot" aria-hidden="true" />
+                Showing {visibleLanes.length} track{visibleLanes.length === 1 ? "" : "s"} with recorded work
+                {quietLaneCount > 0 && ` · ${quietLaneCount} quiet`}
+              </span>
+              {quietLaneCount > 0 && (
+                <button
+                  type="button"
+                  className="tl-capture-scope__toggle"
+                  onClick={() => setShowQuietTracks((current) => !current)}
+                  aria-pressed={showQuietTracks}
+                >
+                  {showQuietTracks ? "Focus on activity" : `Show all ${lanes.length} tracks`}
+                </button>
+              )}
+            </div>
+          )}
+
           <div className="tl-legend">
             <span><span className="tl-key tl-key--move" /> activity (taller = more changes)</span>
             <span><span className="tl-key tl-key--note" /> note</span>
@@ -1041,9 +1090,10 @@ export function SchemaTimeline({
           <div className="tl-arrange">
             <div className="tl-headers">
               <div className="tl-rspacer" />
-              {lanes.map((lane) => {
+              {visibleLanes.map((lane) => {
                 const color = trackColor(lane.track);
                 const moveCount = (laneGraphs.moveTimesByLane.get(lane.track.id) ?? []).length;
+                const activityCount = lane.items.length;
                 return (
                   <button
                     key={lane.track.id}
@@ -1059,7 +1109,11 @@ export function SchemaTimeline({
                     <span className="tl-hdr__name">
                       {lane.track.type === "master" ? "Main" : lane.track.name ?? "Untitled track"}
                     </span>
-                    {moveCount > 0 && <span className="tl-hdr__count">{moveCount}</span>}
+                    {activityCount > 0 ? (
+                      <span className="tl-hdr__count">{activityCount}</span>
+                    ) : (
+                      <span className="tl-hdr__quiet" aria-hidden="true" />
+                    )}
                   </button>
                 );
               })}
@@ -1073,7 +1127,7 @@ export function SchemaTimeline({
                   </span>
                 ))}
               </div>
-              {lanes.map((lane) => {
+              {visibleLanes.map((lane) => {
                 const moveTimes = laneGraphs.moveTimesByLane.get(lane.track.id) ?? [];
                 const graph = cumulativeMovePaths(moveTimes, bounds, laneGraphs.maxMoves, xEnd);
                 const moveCount = moveTimes.length;

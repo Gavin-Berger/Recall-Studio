@@ -272,8 +272,66 @@
   display: grid;
   place-items: center;
   min-height: 50vh;
+  padding: 28px;
+}
+
+.tl-empty-card {
+  width: min(100%, 540px);
+  padding: 28px;
+  border: 1px solid rgb(var(--signal-rgb) / 0.24);
+  border-radius: 14px;
+  background:
+    linear-gradient(135deg, rgb(var(--signal-rgb) / 0.12), transparent 58%),
+    rgba(15, 18, 29, 0.94);
+  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.18);
+}
+
+.tl-empty-card__eyebrow {
+  display: block;
+  margin-bottom: 9px;
+  color: var(--signal);
+  font-size: 0.7rem;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.tl-empty-card h1 {
+  margin: 0;
+  color: var(--paper-strong);
+  font-family: var(--font-display);
+  font-size: clamp(1.45rem, 3vw, 2rem);
+  line-height: 1.08;
+}
+
+.tl-empty-card p {
+  max-width: 44ch;
+  margin: 12px 0 20px;
   color: var(--muted);
   font-size: 0.9rem;
+  line-height: 1.6;
+}
+
+.tl-empty-card__action {
+  min-height: 36px;
+  padding: 0 14px;
+  border: 1px solid rgb(var(--signal-rgb) / 0.55);
+  border-radius: 7px;
+  background: var(--signal);
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.8rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.tl-empty-card__action:hover {
+  filter: brightness(1.08);
+}
+
+.tl-empty-card__action:focus-visible {
+  outline: 2px solid var(--paper-strong);
+  outline-offset: 3px;
 }
 
 .tl-bar {
@@ -420,6 +478,57 @@
   font-size: 0.7rem;
 }
 
+/* A timeline answers two different questions: where work happened, and where
+   the rest of the set sits. Keep those states explicit so an empty lane reads
+   as intentionally quiet rather than as a broken capture. */
+.tl-capture-scope {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 4px;
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+
+.tl-capture-scope__label {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+
+.tl-capture-scope__dot {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--signal);
+  box-shadow: 0 0 8px rgb(var(--signal-rgb) / 0.55);
+}
+
+.tl-capture-scope__toggle {
+  flex: 0 0 auto;
+  border: 0;
+  border-bottom: 1px solid rgb(var(--signal-rgb) / 0.45);
+  padding: 2px 0;
+  background: transparent;
+  color: var(--signal-soft);
+  font: inherit;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.tl-capture-scope__toggle:hover {
+  color: var(--paper-strong);
+  border-bottom-color: var(--signal-soft);
+}
+
+.tl-capture-scope__toggle:focus-visible {
+  outline: 2px solid var(--signal-soft);
+  outline-offset: 3px;
+}
+
 .tl-legend span {
   display: inline-flex;
   align-items: center;
@@ -449,7 +558,7 @@
 }
 
 .tl-key--note::before {
-  content: "â˜…";
+  content: "\2605";
   color: var(--moment);
 }
 
@@ -790,6 +899,15 @@
   font-family: var(--font-mono);
   font-size: 0.66rem;
   text-align: center;
+}
+
+.tl-hdr__quiet {
+  width: 4px;
+  height: 4px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--faint);
+  opacity: 0.62;
 }
 
 .tl-dock {
@@ -1802,6 +1920,23 @@
 }
 
 @media (max-width: 620px) {
+  .tl-pulse {
+    align-items: flex-start;
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+
+  .tl-pulse__spark {
+    order: 3;
+    flex-basis: 100%;
+  }
+
+  .tl-capture-scope {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 5px;
+  }
+
   .tl-activity-log__head > div {
     align-items: flex-start;
     flex-direction: column;

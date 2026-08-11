@@ -32,10 +32,29 @@ const TCP_LISTEN_ADDR: &str = "127.0.0.1:9001";
 // legal snapshot is never truncated mid-JSON into an unparseable packet.
 const RECV_BUFFER_BYTES: usize = 16_384;
 
-// Ceiling on a single TCP line (one event). 4x the bridge's own MAX_EVENT_BYTES
-// (8192) cap, so a legal event never comes close. BufReader::lines() has no such
-// cap — a client that never sends a newline would grow its buffer without bound.
-const MAX_TCP_LINE_BYTES: usize = 32_768;
+// Ceiling on a single TCP line (one event). Guards the thing BufReader::lines()
+// does not: a client that never sends a newline would grow its buffer without
+// bound (see #4).
+//
+// WHY IT IS THIS LARGE, and the mistake worth not repeating: this was originally
+// 32 KB, sized as "4x the M4L bridge's MAX_EVENT_BYTES (8192)". That 8 KB figure
+// only ever existed because a UDP datagram has a hard size limit — and escaping
+// that limit is the entire reason the control surface moved to TCP (see
+// RECALL_PORT in remote-script/Recall/__init__.py). So the transport was changed
+// to lift a size ceiling and a lower one was quietly reintroduced above it.
+//
+// The cost was invisible and total: `live_set_snapshot` is what the schema
+// projection builds the whole track tree from, and measured payloads are
+// 161-200 KB for a real project against ~9 KB for an empty default set. Every
+// real project's snapshot was silently discarded (#15) — the only ones that ever
+// arrived were from sets small enough to fit, which is why this looked like it
+// worked. "Rebuild timeline" then had nothing to project from and appeared to do
+// nothing at all.
+//
+// 4 MB is ~20x the largest snapshot observed, leaving room for a set far denser
+// than any tested, while still bounding a misbehaving client to a single
+// allocation that cannot grow.
+const MAX_TCP_LINE_BYTES: usize = 4 * 1024 * 1024;
 
 // Bounded queue between the receive loop and the persistence worker. Sized to
 // absorb multi-hundred-event bursts while the worker drains. When full, the
@@ -645,11 +664,14 @@ fn rotate_session_if_project_changed(
 
             if empty_and_unanchored {
                 if let Err(error) = storage.delete_session(previous_session_id) {
-                    eprintln!("AUTO-ROTATE: failed to delete empty startup session -> {}", error);
+                    log::error!(
+                        "AUTO-ROTATE: failed to delete empty startup session -> {}",
+                        error
+                    );
                     metrics.set_last_error(error);
                 }
             } else if let Err(error) = storage.save_session_stopped(&previous_status) {
-                eprintln!("AUTO-ROTATE: failed to persist previous take -> {}", error);
+                log::error!("AUTO-ROTATE: failed to persist previous take -> {}", error);
                 metrics.set_last_error(error);
             }
         }
@@ -661,7 +683,10 @@ fn rotate_session_if_project_changed(
     let status = match activated {
         Ok(status) => status,
         Err(error) => {
-            eprintln!("AUTO-ROTATE: failed to activate take for open file -> {}", error);
+            log::error!(
+                "AUTO-ROTATE: failed to activate take for open file -> {}",
+                error
+            );
             metrics.set_last_error(error);
             return;
         }
@@ -758,7 +783,7 @@ fn rotate_session_if_stale(
                 previous_status.started_at_ms,
                 backdated_end_ms,
             ) {
-                eprintln!("STALE-ROTATE: failed to close the idle take -> {}", error);
+                log::error!("STALE-ROTATE: failed to close the idle take -> {}", error);
                 metrics.set_last_error(error);
             }
         }
@@ -772,7 +797,7 @@ fn rotate_session_if_stale(
     let status = match activated {
         Ok(status) => status,
         Err(error) => {
-            eprintln!("STALE-ROTATE: failed to start a fresh take -> {}", error);
+            log::error!("STALE-ROTATE: failed to start a fresh take -> {}", error);
             metrics.set_last_error(error);
             return;
         }
@@ -914,7 +939,7 @@ fn run_persistence_worker(
                                     event.project_name.as_deref(),
                                     event.project_path.as_deref(),
                                 ) {
-                                    eprintln!("FAILED TO REMEMBER ABLETON PROJECT -> {}", error);
+                                    log::error!("FAILED TO REMEMBER ABLETON PROJECT -> {}", error);
                                     metrics.set_last_error(error);
                                 }
                             }
@@ -922,7 +947,7 @@ fn run_persistence_worker(
                     }
                 }
                 Err(error) => {
-                    eprintln!("FAILED TO PERSIST EVENT BATCH -> {}", error);
+                    log::error!("FAILED TO PERSIST EVENT BATCH -> {}", error);
                     metrics.set_last_error(error);
                 }
             }
@@ -939,7 +964,7 @@ fn run_persistence_worker(
         push_events(&events, &batch);
 
         if let Err(e) = app_handle.emit("recall-events", &batch) {
-            eprintln!("Failed to emit recall-events: {}", e);
+            log::error!("Failed to emit recall-events: {}", e);
             metrics.set_last_error(format!("emit failed: {}", e));
         } else {
             for _ in &batch {
@@ -948,7 +973,7 @@ fn run_persistence_worker(
         }
     }
 
-    eprintln!("Recall Studio persistence worker stopped (channel closed)");
+    log::info!("Recall Studio persistence worker stopped (channel closed)");
 }
 
 // Per-device sequence tracking — the only way to see loss upstream of us.
@@ -993,9 +1018,12 @@ impl SequenceTracker {
             if sequence > last + 1 {
                 let missing = sequence - last - 1;
                 metrics.add_sequence_gaps(missing);
-                eprintln!(
+                log::warn!(
                     "Recall Studio: {} event(s) never arrived from bridge {} (sequence {} -> {})",
-                    missing, device_id, last, sequence
+                    missing,
+                    device_id,
+                    last,
+                    sequence
                 );
             }
             // sequence <= last means the device reloaded (its counter restarts at
@@ -1038,7 +1066,7 @@ fn bind_listener_socket(metrics: &Arc<BridgeMetrics>) -> Result<UdpSocket, Strin
              Burst capture (project-load snapshots) may lose events.",
             RECV_SOCKET_BUFFER_BYTES, error
         );
-        eprintln!("Recall Studio: {}", message);
+        log::warn!("Recall Studio: {}", message);
         metrics.set_last_error(message);
     }
 
@@ -1061,7 +1089,7 @@ fn bind_listener_socket(metrics: &Arc<BridgeMetrics>) -> Result<UdpSocket, Strin
                     "OS clamped the receive buffer to {} bytes (requested {}). Burst headroom is lower than intended.",
                     applied, RECV_SOCKET_BUFFER_BYTES
                 );
-                eprintln!("Recall Studio: {}", message);
+                log::warn!("Recall Studio: {}", message);
                 metrics.set_last_error(message);
             }
         }
@@ -1182,7 +1210,7 @@ pub fn start_udp_listener(
                 // leaves the app looking perfectly healthy while recording
                 // nothing — the producer would finish a session and find it
                 // empty, with no error anywhere. Report it and stop.
-                eprintln!("Recall Studio UDP listener FAILED TO START -> {}", error);
+                log::error!("Recall Studio UDP listener FAILED TO START -> {}", error);
                 metrics.set_last_error(error);
                 return;
             }
@@ -1228,7 +1256,7 @@ pub fn start_udp_listener(
                         metrics.set_last_error(
                             "panicked while processing a packet — skipped it and kept capturing",
                         );
-                        eprintln!(
+                        log::error!(
                             "Recall Studio: PANIC while processing a UDP packet. Skipped it; \
                              capture continues. This should never happen — please report it."
                         );
@@ -1258,15 +1286,16 @@ pub fn start_udp_listener(
                         metrics.incr_oversized();
                         metrics.set_last_error(format!(
                             "a packet exceeded the {}-byte receive buffer and was rejected whole by the OS ({}). The bridge should have capped it at 8192 bytes.",
-                            RECV_BUFFER_BYTES, error
+                            RECV_BUFFER_BYTES,
+                            error
                         ));
-                        eprintln!(
+                        log::warn!(
                             "Recall Studio: OVERSIZED packet rejected (> {} bytes) -> {}",
                             RECV_BUFFER_BYTES, error
                         );
                     } else {
                         metrics.set_last_error(format!("recv: {}", error));
-                        eprintln!("UDP listener error: {}", error);
+                        log::warn!("UDP listener error: {}", error);
                     }
                 }
             }
@@ -1361,9 +1390,10 @@ fn run_tcp_listener(
             // Same reasoning as the UDP bind failure: never panic. A dead
             // capture thread with a healthy-looking window is this app's worst
             // failure — the producer records nothing and finds out hours later.
-            eprintln!(
+            log::error!(
                 "Recall Studio TCP listener FAILED TO START on {} -> {}",
-                TCP_LISTEN_ADDR, error
+                TCP_LISTEN_ADDR,
+                error
             );
             metrics.set_last_error(format!("TCP listener failed to bind: {}", error));
             return;
@@ -1467,7 +1497,7 @@ fn process_packet(
         Err(error) => {
             metrics.incr_malformed();
             metrics.set_last_error(error.clone());
-            eprintln!("FAILED TO EXTRACT JSON FROM UDP MESSAGE -> {}", error);
+            log::warn!("FAILED TO EXTRACT JSON FROM UDP MESSAGE -> {}", error);
             return;
         }
     };
@@ -1477,7 +1507,7 @@ fn process_packet(
         Err(error) => {
             metrics.incr_malformed();
             metrics.set_last_error(format!("json parse: {}", error));
-            eprintln!("FAILED TO PARSE UDP MESSAGE AS JSON -> {}", error);
+            log::warn!("FAILED TO PARSE UDP MESSAGE AS JSON -> {}", error);
             return;
         }
     };
@@ -1494,7 +1524,7 @@ fn process_packet(
         Err(error) => {
             metrics.incr_malformed();
             metrics.set_last_error(error.clone());
-            eprintln!("FAILED TO NORMALIZE UDP JSON -> {}", error);
+            log::warn!("FAILED TO NORMALIZE UDP JSON -> {}", error);
             return;
         }
     };
@@ -1540,7 +1570,10 @@ fn process_packet(
         }
         Err(error) => {
             metrics.incr_malformed();
-            eprintln!("FAILED TO PARSE NORMALIZED JSON AS RecallEvent -> {}", error);
+            log::warn!(
+                "FAILED TO PARSE NORMALIZED JSON AS RecallEvent -> {}",
+                error
+            );
         }
     }
 }
@@ -1877,6 +1910,40 @@ mod tests {
         match read_bounded_line(&mut reader, 100).unwrap() {
             BoundedLine::Line(bytes) => assert_eq!(bytes.len(), 100),
             _ => panic!("a line exactly at the ceiling must not be flagged oversized"),
+        }
+    }
+
+    #[test]
+    fn a_realistic_whole_set_snapshot_fits_under_the_line_ceiling() {
+        // REGRESSION GUARD for #15. MAX_TCP_LINE_BYTES was 32 KB, sized against
+        // the old M4L bridge's 8 KB UDP-datagram limit — but measured
+        // live_set_snapshot payloads are 161-200 KB for a real project, so every
+        // one of them was silently discarded as Oversized. Only sets small
+        // enough to fit (an empty default set, ~9 KB) ever arrived, which is
+        // exactly why the ceiling looked fine.
+        //
+        // live_set_snapshot is what the schema projection builds the whole track
+        // tree from, so losing it means "Rebuild timeline" has nothing to work
+        // with and appears to do nothing at all.
+        //
+        // 256 KB is above the largest payload ever observed. If this test fails,
+        // the ceiling has drifted back beneath the event it exists to carry.
+        const REALISTIC_SNAPSHOT_BYTES: usize = 256 * 1024;
+        assert!(
+            MAX_TCP_LINE_BYTES > REALISTIC_SNAPSHOT_BYTES,
+            "MAX_TCP_LINE_BYTES ({}) must exceed a realistic whole-set snapshot ({} bytes)",
+            MAX_TCP_LINE_BYTES,
+            REALISTIC_SNAPSHOT_BYTES
+        );
+
+        // And prove the reader actually carries one that size, rather than only
+        // asserting on the constant.
+        let mut input = vec![b'x'; REALISTIC_SNAPSHOT_BYTES];
+        input.push(b'\n');
+        let mut reader = BufReader::new(Cursor::new(input.as_slice()));
+        match read_bounded_line(&mut reader, MAX_TCP_LINE_BYTES).unwrap() {
+            BoundedLine::Line(bytes) => assert_eq!(bytes.len(), REALISTIC_SNAPSHOT_BYTES),
+            _ => panic!("a realistically-sized snapshot must not be dropped"),
         }
     }
 

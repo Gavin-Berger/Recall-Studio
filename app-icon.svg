@@ -1,0 +1,42 @@
+<!-- Source of truth for the app and tray icon. Regenerate every platform size
+     with:  npx tauri icon app-icon.svg
+     Never hand-edit src-tauri/icons/ ; that whole folder is generated output.
+
+     This is the in-app RecallMark (src/components/RecallMark.tsx) made
+     standalone. The component's stroke styling lives in CSS (the
+     .recall-mark__return-line rule in components.css), which an icon file
+     cannot reach, so those values are inlined below. Geometry, stroke width,
+     cap style and colours are copied exactly, so the icon and the mark on
+     screen stay the same object instead of drifting into two similar drawings.
+
+     Colours come from the default :root tokens, not the opt-in mono theme:
+       background  rgba(15,19,33,0.96)      becomes #0F1321
+       border      signal at 56% opacity    becomes #5E93FF at 0.56
+       glyph       the signal-soft token    becomes #AAB4FF
+
+     THE ONE DELIBERATE DIFFERENCE FROM THE ON-SCREEN MARK: the glyph is scaled
+     up about the box centre. In the UI the mark sits in a 48px chip that
+     already provides padding, so the glyph only needs to fill about 57% of its
+     box. An app icon IS the box, and at 32px in the system tray that much dead
+     margin left the shape thin and washed out. Scaling to roughly 77% thickens
+     the stroke at small sizes without redrawing anything.
+
+     The transform maps the glyph's own centre (29, 27.5) onto the box centre
+     (28, 28), then scales about that point, so the mark stays optically
+     centred rather than sitting low and right the way the raw path does.
+
+     Note for future edits: XML forbids a double hyphen inside a comment, so
+     CSS custom properties cannot be named here in the usual way. Tauri's SVG
+     parser rejects the whole file if you try. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 56 56" width="1024" height="1024">
+  <rect
+    x="0.6" y="0.6" width="54.8" height="54.8" rx="9.33"
+    fill="#0F1321"
+    stroke="#5E93FF" stroke-opacity="0.56" stroke-width="1.17" />
+  <g
+    transform="translate(28 28) scale(1.35) translate(-29 -27.5)"
+    fill="none" stroke="#AAB4FF" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M13 37h11" />
+    <path d="M30 37h5c6.2 0 10-3.8 10-9.5S41.2 18 35 18H19" />
+  </g>
+</svg>

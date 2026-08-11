@@ -36,3 +36,9 @@ logs/
 # Python bytecode
 __pycache__/
 *.pyc
+
+# `tauri icon` emits Android and iOS sets on every run. Recall is a Windows
+# desktop app, so they are ~40 files of dead weight that would otherwise get
+# committed by accident after any icon regeneration.
+src-tauri/icons/android/
+src-tauri/icons/ios/

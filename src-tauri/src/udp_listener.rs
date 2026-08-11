@@ -680,7 +680,8 @@ fn rotate_session_if_project_changed(
     {
         {
             let mut session = session.lock().expect("Session state lock failed");
-            session.restore_active(session_id.clone(), started_at_ms);
+            // Brand-new take: its only known activity so far is being created.
+            session.restore_active(session_id.clone(), started_at_ms, started_at_ms);
         }
         {
             let mut connection = state.lock().expect("Connection state lock failed");
@@ -691,6 +692,110 @@ fn rotate_session_if_project_changed(
             session_id, open_als
         );
     }
+}
+
+/// Close the active take if it has gone quiet for `STALE_SESSION_IDLE_MS`, and
+/// start a fresh one in its place.
+///
+/// The complement to `resume_or_create_active_session` in storage.rs, which
+/// only ever runs once, at app start. This runs on every incoming packet —
+/// heartbeats included, which matters: a heartbeat arrives roughly every 2s
+/// while Ableton is connected but proves only that Live is open, never that the
+/// producer did anything, so checking on every heartbeat is what lets an idle
+/// take be noticed promptly even when no real event happens to arrive first.
+///
+/// Why this needs to exist at all, when it didn't before: closing the app used
+/// to plausibly end the process. It now hides to the system tray and keeps
+/// running, so "the app is still open" stopped implying "this is still the
+/// same sitting at the desk" — a take could otherwise run for days.
+///
+/// Independent of `rotate_session_if_project_changed` above: this reads only
+/// elapsed time, never which project is open, and the two triggers compose
+/// without conflict — this one runs first (see the call site), so a take that
+/// is BOTH idle and pointed at a stale project always gets the idle check's
+/// verdict, closing it before the project-change check has anything left to
+/// compare against.
+fn rotate_session_if_stale(
+    session: &Arc<Mutex<SessionState>>,
+    storage: &Arc<Mutex<StorageState>>,
+    events: &Arc<Mutex<Vec<RecallEvent>>>,
+    metrics: &Arc<BridgeMetrics>,
+) {
+    let now = now_ms();
+
+    // stop_at needs the take's OWN last activity, not `now` — read it while
+    // still holding the same lock is_stale used, so the two can't observe two
+    // different values of a field another thread changed in between.
+    let backdated_end_ms = {
+        let session = session.lock().expect("Session state lock failed");
+        if !session.is_stale(now) {
+            return;
+        }
+        session.last_activity_ms()
+    };
+
+    // is_stale() being true guarantees last_event_at_ms was Some when checked
+    // a moment ago, but never trust that silently across a lock release —
+    // state this invariant explicitly rather than unwrap.
+    let Some(backdated_end_ms) = backdated_end_ms else {
+        return;
+    };
+
+    let previous_status = {
+        let mut session = session.lock().expect("Session state lock failed");
+        session.stop_at(backdated_end_ms)
+    };
+
+    let activated = {
+        let storage = storage.lock().expect("Storage state lock failed");
+        if let Some(previous_session_id) = previous_status.session_id.as_deref() {
+            // Shared with the boot-time staleness check in
+            // resume_or_create_active_session, so the two detectors can't
+            // quietly diverge on whether an abandoned take gets deleted
+            // (empty, unanchored) or stopped-and-kept.
+            if let Err(error) = storage.close_abandoned_session(
+                previous_session_id,
+                previous_status.started_at_ms,
+                backdated_end_ms,
+            ) {
+                eprintln!("STALE-ROTATE: failed to close the idle take -> {}", error);
+                metrics.set_last_error(error);
+            }
+        }
+        // start_fresh_session, not activate_take_for_open_file(None, None): the
+        // latter's "no open file" branch resumes the most-recently-stopped
+        // unfiled take if one exists, which would immediately reopen the take
+        // this function just closed. See start_fresh_session's own comment.
+        storage.start_fresh_session()
+    };
+
+    let status = match activated {
+        Ok(status) => status,
+        Err(error) => {
+            eprintln!("STALE-ROTATE: failed to start a fresh take -> {}", error);
+            metrics.set_last_error(error);
+            return;
+        }
+    };
+
+    // Fresh live buffer so the abandoned take's events don't bleed into this one.
+    {
+        let mut recent_events = events.lock().expect("Recent events lock failed");
+        recent_events.clear();
+    }
+
+    if let (Some(session_id), Some(started_at_ms)) =
+        (status.session_id.clone(), status.started_at_ms)
+    {
+        let mut session = session.lock().expect("Session state lock failed");
+        session.restore_active(session_id, started_at_ms, started_at_ms);
+    }
+
+    println!(
+        "STALE-ROTATE: closed a take idle for {} ms and started a fresh one -> {:?}",
+        now.saturating_sub(backdated_end_ms),
+        status.session_id
+    );
 }
 
 // Append a whole batch under ONE lock.
@@ -1401,6 +1506,12 @@ fn process_packet(
     // version. The bridge stamps project_path on every heartbeat, so do this
     // before heartbeats are dropped below.
     update_open_file(&normalized_json, state);
+    // Idle check runs first: a take that is both stale AND pointed at a
+    // different project should be closed for being abandoned, not silently
+    // absorbed into a project-change rotation that happens to fire on the
+    // same packet. Runs on heartbeats too — see rotate_session_if_stale's own
+    // comment for why that is what makes it actually catch an idle take.
+    rotate_session_if_stale(session, storage, events, metrics);
     // Switch takes if Ableton has moved to a different project. Runs BEFORE
     // assignment so this event lands on the take for the file that is open now.
     rotate_session_if_project_changed(state, session, storage, events, metrics);
@@ -1416,6 +1527,14 @@ fn process_packet(
             // counted inside, so don't spend queue slots and a batch insert on an
             // event that cannot land. storage.rs keeps its own guard as a backstop.
             if assign_session_if_active(&mut event, session, metrics) {
+                // Real (non-heartbeat) activity: advance the idle clock so this
+                // take does not itself go stale while the producer is actively
+                // using it. Heartbeats deliberately never reach this line — see
+                // SessionState::note_activity.
+                {
+                    let mut session = session.lock().expect("Session state lock failed");
+                    session.note_activity(event.timestamp_ms);
+                }
                 enqueue_event(sender, event, metrics);
             }
         }

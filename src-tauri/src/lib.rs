@@ -1564,7 +1564,8 @@ fn open_take_for_open_file(
         (status.session_id.clone(), status.started_at_ms)
     {
         let mut session = state.session.lock().expect("Session state lock failed");
-        session.restore_active(session_id, started_at_ms);
+        // Brand-new take: its only known activity so far is being created.
+        session.restore_active(session_id, started_at_ms, started_at_ms);
     }
 
     println!(
@@ -1900,25 +1901,39 @@ pub fn run() {
                 }
             }
 
-            let active_status = {
+            let (active_status, last_activity_ms) = {
                 let storage = storage_state_for_setup
                     .lock()
                     .expect("Storage state lock failed");
 
-                storage
+                let active_status = storage
                     .resume_or_create_active_session()
-                    .expect("Failed to resume or create active Recall Studio session")
+                    .expect("Failed to resume or create active Recall Studio session");
+
+                // Seed SessionState's idle clock from the take's real activity
+                // (or its own start time, for a brand-new one) rather than
+                // leaving it unset — see SessionState::restore_active for why
+                // an inaccurate seed would let a genuinely stale take dodge
+                // rotate_session_if_stale on this run.
+                let last_activity_ms = active_status
+                    .session_id
+                    .as_deref()
+                    .and_then(|id| storage.session_last_activity_ms(id).ok().flatten())
+                    .or(active_status.started_at_ms);
+
+                (active_status, last_activity_ms)
             };
 
-            if let (Some(session_id), Some(started_at_ms)) = (
+            if let (Some(session_id), Some(started_at_ms), Some(last_activity_ms)) = (
                 active_status.session_id.clone(),
                 active_status.started_at_ms,
+                last_activity_ms,
             ) {
                 let mut session = session_state_for_setup
                     .lock()
                     .expect("Session state lock failed");
 
-                session.restore_active(session_id, started_at_ms);
+                session.restore_active(session_id, started_at_ms, last_activity_ms);
             }
 
             println!(

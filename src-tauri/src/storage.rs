@@ -7,7 +7,7 @@ use crate::schema_projection::{
 };
 use crate::session::{
     ProjectFolderMetadata, SavedProject, SavedSession, SavedSessionEvent, SavedSessionMetadata,
-    SessionStatus,
+    SessionStatus, STALE_SESSION_IDLE_MS,
 };
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde::Serialize;
@@ -372,6 +372,24 @@ impl StorageState {
         Ok(())
     }
 
+    /// Resume the unfinished take from last time, or start a new one — but
+    /// only resume a take that isn't ABANDONED.
+    ///
+    /// Before this, nothing ever closed a take except a deliberate user action.
+    /// Close Recall mid-session on Friday, reopen it Monday: this query found
+    /// Friday's still-open row and handed it straight back, with no check on
+    /// how long it had been sitting untouched. Monday's work landed in
+    /// Friday's take (issue #13) — the same shape of bug as #11, but from a
+    /// missing time boundary rather than a missing project boundary.
+    ///
+    /// A candidate row past `STALE_SESSION_IDLE_MS` since its last real
+    /// activity is closed here, backdated to that last activity (not to now —
+    /// see `SessionState::stop_at`), and a fresh take is started instead. This
+    /// is the half of "sessions divide correctly" that needs nothing from
+    /// Ableton: it only requires the app to have been closed a while, which is
+    /// independently true on every restart. The other half — a take going idle
+    /// while the app stays open in the tray — is `rotate_session_if_stale` in
+    /// udp_listener.rs, using the same constant.
     pub fn resume_or_create_active_session(&self) -> Result<SessionStatus, String> {
         let connection = self.open_connection()?;
 
@@ -398,9 +416,70 @@ impl StorageState {
             .map_err(|error| format!("Failed to query active session: {}", error))?;
 
         if let Some(status) = active_session {
-            return Ok(status);
+            let session_id = status
+                .session_id
+                .clone()
+                .expect("the query above only ever returns rows with a non-null id");
+            let started_at_ms = status.started_at_ms.unwrap_or_else(now_ms);
+
+            let last_activity_ms = self
+                .session_last_activity_ms(&session_id)?
+                .unwrap_or(started_at_ms);
+
+            if now_ms().saturating_sub(last_activity_ms) < STALE_SESSION_IDLE_MS {
+                return Ok(status); // genuinely still the current take
+            }
+
+            self.close_abandoned_session(&session_id, status.started_at_ms, last_activity_ms)?;
+            // Fall through to the fresh-session path below — same as if there
+            // had been nothing to resume at all.
         }
 
+        self.start_fresh_session()
+    }
+
+    /// Close a take that has been judged abandoned (stale-on-resume at boot,
+    /// or gone idle while the app stayed open — the two callers of this
+    /// method), backdated to `ended_at_ms` rather than to whenever the check
+    /// happened to run.
+    ///
+    /// If it was never anchored to anything and never captured a single
+    /// event, delete it instead of leaving a stopped, empty row behind — the
+    /// same shape #7 fixed for the startup placeholder. Shared so the two
+    /// staleness detectors (storage.rs at boot, udp_listener.rs while running)
+    /// can't quietly diverge on which outcome a given abandoned session gets.
+    pub fn close_abandoned_session(
+        &self,
+        session_id: &str,
+        started_at_ms: Option<u64>,
+        ended_at_ms: u64,
+    ) -> Result<(), String> {
+        if self
+            .is_session_empty_and_unanchored(session_id)
+            .unwrap_or(false)
+        {
+            return self.delete_session(session_id);
+        }
+
+        self.save_session_stopped(&SessionStatus {
+            active: false,
+            session_id: Some(session_id.to_string()),
+            started_at_ms,
+            ended_at_ms: Some(ended_at_ms),
+        })
+    }
+
+    /// Unconditionally start a brand-new, unfiled take. No lookup, no resume —
+    /// just an INSERT.
+    ///
+    /// This looks like it could be `activate_take_for_open_file(None, None)`,
+    /// and that is a real trap worth naming: that function's "no open file"
+    /// branch (case 3) falls back to resuming the *most recently stopped*
+    /// unfiled take if one exists — which, called right after this module
+    /// closes a stale session, would immediately reopen the very session it
+    /// just closed. `save_session_started`'s `INSERT OR IGNORE` has no such
+    /// resume path, which is exactly the guarantee both callers below need.
+    pub fn start_fresh_session(&self) -> Result<SessionStatus, String> {
         let started_at_ms = now_ms();
         let status = SessionStatus {
             active: true,
@@ -412,6 +491,44 @@ impl StorageState {
         self.save_session_started(&status)?;
 
         Ok(status)
+    }
+
+    /// The most recent activity timestamp for a session: its latest captured
+    /// event, or its own `started_at_ms` if it has none yet. `None` only if no
+    /// session with this id exists at all.
+    ///
+    /// Shared basis for staleness detection at both ends of a take's life —
+    /// see `STALE_SESSION_IDLE_MS` in session.rs for why one definition is used
+    /// on both the boot-time check here and the while-running check in
+    /// `rotate_session_if_stale`.
+    pub fn session_last_activity_ms(&self, session_id: &str) -> Result<Option<u64>, String> {
+        let connection = self.open_connection()?;
+
+        let started_at_ms: Option<i64> = connection
+            .query_row(
+                "SELECT started_at_ms FROM sessions WHERE id = ?1",
+                params![session_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| format!("Failed to read session start time: {}", error))?;
+
+        let Some(started_at_ms) = started_at_ms else {
+            return Ok(None);
+        };
+
+        // MAX() over zero matching rows still returns exactly one row, with a
+        // NULL value — not an empty result set — so this is a plain query_row,
+        // not .optional().
+        let last_event_ms: Option<i64> = connection
+            .query_row(
+                "SELECT MAX(timestamp_ms) FROM events WHERE session_id = ?1",
+                params![session_id],
+                |row| row.get(0),
+            )
+            .map_err(|error| format!("Failed to read session last event time: {}", error))?;
+
+        Ok(Some(last_event_ms.unwrap_or(started_at_ms) as u64))
     }
 
     pub fn list_saved_sessions(&self) -> Result<Vec<SavedSessionMetadata>, String> {
@@ -3687,6 +3804,7 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static COUNTER: AtomicU64 = AtomicU64::new(0);
+    const HOUR_MS: u64 = 60 * 60 * 1000;
 
     /// An initialized StorageState backed by a fresh temp database file.
     fn temp_storage() -> (StorageState, PathBuf) {
@@ -4245,6 +4363,165 @@ mod tests {
         drop(connection);
 
         assert!(!storage.is_session_empty_and_unanchored(&session_id).unwrap());
+
+        cleanup(&path);
+    }
+
+    // ── issue #13: a stale take must not simply be handed back on resume ──
+    //
+    // resume_or_create_active_session previously returned WHATEVER row had
+    // ended_at_ms IS NULL, with no check on how long it had sat untouched.
+    // Close Recall mid-session and reopen it days later, and the new day's
+    // work landed in the old take. These tests backdate a session's
+    // started_at_ms directly via SQL — the only way to simulate "this took
+    // was created hours ago" against a fixture that always creates sessions
+    // at `now`.
+
+    fn backdate_session_start(path: &Path, session_id: &str, started_at_ms: u64) {
+        let connection = Connection::open(path).unwrap();
+        connection
+            .execute(
+                "UPDATE sessions SET started_at_ms = ?1 WHERE id = ?2",
+                params![started_at_ms as i64, session_id],
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn session_last_activity_falls_back_to_start_time_with_no_events() {
+        let (storage, path) = temp_storage();
+        let session_id = storage
+            .resume_or_create_active_session()
+            .unwrap()
+            .session_id
+            .unwrap();
+
+        // No events captured yet, so "last activity" can only mean "created".
+        backdate_session_start(&path, &session_id, 5_000);
+        assert_eq!(
+            storage.session_last_activity_ms(&session_id).unwrap(),
+            Some(5_000)
+        );
+
+        cleanup(&path);
+    }
+
+    #[test]
+    fn session_last_activity_reflects_the_newest_captured_event() {
+        let (storage, path) = temp_storage();
+        let session_id = storage
+            .resume_or_create_active_session()
+            .unwrap()
+            .session_id
+            .unwrap();
+        backdate_session_start(&path, &session_id, 1_000);
+
+        let mut early = event(&session_id, "device_added");
+        early.timestamp_ms = 2_000;
+        let mut late = event(&session_id, "parameter_changed");
+        late.timestamp_ms = 9_000;
+        // Inserted out of chronological order on purpose — MAX() must not
+        // depend on insertion order, only on the timestamps themselves.
+        storage.save_events_batch(&[late, early]).unwrap();
+
+        assert_eq!(
+            storage.session_last_activity_ms(&session_id).unwrap(),
+            Some(9_000)
+        );
+
+        cleanup(&path);
+    }
+
+    #[test]
+    fn session_last_activity_is_none_for_an_unknown_session() {
+        let (storage, path) = temp_storage();
+        assert_eq!(
+            storage.session_last_activity_ms("session-does-not-exist").unwrap(),
+            None
+        );
+        cleanup(&path);
+    }
+
+    #[test]
+    fn a_recently_active_session_is_resumed_unchanged() {
+        let (storage, path) = temp_storage();
+        let first = storage.resume_or_create_active_session().unwrap();
+        let session_id = first.session_id.clone().unwrap();
+
+        // Backdate to just inside the idle window — still the current take.
+        let just_inside = now_ms() - (STALE_SESSION_IDLE_MS - 60_000);
+        backdate_session_start(&path, &session_id, just_inside);
+
+        let resumed = storage.resume_or_create_active_session().unwrap();
+        assert_eq!(resumed.session_id, Some(session_id));
+
+        cleanup(&path);
+    }
+
+    #[test]
+    fn a_stale_empty_session_is_deleted_not_resumed() {
+        let (storage, path) = temp_storage();
+        let stale_id = storage
+            .resume_or_create_active_session()
+            .unwrap()
+            .session_id
+            .unwrap();
+        // Well past the idle window, never anchored, never captured an event —
+        // exactly the startup-placeholder shape #7 already deletes elsewhere.
+        backdate_session_start(&path, &stale_id, now_ms() - STALE_SESSION_IDLE_MS - HOUR_MS);
+
+        let resumed = storage.resume_or_create_active_session().unwrap();
+
+        assert_ne!(
+            resumed.session_id.as_deref(),
+            Some(stale_id.as_str()),
+            "must not hand back the stale placeholder"
+        );
+
+        let connection = Connection::open(&path).unwrap();
+        let count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sessions WHERE id = ?1",
+                params![stale_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 0, "the stale empty session should be deleted, not left behind");
+
+        cleanup(&path);
+    }
+
+    #[test]
+    fn a_stale_session_with_real_work_is_closed_backdated_not_deleted() {
+        let (storage, path) = temp_storage();
+        let stale_id = storage
+            .resume_or_create_active_session()
+            .unwrap()
+            .session_id
+            .unwrap();
+        backdate_session_start(&path, &stale_id, now_ms() - STALE_SESSION_IDLE_MS - HOUR_MS);
+
+        let mut real_move = event(&stale_id, "parameter_changed");
+        real_move.timestamp_ms = now_ms() - STALE_SESSION_IDLE_MS - HOUR_MS + 5_000;
+        let last_real_activity_ms = real_move.timestamp_ms;
+        storage.save_events_batch(&[real_move]).unwrap();
+
+        let resumed = storage.resume_or_create_active_session().unwrap();
+        assert_ne!(resumed.session_id.as_deref(), Some(stale_id.as_str()));
+
+        // Closed and KEPT — it captured real work — and backdated to its own
+        // last event, not to whenever this test happened to run. Getting this
+        // wrong (ending it at `now`) is exactly what would make a take
+        // resumed after a weekend report a days-long duration.
+        let connection = Connection::open(&path).unwrap();
+        let ended_at_ms: Option<i64> = connection
+            .query_row(
+                "SELECT ended_at_ms FROM sessions WHERE id = ?1",
+                params![stale_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(ended_at_ms, Some(last_real_activity_ms as i64));
 
         cleanup(&path);
     }

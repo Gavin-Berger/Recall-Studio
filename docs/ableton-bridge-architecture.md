@@ -1,4 +1,4 @@
-# Ableton → Bridge → JSON → Rust → Storage: Architecture & Data Path
+# Ableton → Control Surface → TCP → Rust → Storage: Architecture & Data Path
 
 **Audience:** a senior backend / integration engineer reviewing this pipeline cold.
 **Purpose:** explain *how* Ableton state actually reaches the app, what crosses each
@@ -7,328 +7,418 @@ boundary, the threading model, and — bluntly — where the design is weak.
 This is the mechanism doc. The wire *contract* (field names, event vocabulary) lives in
 [`recall-protocol-v2.md`](./recall-protocol-v2.md) and is not repeated here.
 
+> **History note.** This pipeline previously ran through a Max for Live device that
+> polled Ableton's object model on a timer, diffed against remembered state, and sent
+> UDP to `127.0.0.1:9000`. That bridge (`m4l/`) is retained in the repo for reference but
+> is no longer what ships. Everything below describes the Python control surface that
+> replaced it, which is event-driven rather than polled and pushes over TCP.
+
 ---
 
 ## 0. One-paragraph summary
 
-Recall Studio captures a producer's creative activity in Ableton Live. A Max for Live
-(M4L) device runs a JavaScript bridge that **polls** Ableton's object model on timers,
-**diffs** each reading against the last known value, and emits discrete JSON events over
-**UDP** to a local Rust listener (Tauri desktop app). Rust normalizes, classifies,
-queues, batch-writes to SQLite, and pushes to the React UI. There is **no event-driven
-push from Ableton** and **no delivery guarantee on the wire** — both are deliberate, and
-both are the first things a reviewer should pressure-test.
+Recall captures a producer's creative activity in Ableton Live through
+`remote-script/Recall/`, a **Control Surface** — the same extension mechanism Live uses
+to talk to hardware controllers like Push. It runs inside Live's own embedded Python
+interpreter and registers **listeners** on the objects it cares about: the selected
+track's parameters, its clips, the tempo, the track list. When one of those objects
+changes, Live calls the listener directly. There is no poll loop reading the object model
+on a timer and no diffing against a remembered snapshot to notice a change — the change
+is what triggers the callback.
+
+The script pushes newline-delimited JSON to a local Rust listener over **TCP** at
+`127.0.0.1:9001` (not UDP — see §4 for why). Rust normalizes, classifies, queues,
+batch-writes to SQLite, and pushes to the React UI.
 
 ```
-┌──────────┐  LiveAPI.get/getcount  ┌──────────────┐  outlet→udpsend  ┌──────────────┐
-│ Ableton  │ ─────(poll, pull)────▶ │  bridge JS   │ ───UDP :9000───▶ │ Rust listener│
-│ Live LOM │ ◀─── array-wrapped ─── │ (in Max/M4L) │  fire-and-forget │  (Tauri app) │
-└──────────┘     scalar values      └──────────────┘                  └──────┬───────┘
-                                                                              │
-                                            normalize → classify → bounded queue
-                                                                              │
-                                                              ┌───────────────▼────────┐
-                                                              │ persistence worker     │
-                                                              │ batch txn → SQLite(WAL) │
-                                                              │ + emit "recall-event"  │
-                                                              └───────────────┬────────┘
-                                                                              │
-                                                                     React timeline UI
+┌───────────┐  listener callback  ┌──────────────────┐   TCP     ┌──────────────┐
+│ Ableton   │ ───(event-driven)──▶│ Recall/__init__.py│──:9001──▶│ Rust listener│
+│ Live LOM  │                     │ (control surface) │  queued  │  (Tauri app) │
+└───────────┘                     └──────────────────┘  socket   └──────┬───────┘
+                                                                          │
+                                        normalize → classify → bounded queue
+                                                                          │
+                                                          ┌───────────────▼────────┐
+                                                          │ persistence worker     │
+                                                          │ batch txn → SQLite(WAL) │
+                                                          │ + emit "recall-event"  │
+                                                          └───────────────┬────────┘
+                                                                          │
+                                                                 React timeline UI
 ```
 
 Key source files:
-- Bridge: [`m4l/recall_m4l_bridge.js`](../m4l/recall_m4l_bridge.js)
-- UDP + normalize + queue + worker: [`src-tauri/src/udp_listener.rs`](../src-tauri/src/udp_listener.rs)
+- Control surface: [`remote-script/Recall/__init__.py`](../remote-script/Recall/__init__.py)
+- TCP + normalize + queue + worker: [`src-tauri/src/udp_listener.rs`](../src-tauri/src/udp_listener.rs)
+  (name predates the TCP rewrite — it still binds a legacy UDP socket for the retained
+  M4L path, and spawns the TCP listener alongside it; see §4)
+- Static event vocabulary (priority, fallback title/description):
+  [`src-tauri/src/event_catalog.rs`](../src-tauri/src/event_catalog.rs)
 - Typed event: [`src-tauri/src/protocol.rs`](../src-tauri/src/protocol.rs)
 - SQLite: [`src-tauri/src/storage.rs`](../src-tauri/src/storage.rs)
 
 ---
 
-## 1. The boundary that surprises people: Ableton does not emit events
+## 1. The boundary that used to surprise people no longer applies
 
-Max for Live exposes Ableton's running state through a single host object, **`LiveAPI`**,
-which is a read-on-demand window into the **Live Object Model (LOM)**. The bridge *pulls*;
-Ableton is passive. Nothing in Ableton says "the user selected a track." The bridge finds
-out by reading the selected-track id on its next timer tick and noticing it differs from
-the previous tick.
+The M4L bridge pulled: nothing in Ableton said "the user moved a knob," the bridge found
+out by reading the value on its next timer tick and noticing it differed. The control
+surface is the opposite. Live's `ableton.v2.control_surface` framework calls
+**registered listener methods directly** when the thing they're watching changes —
+`parameter.add_value_listener(...)`, `track.add_devices_listener(...)`,
+`song.add_tempo_listener(...)`, `clip.add_notes_listener(...)`. There is no tick, no
+snapshot-and-diff, and nothing sub-poll-interval can be missed, because there is no poll
+interval.
 
-**Consequences a reviewer must weigh:**
-- **Completeness is bounded by poll cadence.** Anything that happens and reverts between
-  two ticks is never observed.
-- **There is no causality** — the bridge infers "what changed" by diffing, it is not told.
-- **The LOM *does* support property observers** (callbacks on change). This bridge
-  deliberately does **not** use them for the hot paths; see §7 for the trade-off.
+**What replaces the old poll-cadence trade-off:** the callback fires the instant the
+value changes, but the callback carries **no argument and no previous value** — Live
+tells you *that* something changed, not *what* it was before or *what* it settled at.
+The script has to remember the "before" side itself (`_last_values` for parameters,
+`_clip_prints` for note content) and decide when a burst of callbacks has *settled* into
+one reportable move (see §2). That settling logic is the direct descendant of the old
+bridge's debounce — moved from "read on a timer" to "wait for callbacks to go quiet."
 
-### 1.0 Decision: the bridge ships inside an Audio Effect device (not a MIDI effect)
+### 1.0 Scope is one track, not the whole set
 
-The JavaScript bridge is hosted by an `.amxd` Max device. That device was switched
-from a **MIDI effect** to an **Audio Effect** (`plugin~ → plugout~` passthrough).
+`Recall.__init__` calls `_listen_to_selection()`, which attaches to the **selected
+track's** devices and clips, plus set-wide listeners for tempo and the track list
+(`song.add_tempo_listener`, `song.add_tracks_listener`). It does **not** walk every
+track and register a listener on every parameter of every device in the set.
 
-**Why it matters.** The bridge observes the *entire* Live Set through `LiveAPI`
-regardless of which track it sits on — the host device type does not change what it can
-read. What it changes is *where a producer can legally drop the device*:
+This is a hard-learned scope decision, not a shortcut. A prior attempt to widen capture
+by walking every track crashed Live (documented in `_listen_to_selection`'s own
+docstring: *"the equivalent mistake here would be listening to every parameter in the
+set"*). The bound holds even within the selected track: `MAX_PARAMS_PER_DEVICE = 128`
+caps how many parameters one device can register listeners for, because a wavetable
+synth can expose thousands.
 
-- A **MIDI effect** only loads on MIDI/instrument tracks, and only *before* the
-  instrument. On a session that's mostly audio tracks it has nowhere to live.
-- An **Audio Effect** loads on **any** track — audio, instrument (after the
-  instrument), returns, and the master. The producer can drop it anywhere and capture
-  still works.
+**Consequence:** a parameter move on a track that is not currently selected is not
+captured. To capture a track live, select it. Structure (which tracks/devices exist) is
+covered separately by the whole-set snapshot (§3), which is cheap; per-parameter
+listening is what stays scoped to one track.
 
-So the switch is purely about **placement robustness / setup foolproofness**, not about
-capture capability. The audio passes through untouched (`plugin~`→`plugout~`); the device
-is a telemetry host that happens to sit in the audio path, not an audio processor.
+### 1.1 Selection changes re-point every listener
 
-### 1.1 The two read primitives
+`_on_selection_changed` runs on load and on every `selected_track` change. It tears down
+the previous track's parameter, device, and clip listeners (flushing any in-flight
+gesture or note edit first — see §2, "settle before you switch") and re-attaches to the
+newly selected track. `_on_devices_changed` does the same at device-chain granularity:
+if a plugin is added or removed on the selected track, listeners are re-pointed without
+touching the parameter registrations on any *other* track — because there are none.
 
-Everything the bridge captures is built from exactly two LiveAPI calls:
+### 1.2 Values are read directly; there is no array-unwrapping layer
 
-| Call | Wrapper | What it does |
-|---|---|---|
-| `api.get("prop")` | [`get_prop`](../m4l/recall_m4l_bridge.js) (~L412) | Read one property of an LOM node |
-| `api.getcount("child")` | [`get_count`](../m4l/recall_m4l_bridge.js) (~L434) | Count children of a type (tracks, scenes…) |
+The old bridge's biggest low-level hazard was that `LiveAPI.get()` returned everything
+wrapped in an array (`tempo` came back as `[120]`) and needed a normalization layer to
+tame it. The control surface reads LOM objects' properties directly in Python
+(`parameter.value`, `device.name`, `track.devices`) — there is no array-wrapping
+convention to unwrap, because this is the typed Python API, not the JS `LiveAPI` proxy.
 
-A `LiveAPI` handle is created by **path** into the LOM. Paths used here:
-
-| Path | Node |
-|---|---|
-| `live_set` | the song (tempo, `is_playing`, counts) |
-| `live_set view` | UI/view state — e.g. `selected_track` |
-| `live_set tracks N` | the Nth track |
-| `id N` | any node by its persistent numeric id |
-
-`safe_path(path)` (~L408) wraps handle construction so a bad path returns null instead of
-throwing.
-
-### 1.2 The data Ableton hands back is loose and array-wrapped
-
-This is the single most important low-level fact for a reviewer:
-
-> **`LiveAPI.get()` returns an array even for a scalar.** `tempo` comes back as `[120]`.
-> `selected_track` comes back as `["id", 47]`. Booleans arrive as `1`/`0`/`"1"`.
-
-So the bridge's first job is taming it:
-- `get_prop` unwraps single-element arrays (~L424).
-- `value_to_number` / `value_to_bool` coerce mixed types (~L492, ~L502).
-- `normalize_id` digs the numeric id out of `["id", 47]` shapes (~L446).
-
-If you are reviewing for correctness, **this normalization layer is where silent data
-corruption would hide** (e.g. a property that sometimes returns a 2-element array).
+The equivalent hazard here is narrower and specific: **Live's "no value" sentinels are
+not `None`.** `_safe_name` exists because an unnamed object's `.name` can come back as
+`""` or as the integer `0` — the latter being what Live returns for an absent *text*
+property, and `0` stringifies to a truthy `"0"` if passed through raw. This produced a
+real bug: a blank clip name rendered as `"· notes"` with nothing in front of it before
+`_safe_name` was written to catch both cases.
 
 ---
 
-## 2. How a reading becomes a JSON event (worked example: track selection)
+## 2. How a callback becomes a JSON event (worked example: a knob ride)
 
-**Step 1 — Read current state into a plain object.**
-`collect_transport_snapshot()` (~L518) reads `live_set` properties plus the selected
-track. Note `selected_track_name` is a **second hop**: read the id from `live_set view`,
-then build `safe_path("id <n>")` and read its `name` (`get_selected_track_name` ~L740 →
-`collect_selected_track_basic` ~L750). One "selection" = several LiveAPI reads stitched
-together.
+**Step 1 — the value listener fires, possibly many times per second.**
+`parameter.add_value_listener` triggers `_on_value` on every LOM-level change during a
+continuous ride. The callback does the minimum possible: record the current value, the
+running min/max of the sweep, and the timestamp, into an in-flight `_gestures[key]` dict.
+It does **not** emit anything yet.
 
-```js
-{ available:true, playing:false, tempo:120, current_song_time:16,
-  signature_numerator:4, track_count:8, scene_count:4,
-  selected_track_id:47, selected_track_name:"Bass" }
+```python
+gesture["last"] = current
+gesture["at"] = now
+gesture["min"] = min(gesture["min"], current)
+gesture["max"] = max(gesture["max"], current)
 ```
 
-**Step 2 — Diff against remembered state.**
-`send_transport_delta_if_changed()` (~L550) does *not* trust Ableton to report deltas:
+**Step 2 — `update_display` decides when the gesture is done.**
+Live calls `update_display` roughly every 100ms regardless of what's happening in the
+set. `_flush_settled_gestures` walks every in-flight gesture and closes any that hasn't
+received a new sample in `GESTURE_SETTLE_SEC` (350ms). This is the direct replacement for
+the old bridge's timer-driven debounce, except the settle window starts from the *last
+real event*, not from a fixed clock tick — a ride that pauses for 200ms and resumes reads
+as one continuous gesture, not two.
 
-1. `fingerprint(snapshot)` = `JSON.stringify` (~L506). If it equals the last fingerprint,
-   return immediately — an unchanged tick emits nothing.
-2. Otherwise compare specific fields to module-level globals (`lastSelectedTrackId`,
-   `lastTempo`, `lastPlayingState`) and emit a **distinct event per kind of change**.
-
-```js
-if (snapshot.selected_track_id !== lastSelectedTrackId) {
-  emit("track_selected", "...", { selected_track_id, selected_track_name },
-                                 { track_name: snapshot.selected_track_name });
-}
-```
-
-**Step 3 — `emit()` assembles + ships the packet** (~L1500). It builds the flat object,
-**promotes canonical fields to the top level** (the 5th arg; `CANONICAL_FIELDS` ~L52),
-increments a per-packet `sequence`, attaches a `_bridge` block, enforces a hard size cap,
-then `outlet(0, json)` → the patcher's `udpsend 127.0.0.1 9000`.
+**Step 3 — the settled gesture is compared against where it started, and emitted.**
+`_emit_settled` compares `start` (the last known value *before* this gesture began,
+seeded from `_last_values`) against `last` (where it landed). A gesture that returns
+exactly to its starting value emits nothing — "rode the filter up and back down" is not a
+change to the set, and logging it would fill the timeline with decisions nobody made.
+Otherwise:
 
 ```json
 {
   "protocol": "recall.v2",
-  "source": "max_for_live",
-  "event_type": "track_selected",
+  "source": "control_surface",
+  "event_type": "parameter_changed",
   "timestamp_ms": 1716900000000,
-  "title": "Track Selected",
-  "description": "Selected Ableton track changed.",
-  "track_name": "Bass",
   "payload": {
-    "selected_track_id": 47,
-    "selected_track_name": "Bass",
-    "_bridge": { "device_id": "recall-m4l-bridge-dev", "bridge_version": "0.7.3", "sequence": 42 }
-  },
-  "session_id": null
+    "track_name": "Bass",
+    "track_id": "47",
+    "device_name": "Serum 2",
+    "parameter_name": "Filter Cutoff",
+    "parameter_value": 0.501,
+    "previous_parameter_value": 0.377,
+    "parameter_value_percent": 50.1,
+    "previous_parameter_value_percent": 37.7,
+    "parameter_display_value": "2 kHz",
+    "previous_parameter_display_value": "500 Hz",
+    "parameter_value_min": 0.377,
+    "parameter_value_max": 0.612
+  }
 }
 ```
 
-The same value (`track_name`) appears **both** promoted at top level and inside `payload`.
-That redundancy is intentional: top level is the canonical read path; `payload` is the
-verbatim capture preserved for debugging and never overwritten.
+`parameter_display_value` comes from `parameter.str_for_value(value)` — the same
+formatting Live's own UI uses, units included, so the app can show "500 Hz → 2 kHz"
+rather than a bare percentage.
+
+**Note edits follow the identical three-step shape** (callback records dirty state →
+`update_display` settles it after `NOTE_SETTLE_SEC` = 1.2s of quiet → the settled edit is
+diffed against the clip's previous fingerprint and emitted as `clip_notes_changed`), with
+one deliberate difference: the notes listener carries **no note data at all**, only "this
+clip changed." Reading the actual note content is expensive enough that doing it on every
+callback — which fires continuously during a record pass — would put a full note scan on
+Live's thread dozens of times a second. So `_fingerprint(clip)` is called only once, when
+a gesture settles: count, pitch range, mean velocity, and a hash of the sorted note
+tuples, never the notes themselves. **Recall records decisions, not data** — the
+authoritative note content lives in the `.als` for the take and is read from there when
+needed, not shipped through this socket.
+
+### "Settle before you switch"
+
+Both settling paths are flushed **forcibly** — bypassing the settle timer — the instant
+their listeners are about to be torn down: on track/device selection change
+(`_clear_parameter_listeners`, `_clear_clip_listeners`) and on script teardown
+(`disconnect`). Without this, the last tweak made right before clicking to another track,
+or right before quitting Ableton, would be silently discarded rather than reported. This
+is a load-bearing correctness property, not a nicety — it is the difference between "the
+edit you were mid-gesture on when you moved on" being captured or lost.
 
 ---
 
-## 3. The polling model in full
+## 3. The whole-set snapshot
 
-The device's load chain (`live.thisdevice → deferlow → delay 1000 → js`) fires the JS
-~1s after the device instantiates, then `start_bridge` schedules self-re-arming tasks
-(each tick calls `.schedule(...)` again):
+Structure — which tracks and devices exist, their names, parameter ranges, clip slot
+contents — is not built from per-track listeners; it's a single walk of `song.tracks`,
+`song.return_tracks`, and `song.master_track`, done in `_send_snapshot()`. This is sent
+**once on load**, and again whenever the track list changes (`_on_tracks_changed`, fired
+by `song.add_tracks_listener`) or the open set changes (`refresh_state`, called by Live —
+see below).
 
-| Task | Interval | Reads | Emits (on diff) |
-|---|---|---|---|
-| `heartbeat_tick` (~L311) | 2000 ms | nothing | `heartbeat` (health only) |
-| `transport_tick` (~L320) | 2000 ms | `live_set` transport + selection | `transport_play/stop`, `tempo_changed`, `track_selected`, `transport_snapshot` |
-| `focus_tick` (~L336) | 4000 ms | selected track → devices → clips | `device_*`, `clip_*`, focus snapshot |
-| `parameter_tick` | adaptive: 200 ms hot / 1200 ms idle | focused device parameter values | `parameter_changed` |
-| `structure_tick` | off by default | experimental numeric background track scan | `device_*`, `clip_*` when enabled |
-| `live_set_tick` (~L366) | off by default | every track/scene | `live_set_snapshot` |
+It is deliberately **not** a periodic scan. `refresh_state()` — Live's own hook, called
+for more reasons than "the set changed" (its own docstring says so) — would otherwise
+re-send the *entire* snapshot, every track's every device's every parameter, on every one
+of those extra calls. `_snapshot_fingerprint()` (`json.dumps(payload, sort_keys=True)`)
+guards against this: an unchanged snapshot is a no-op.
 
-Notable runtime behavior:
-- **`focus_tick` throttles while playing** (~L344): `FOCUS_SKIP_TICKS_WHILE_PLAYING = 2`,
-  so the heavy scan runs ~every 3rd tick during playback and resumes full cadence the
-  instant transport stops. Rationale: leave the audio thread headroom.
-- **`captureLiveSet = false` by default** (~L82): the full-set walk is the heaviest single
-  synchronous scan and the dominant native-crash trigger on large sets.
-- **`captureStructure = false` by default**: background numeric track reads have not proven
-  reliable in large real sets. Normal live capture follows the selected track and focused
-  device; whole-project discovery stays manual/deep capture.
-- **`MAX_*` limits** (~L85) cap how many tracks/devices/params/clips a single scan
-  serializes.
-- **Capture toggles** (`captureTransport`, `captureFocus`, `captureParameterMoves`,
-  `captureStructure`, `captureLiveSet`) can be flipped at runtime by sending messages into
-  the `js` object for crash/performance isolation without editing the file.
+Reading the LOM this way — direct Python attribute access on objects Live already holds —
+is cheap in a way the old bridge's per-property `LiveAPI` proxy calls were not, which is
+what made a full-set walk dangerous in Max but safe here. The one governor that still
+exists is `MAX_CLIPS_PER_TRACK` (64), capping how many clip slots one track's structural
+description serializes — a defensive bound, not a response to an observed cost.
 
 ---
 
-## 4. The wire: UDP loopback, fire-and-forget
+## 4. The wire: TCP loopback, queued and reconnecting
 
-`udpsend` throws one datagram at `127.0.0.1:9000`. No handshake, no ack, no retransmit.
-If the app is not listening, the packet vanishes and **Max never blocks and never errors**.
+**Why TCP and not the old bridge's UDP.** A whole-set snapshot of a large project can
+exceed a single UDP datagram's practical ceiling (the old bridge enforced an 8KB
+`MAX_EVENT_BYTES` cap at the outlet specifically to avoid this) and would be dropped
+entire, with no error visible to the producer. TCP has no such ceiling and confirms
+delivery at the transport level.
 
-This is the deciding design property: **zero crash surface and zero backpressure inside
-Ableton's process.** A blocking transport (TCP/WS) could stall Max's main thread and take
-the audio engine — and the user's session — down with it. The cost is **no delivery
-guarantee**.
+**Why a background thread and a queue, when the old design needed neither.** UDP
+`sendto` either completed immediately or failed immediately — there was nothing to wait
+for. TCP connects, can block on a slow reader, and can stall — and none of that may
+happen on Live's own thread, which must never wait on I/O. So `_emit()` only ever does a
+non-blocking `queue.put_nowait()`; a separate daemon thread (`_sender_loop`) owns the
+actual socket, the connecting, and the reconnecting.
 
-Mitigations / instrumentation:
-- Each packet carries a monotonic `_bridge.sequence`. This makes loss **detectable**
-  (gaps in the sequence) — but **nothing currently recovers or even checks for gaps** on
-  the Rust side. (Flagged as the highest-value cheap improvement; see §7.)
-- Hard size cap in the bridge: a packet serializing larger than `MAX_EVENT_BYTES` (8192)
-  is **dropped at the outlet, not sent** (~L1544), because pushing an oversized symbol
-  into `udpsend` can natively crash Max. 8 KB stays inside a single loopback datagram.
+```python
+self._queue = queue.Queue(maxsize=SEND_QUEUE_MAX)  # 2048
+```
+
+`_sender_loop` runs forever: if not connected, try to connect; pull one line off the
+queue (0.5s timeout so it can notice a stop signal); `sendall` it. Any exception —
+connection refused because the app isn't open yet, connection dropped, anything — closes
+the socket, waits `RECONNECT_DELAY_SEC` (2.0s), and retries. **This is expected, steady-
+state behavior when Recall isn't running**, not an error condition from Live's point of
+view.
+
+If the app is closed for a while, events queue up client-side. Past `SEND_QUEUE_MAX`
+(2048), the **oldest** queued event is dropped to make room for the newest — the current
+state of the set is worth more than the start of a backlog nobody will ever see live.
+
+**Framing.** Each event is one line of JSON followed by `\n` — TCP is a byte stream with
+no message boundaries of its own, so the receiver splits on newlines
+(`read_bounded_line`, capped at `MAX_TCP_LINE_BYTES` = 32KB per line, discarding and
+resynchronizing past that ceiling rather than growing a buffer without limit).
+
+**On teardown**, `disconnect()` flushes any in-flight gesture, emits `bridge_stopped`
+with counters (`moves_seen`, `note_edits_seen`), signals the sender thread to stop, and
+gives it up to 1 second to drain the queue and close cleanly — a courtesy, not a
+guarantee, since the daemon thread dies with the process regardless.
 
 ---
 
-## 5. Rust ingestion (single receive thread, no DB, no UI)
+## 5. Rust ingestion: two listeners, one shared pipeline
 
-`start_udp_listener` (udp_listener.rs L597) spawns two threads. The **receive thread**
-(L619) loops on `recv_from` into a 16 KB buffer and, per packet:
+`start_udp_listener` (the function name predates this design and was not renamed) spawns
+**both** a legacy UDP socket on `127.0.0.1:9000` — retained for the M4L bridge path,
+which still exists in the repo — and a TCP listener on `127.0.0.1:9001` for the control
+surface, each on its own thread, both feeding the same downstream pipeline (normalize →
+classify → queue → persist). Whichever bridge a given producer has installed determines
+which socket carries real traffic; the app doesn't need to know or care which.
 
-1. **`extract_json_object`** (L92) — slice first `{` … last `}`. Tolerates junk framing.
-   Malformed → counted (`incr_malformed`), dropped, `continue`.
-2. **`serde_json` parse** → `Value`. Failure → dropped.
-3. **`normalize_udp_json`** (L307):
-   - Reject unsupported `protocol` (accepts `recall.v1/v2/protocol.v1`).
-   - Fill defaults: `source`, `timestamp_ms` (stamp `now_ms()` if missing), `title`/
-     `description` from lookup tables, `session_id = null`.
-   - **Resolve canonical fields** with `find_string/f64/bool` (L232+): try the v2 name at
-     top level, then v1 synonyms, then inside the parsed `payload`. Write results back as
-     real top-level keys or explicit `null`. **All field-name guessing is consolidated
-     here so the frontend never guesses.**
-4. **Heartbeats terminate here** (L671): update `ConnectionState.last_heartbeat_ms` and
-   `bridge_version`, then `continue`. They are never queued, persisted, or shown.
-   ("Connected" = a heartbeat within the last 5 s, `get_status` L703.)
-5. **`from_value::<RecallEvent>`** into the typed struct (protocol.rs), stamp the active
-   `session_id` (Rust owns session identity, not Max), then **enqueue** and go straight
-   back to listening.
+The TCP accept loop (`udp_listener.rs`, around L1253) handles one connection at a time,
+reading lines with `read_bounded_line` and, per line:
+
+1. **`extract_json_object`** — slice from the first `{` to the last `}`. Tolerant of
+   stray framing bytes (a defense that mattered more for the UDP/Max path than it does
+   here, but shared by both).
+2. **`serde_json` parse** into a `Value`. Failure → counted (`incr_malformed`), dropped.
+3. **`normalize_udp_json`**:
+   - Reject unsupported `protocol` (`recall.v1` / `recall.v2` / `recall.protocol.v1` are
+     accepted).
+   - Fill envelope defaults: `source` (defaults to `"max_for_live"` if absent — the
+     control surface always sends `"control_surface"` explicitly so the two capture
+     tiers are told apart in storage), `timestamp_ms` (stamps `now_ms()` if missing),
+     `title`/`description` from the event catalog's fallback text (see §6 — the control
+     surface never sends its own title or description, so **every** event's title and
+     description come from this fallback), `session_id = null`.
+   - **Resolve canonical fields** with `find_string`/`find_f64`/`find_bool`: try the
+     top-level key, then inside the parsed `payload` object. This is why the control
+     surface can send everything nested under `payload` (§ of the protocol doc) and the
+     Rust side still finds `track_name`, `parameter_value`, and so on — **all field-name
+     resolution is consolidated here so the frontend never guesses.**
+4. **Heartbeats terminate here**: `update_connection_if_heartbeat` sets
+   `ConnectionState.last_heartbeat_ms` and `bridge_version`, then processing stops for
+   that line. Heartbeats are never queued, persisted, or shown. ("Connected" = a
+   heartbeat seen within the last 5 seconds, `get_status`.)
+5. Also here, before heartbeats are dropped: `update_open_file` reads `project_path` off
+   the event (if present — see the open gap in §7) to track which `.als` is open, and
+   `rotate_session_if_project_changed` uses that to decide whether the active session
+   needs to rotate to a different take.
+6. **`from_value::<RecallEvent>`** into the typed struct (`protocol.rs`), stamp the
+   active `session_id` (Rust owns session identity, never the bridge), then **enqueue**.
 
 ---
 
 ## 6. Backpressure, persistence, and the live buffer
 
 ### 6.1 Bounded queue with priority shedding
-A `sync_channel` of capacity **4096** (L605) decouples receive from disk. `enqueue_event`
-(L569) implements graceful overload via `classify_priority` (L48):
+A `sync_channel` of capacity **4096** (`EVENT_QUEUE_CAPACITY`) decouples ingestion from
+disk. `enqueue_event` implements graceful overload via `classify_priority`, driven by the
+static table in `event_catalog.rs`:
 
 | Priority | Examples | On queue-full |
 |---|---|---|
-| **Critical** | track/clip/device created/deleted, snapshots, bridge lifecycle | **block** until the worker drains room — never dropped |
-| **Important** | tempo/transport/scene/clip launched, device selected | (same channel; blocks via the critical path) |
-| **Coalescible** | everything else (high-freq / re-derivable) | **dropped**, counted in metrics |
+| **Critical** | track/clip/device created/deleted, note edits, snapshots, bridge lifecycle | **block** until the worker drains room — never dropped |
+| **Important** | tempo, parameter moves, device toggles, snapshots | (same channel; blocks via the critical path) |
+| **Coalescible** | heartbeats, and any `event_type` **not present in the catalog** | **dropped**, counted in metrics |
 
-Rationale: creative actions are rare, so briefly blocking on them cannot itself cause a
-storm; high-frequency telemetry is the only thing shed under pressure.
+Two things worth being explicit about, verified against the current control surface's
+actual emitted event types (§ below): `track_list_changed` and `focus_changed` — both
+real events the script sends on every track-list change and every selection change — are
+**not rows in `event_catalog.rs`**. An event not in the catalog falls back to
+`Coalescible` priority (shed first under load) and a generic title
+(`"Recall Event: track_list_changed"`) rather than anything readable. This is a real,
+verified gap, not a hypothetical one — see §7.
 
-### 6.2 Persistence worker (second thread, L505)
-Blocks for one event, then **opportunistically drains up to 256** more and writes the
-whole batch as **one SQLite transaction** (`save_events_batch`, storage.rs L367). Per
-insert it captures `last_insert_rowid()` and **stamps it back onto the in-memory event**
-(`event.id = Some(rowid)`), so the about-to-be-displayed live event already carries the
-identity it will have when the session is reloaded from disk. After persisting, it pushes
-to the live buffer and `app_handle.emit("recall-event", &event)` to the UI.
-
-Ordering guarantee: an event is **persisted before it is shown** — no flicker, no
+### 6.2 Persistence worker
+Blocks for one event, then opportunistically drains up to `PERSIST_BATCH_MAX` (256) more
+and writes the whole batch as **one SQLite transaction**. Per insert it captures
+`last_insert_rowid()` and stamps it back onto the in-memory event (`event.id =
+Some(rowid)`), so the live event already carries the identity it will have on reload.
+**An event is persisted before it is shown** to the UI — no flicker, no
 duplicate-on-reload.
 
-### 6.3 SQLite configuration (storage.rs L625)
-- **WAL** journal + `synchronous = NORMAL`: batched writes don't block reads
-  (saved-session loads, curation queries) and throughput holds under bursts.
-- Schema: `sessions`, `events` (raw `payload` preserved verbatim), and two **layer**
-  tables that never mutate the capture — `event_curation` and `session_notes`. This is the
-  core data rule enforced structurally: **raw telemetry is immutable; user edits are a
-  separate layer.**
-- In-memory live buffer is capped at 50_000 (oldest trimmed); the **DB is authoritative**,
-  the UI reloads saved sessions from SQLite.
+### 6.3 SQLite configuration
+- **WAL** journal, persistent (set once, lives in the database file) + `synchronous =
+  NORMAL` and `busy_timeout = 5000ms`, both **per-connection** settings applied on every
+  `open_connection()` call — not a one-time init, because SQLite resets them to defaults
+  on every fresh connection otherwise. (This repo previously shipped a bug where
+  `synchronous` was set only on a throwaway init connection and every real write ran at
+  the SQLite default `FULL` — a full fsync per batch commit — with WAL's durability
+  partner silently not applying. Fixed; documented here as the reason this pragma lives
+  where it does rather than in `initialize_database`.)
+- Schema: `sessions`, `events` (raw `payload` preserved verbatim as a string), plus two
+  **layer** tables that never mutate the capture — `event_curation` and `session_notes`.
+  The structural rule: **raw telemetry is immutable; user edits are a separate layer.**
+- In-memory live buffer capped at 50,000 events (oldest trimmed); the **database is
+  authoritative** — the UI reloads saved sessions from SQLite, not from the live buffer.
 
 ---
 
 ## 7. Honest weak points (where to focus a review)
 
-1. **Poll-and-diff, not event-driven.** Fidelity is capped by tick rate; fast or reverted
-   changes are never seen. The LOM supports property observers (push) — a real alternative
-   with its own cost (more callbacks contending with the audio thread, and observer
-   lifecycle management). This is the central architectural question.
-2. **Silent UDP loss.** `sequence` makes gaps *detectable* but nothing detects or recovers
-   them today. Adding sequence-gap counting in the Rust receive loop (surfaced via the
-   existing metrics) is the single highest-value, lowest-cost integrity instrument.
-3. **Snapshots can be dropped at the size cap.** A large Live Set's `live_set_snapshot` can
-   silently exceed 8 KB and never leave the bridge. That's a real data gap, not theoretical.
-4. **Two clocks.** `timestamp_ms` is set in JS (Max's clock) and only falls back to Rust's
-   `now_ms()` if absent. Ordering trusts the JS clock — fine for a single local machine,
-   worth stating explicitly.
-5. **`parameter_changed` is focused-device scoped.** The dedicated parameter poller reads the
-   currently focused device, emits only settled before/after moves, and leaves background
-   tracks alone. To track another track live, select it.
-6. **Normalization is the corruption surface.** Any LOM property that returns an unexpected
-   shape (multi-element array, locale-formatted number) would be silently coerced or
-   dropped by `get_prop`/`value_to_*`. Worth a targeted audit if a field ever looks wrong.
+1. **Two events are unclassified.** `track_list_changed` and `focus_changed` are real,
+   frequently-emitted events with no `event_catalog.rs` row — verified by reading the
+   catalog against the control surface's actual `_emit()` call sites. They are shed
+   first under any queue pressure and render with a generic fallback title everywhere the
+   catalog's title/description would otherwise be used. Cheap fix: add the two rows.
+2. **No delivery-loss signal, client-side or server-side.** The old bridge at least had a
+   `_bridge.sequence` field for (unused, but present) gap detection. The control surface
+   sends no sequence number at all. If the local send queue overflows during a
+   disconnect (§4), the oldest queued events are silently dropped with **zero** signal
+   reaching the app — no counter, no gap, nothing. TCP guarantees ordering and delivery
+   *within* an open connection; it guarantees nothing about what was queued before the
+   connection existed.
+3. **`project_path` is never sent.** `update_open_file` (§5, step 5) reads `project_path`
+   off every event to learn which `.als` is open, which is what
+   `rotate_session_if_project_changed` needs to split takes correctly when a producer
+   switches songs. The control surface never sends this field — confirmed by grep, zero
+   matches. Session rotation between projects is consequently dead code that never
+   executes its body. Tracked as GitHub issue #10, with the attribution damage it causes
+   tracked as #11.
+4. **Every event's title and description are the generic fallback.** The control surface
+   never sends `title` or `description` — confirmed by reading `_emit()`, which sends
+   exactly `protocol`, `source`, `event_type`, `timestamp_ms`, `payload`. The old M4L
+   bridge generated human copy per event; here, 100% of that copy comes from
+   `event_catalog.rs`'s fallback strings. That's fine where the catalog has a good
+   fallback and silently generic where it doesn't (see point 1).
+5. **Structure capture is set-scoped; parameter/note capture is one-track-scoped.** By
+   design (§1.0), not oversight — but worth restating plainly: a parameter ridden on a
+   track that isn't selected, or a clip edited on an unselected track, is not captured
+   at all, not even at reduced fidelity.
+6. **`refresh_state()` firing reasons are undocumented by Live itself.** The control
+   surface's own comment on `refresh_state` notes it fires "among other times" beyond an
+   obvious set-open — Live's own API docs don't fully enumerate when. The snapshot
+   fingerprint (§3) protects against redundant sends but the underlying trigger surface
+   is not fully understood.
+7. **One TCP connection at a time.** The accept loop handles connections sequentially. In
+   practice only one Recall app instance and one Ableton instance are expected on a given
+   machine, so this has not been a problem, but it's an implicit assumption rather than
+   an enforced one.
 
 ---
 
 ## 8. Quick reference for the reviewer
 
-| Concern | Where | Line(s) |
-|---|---|---|
-| LiveAPI read primitives | `recall_m4l_bridge.js` | ~408–444 |
-| Loose-value normalization | `recall_m4l_bridge.js` | ~446–504 |
-| Snapshot + diff + emit (transport) | `recall_m4l_bridge.js` | ~518–619 |
-| Packet assembly + size cap | `recall_m4l_bridge.js` | ~1500–1558 |
-| Poll cadence / toggles / limits | `recall_m4l_bridge.js` | ~74–134 |
-| UDP recv + malformed handling | `udp_listener.rs` | 619–700 |
-| Normalize + canonical field resolution | `udp_listener.rs` | 232–426 |
-| Heartbeat → connection state | `udp_listener.rs` | 428–468, 703–718 |
-| Priority classify + enqueue policy | `udp_listener.rs` | 48–65, 569–595 |
-| Batch persist + rowid stamping | `udp_listener.rs` / `storage.rs` | 505–564 / 367–424 |
-| Schema + WAL + layer tables | `storage.rs` | 625–690 |
-| Typed event struct | `protocol.rs` | whole file |
+| Concern | Where |
+|---|---|
+| Listener scope (one track) & re-pointing on selection | `remote-script/Recall/__init__.py` — `_listen_to_selection`, `_on_selection_changed` |
+| Gesture settling (parameters) | `__init__.py` — `_make_parameter_listener`, `_flush_settled_gestures`, `update_display` |
+| Note-edit settling & fingerprinting | `__init__.py` — `_make_notes_listener`, `_flush_settled_note_edits`, `_fingerprint` |
+| Whole-set snapshot + dedup | `__init__.py` — `_send_snapshot`, `_snapshot_fingerprint` |
+| Sender thread, queue, reconnect | `__init__.py` — `_open_socket`, `_sender_loop`, `_emit` |
+| Heartbeat | `__init__.py` — `_send_heartbeat_if_due`, `_heartbeat_due` |
+| TCP + UDP dual listener spawn | `udp_listener.rs` — `start_udp_listener` |
+| TCP framing / bounded line read | `udp_listener.rs` — `read_bounded_line`, `MAX_TCP_LINE_BYTES` |
+| Normalize + canonical field resolution | `udp_listener.rs` — `normalize_udp_json`, `find_string`/`find_f64`/`find_bool` |
+| Heartbeat → connection state | `udp_listener.rs` — `update_connection_if_heartbeat`, `get_status` |
+| Priority classify + enqueue policy | `event_catalog.rs` (data) / `udp_listener.rs` — `classify_priority`, `enqueue_event` |
+| Batch persist + rowid stamping | `udp_listener.rs` / `storage.rs` — `run_persistence_worker` / `save_events_batch` |
+| Schema + WAL + layer tables | `storage.rs` — `open_connection`, `initialize_database` |
+| Typed event struct | `protocol.rs` |
 
-> Line numbers are approximate and drift as the code changes; treat them as starting
-> points, not anchors. The protocol contract is authoritative in `recall-protocol-v2.md`.
+> The protocol contract — exact field names and the event vocabulary — is authoritative
+> in [`recall-protocol-v2.md`](./recall-protocol-v2.md).

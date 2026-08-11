@@ -99,6 +99,75 @@ def _snapshot_fingerprint(payload):
     return json.dumps(payload, sort_keys=True)
 
 
+# Attribute names worth trying when hunting for the open .als path.
+#
+# WHY THIS IS A SEARCH AND NOT A CONSTANT: Live's Python API has no documented
+# property for "the file the producer currently has open," and it is not in the
+# LOM reference at all. It may exist under a name nobody has published, it may
+# differ between Live versions, or it may genuinely not be reachable. Rather than
+# guess one name and silently capture nothing when the guess is wrong, discover
+# it once at load by looking at what the objects actually expose, then reuse
+# whatever answered.
+#
+# Ordered most-to-least likely so the first hit is also the most plausible.
+SET_PATH_ATTRIBUTE_HINTS = (
+    "file_path",
+    "document_path",
+    "project_path",
+    "set_path",
+    "path",
+    "file_name",
+    "document_name",
+)
+
+# Live's DeviceParameter.automation_state values. Resolved from the real enum at
+# load where possible (_resolve_automation_playing_state); this is the fallback
+# if that lookup fails, and matches the documented meanings:
+#   0 = none        no automation on this parameter
+#   1 = playing     automation exists and is DRIVING the value right now
+#   2 = overridden  automation exists but the producer grabbed the control
+AUTOMATION_STATE_PLAYING = 1
+
+
+def _looks_like_set_path(value):
+    """Whether a value is plausibly the path of the open Live set.
+
+    Deliberately strict about the `.als` suffix. Several LOM properties return a
+    display NAME rather than a path, and the app's `update_open_file` already
+    rejects anything not ending in `.als` — so accepting a bare name here would
+    just mean sending a field the backend throws away, while looking in the logs
+    like discovery succeeded.
+    """
+    if not isinstance(value, str):
+        return False
+    return value.strip().lower().endswith(".als")
+
+
+def _find_set_path_attribute(names, hints=SET_PATH_ATTRIBUTE_HINTS):
+    """Attribute names worth reading, ordered by how likely they are to be it.
+
+    Exact hint matches come first (a property literally called `file_path` beats
+    one merely containing the word), then substring matches for the case where
+    the real name is something like `get_document_file_path`. Pure so the
+    ordering rule is testable without a running Live.
+    """
+    available = set(names)
+    ordered = []
+
+    for hint in hints:
+        if hint in available:
+            ordered.append(hint)
+
+    for hint in hints:
+        for name in sorted(available):
+            if name.startswith("_") or name in ordered:
+                continue
+            if hint in name.lower():
+                ordered.append(name)
+
+    return ordered
+
+
 def _heartbeat_due(now, last_sent_at, interval=None):
     """Whether enough time has passed to send another heartbeat.
 
@@ -151,7 +220,10 @@ NOTE_NAMES = ("C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B")
 # a deployed script from a stale one, and it can only do that if the number moves
 # when the behaviour does. The installed copy sat at 0.2.0 for weeks while the repo
 # changed underneath it, and nothing on screen could have said so.
-SCRIPT_VERSION = "0.3.0"
+#
+# 0.4.0 sends project_path (issue #10, unblocking #11 and #6) and stops reporting
+# automation playback as producer moves (issue #9).
+SCRIPT_VERSION = "0.4.0"
 
 
 class Recall(ControlSurface):
@@ -199,6 +271,21 @@ class Recall(ControlSurface):
         # is running) until one arrives, and the producer is watching for exactly
         # that the moment they select Recall in Live's preferences.
         self._last_heartbeat_at = 0.0
+        # Both discovered once, at load, rather than probed per event — see
+        # _discover_set_path_reader and _resolve_automation_playing_state. Set
+        # before the socket opens so bridge_started can report what was found.
+        #
+        # Guarded as a pair because neither is worth failing the load over: a
+        # control surface that refuses to start captures nothing at all, which
+        # is strictly worse than one that captures without these two features.
+        # This is the same lesson `arrangement_clips` taught (see _safe_list).
+        self._set_path_reader = None
+        self._automation_playing_state = None
+        try:
+            self._set_path_reader = self._discover_set_path_reader()
+            self._automation_playing_state = self._resolve_automation_playing_state()
+        except Exception as error:  # noqa: BLE001
+            logger.info("Recall Studio: capability discovery failed: {}".format(error))
 
         with self.component_guard():
             self._open_socket()
@@ -207,6 +294,12 @@ class Recall(ControlSurface):
                 {
                     "script_version": SCRIPT_VERSION,
                     "python_ok": True,
+                    # Reported so the answer reaches the app's database instead
+                    # of living only in Live's Log.txt — this is the evidence
+                    # for whether #10 is fixable on this build.
+                    "project_path": self._open_set_path(),
+                    "set_path_available": self._set_path_reader is not None,
+                    "automation_state_available": self._automation_playing_state is not None,
                     # Proves the LOM is reachable from here, not just that the
                     # script loaded — a script that loads but cannot read the
                     # song is a different (worse) failure.
@@ -760,6 +853,182 @@ class Recall(ControlSurface):
             )
             return []
 
+    # ── the open .als (issue #10) ──────────────────────────────────────────
+    #
+    # The app tracks which set is open by reading `project_path` off incoming
+    # events (udp_listener.rs::update_open_file). This script never sent it, so
+    # `open_als_path` stayed None forever, so `rotate_session_if_project_changed`
+    # returned on its first line and takes never split by project — every song
+    # recorded into whichever take happened to be active (#11, #6).
+    #
+    # The obstacle is that Live exposes no documented property for the open set's
+    # path. So: look for one at load, and if something answers, use it. If
+    # nothing does, say so plainly in the log and carry on capturing exactly as
+    # before — a failed search must cost nothing but a log line.
+
+    def _discover_set_path_reader(self):
+        """Find where the open .als path lives. Returns (label, attribute) or None.
+
+        Tries the Song first (most likely to carry document state), then the
+        Application and its document. Reads each candidate attribute and keeps
+        the first that yields a real `.als` path — proving the property both
+        exists AND holds what we need, rather than trusting a promising name.
+
+        Callables are invoked too: if the answer turns out to be a getter like
+        `get_file_path()`, a name-only search would have found it and then
+        stored a bound method as if it were a path.
+
+        Returns a NAME, never a bound object. Opening a different set can hand
+        back a fresh Song, and a reader holding the old one would keep reporting
+        the previous project's path — which is the exact bug this is meant to
+        fix, only harder to spot.
+        """
+        for label in ("song", "application", "document"):
+            source = self._resolve_set_path_source(label)
+            if source is None:
+                continue
+            try:
+                names = dir(source)
+            except Exception:  # noqa: BLE001
+                continue
+
+            for attribute in _find_set_path_attribute(names):
+                value = self._read_set_path_candidate(source, attribute)
+                if _looks_like_set_path(value):
+                    logger.info(
+                        "Recall Studio: open set path found at {}.{}".format(label, attribute)
+                    )
+                    return (label, attribute)
+
+        # Not a crash and not a bug on this side — Live may simply not expose it.
+        # Logged loudly because it is the difference between takes splitting by
+        # project and not, and the app has no other way to find out.
+        logger.info(
+            "Recall Studio: no open-set path property found; takes cannot split by project"
+        )
+        return None
+
+    def _resolve_set_path_source(self, label):
+        """The object named by `label`, resolved FRESH on every call.
+
+        Deliberately re-resolved rather than cached: this is what makes the path
+        follow the producer when they open a different set.
+        """
+        try:
+            if label == "song":
+                return self.song
+
+            import Live
+
+            application = Live.Application.get_application()
+            if label == "application":
+                return application
+            if label == "document":
+                return application.get_document()
+        except Exception:  # noqa: BLE001 - Live tearing down, or no such source
+            return None
+
+        return None
+
+    @staticmethod
+    def _read_set_path_candidate(source, attribute):
+        """Read one candidate, calling it if it is a zero-argument getter.
+
+        Never raises: reflecting over a live audio application reaches
+        properties that throw, and one bad candidate must not abort the search
+        before it reaches a good one.
+        """
+        try:
+            value = getattr(source, attribute, None)
+        except Exception:  # noqa: BLE001
+            return None
+
+        if callable(value):
+            try:
+                value = value()
+            except Exception:  # noqa: BLE001
+                return None
+
+        return value
+
+    def _open_set_path(self):
+        """The open .als path, or None. Cheap enough for the 2s heartbeat.
+
+        Re-reads through the discovered name every call rather than caching a
+        value: the whole point is to notice when the producer opens a different
+        set, which a cached path could never do.
+        """
+        if self._set_path_reader is None:
+            return None
+
+        label, attribute = self._set_path_reader
+        source = self._resolve_set_path_source(label)
+        if source is None:
+            return None
+
+        value = self._read_set_path_candidate(source, attribute)
+        return value if _looks_like_set_path(value) else None
+
+    # ── automation vs a producer's hand (issue #9) ─────────────────────────
+
+    def _is_automation_playback(self, parameter):
+        """True when this change is automation driving the value, not a person.
+
+        A value listener fires identically for both, so without this an
+        automated section re-records itself on every pass — the timeline showed
+        a filter ridden forty times when it was drawn once.
+
+        Two conditions, both required. The transport must be rolling, because
+        automation only drives a parameter during playback. And the parameter's
+        automation_state must be PLAYING: the moment the producer grabs a control
+        that has automation on it, Live moves that state to `overridden`, which
+        is a real decision and must still be captured.
+        """
+        if self._automation_playing_state is None:
+            return False
+
+        try:
+            if not self.song.is_playing:
+                return False
+            state = getattr(parameter, "automation_state", None)
+        except Exception:  # noqa: BLE001
+            return False
+
+        return state == self._automation_playing_state
+
+    @staticmethod
+    def _resolve_automation_playing_state():
+        """The enum value meaning "automation is driving this", or None.
+
+        Read from Live's own enum rather than hardcoding 1, so a build that
+        numbers them differently doesn't cause every automated move to be
+        discarded — or worse, every manual one. None disables the filter
+        entirely: if this build has no automation_state at all, capturing a few
+        phantom moves is a far better failure than silently dropping the
+        producer's real ones.
+        """
+        try:
+            import Live
+
+            state = Live.DeviceParameter.AutomationState.playing
+            return int(state) if not isinstance(state, int) else state
+        except Exception:  # noqa: BLE001
+            pass
+
+        try:
+            import Live
+
+            if hasattr(Live.DeviceParameter, "AutomationState"):
+                return AUTOMATION_STATE_PLAYING
+        except Exception:  # noqa: BLE001
+            pass
+
+        logger.info(
+            "Recall Studio: automation_state unavailable; automation playback "
+            "will still be captured as producer moves"
+        )
+        return None
+
     @staticmethod
     def _safe_name(obj):
         """An object's name, or None when Live has no real name for it.
@@ -1122,6 +1391,22 @@ class Recall(ControlSurface):
         # Closure per parameter: Live's listener callbacks take no arguments, so
         # identity has to be captured here rather than looked up on fire.
         def _on_value():
+            # Automation driving the value is not a decision the producer made
+            # now — it is one they made earlier, already captured when they drew
+            # it. Checked before _moves_seen so the counter reported in
+            # bridge_stopped stays a count of real moves.
+            if self._is_automation_playback(parameter):
+                # Still track where automation left the value. Skipping this
+                # would leave _last_values holding a pre-playback reading, so
+                # the next time the producer grabs the control the move would
+                # report a "before" from before the automation ran — e.g.
+                # "0.2 -> 0.5" for a knob automation had already carried to 0.8.
+                try:
+                    self._last_values[id(parameter)] = parameter.value
+                except Exception:  # noqa: BLE001 - device gone mid-playback
+                    pass
+                return
+
             self._moves_seen += 1
 
             key = id(parameter)
@@ -1192,7 +1477,16 @@ class Recall(ControlSurface):
             return
 
         self._last_heartbeat_at = now
-        self._emit("heartbeat", {"bridge_version": SCRIPT_VERSION})
+        # project_path rides the heartbeat because the app reads it in
+        # update_open_file, which runs BEFORE heartbeats are dropped from the
+        # pipeline — and because a heartbeat fires every 2s regardless of what
+        # the producer is doing. That makes opening a different set get noticed
+        # within seconds, rather than whenever the next real event happens to
+        # arrive (which, on a set the producer is only listening to, is never).
+        self._emit(
+            "heartbeat",
+            {"bridge_version": SCRIPT_VERSION, "project_path": self._open_set_path()},
+        )
 
     def _flush_settled_gestures(self, force=False):
         if not self._gestures:

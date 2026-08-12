@@ -470,6 +470,43 @@
   font-size: 0.78rem;
 }
 
+/* A project story spans takes; the arrangement map does not. This callout
+   preserves that distinction in place instead of letting a fresh, quiet take
+   look like a failed timeline. */
+.tl-take-redirect {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 11px 12px;
+  border: 1px solid rgb(var(--signal-rgb) / 0.24);
+  border-radius: var(--radius-sm);
+  background: rgb(var(--signal-rgb) / 0.07);
+}
+
+.tl-take-redirect__eyebrow {
+  display: block;
+  color: var(--signal-soft);
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.tl-take-redirect p {
+  margin: 3px 0 0;
+  color: var(--muted);
+  font-size: 0.78rem;
+  line-height: 1.45;
+}
+
+.tl-take-redirect p b {
+  color: var(--paper);
+  font-family: var(--font-mono);
+  font-weight: 500;
+}
+
 .tl-legend {
   display: flex;
   gap: 16px;
@@ -549,6 +586,16 @@
   filter: drop-shadow(0 0 2px rgb(var(--signal-rgb) / 0.5));
 }
 
+.tl-key--heat {
+  width: 16px;
+  height: 9px;
+  border-radius: 2px;
+  background:
+    linear-gradient(90deg, rgb(var(--signal-rgb) / 0.15), rgb(var(--signal-rgb) / 0.82)),
+    var(--signal);
+  box-shadow: inset 0 0 0 1px rgb(var(--signal-rgb) / 0.3);
+}
+
 .tl-key--note {
   border-radius: 0;
   color: var(--moment);
@@ -610,6 +657,10 @@
 
 .tl-stat--keep b {
   color: var(--moment);
+}
+
+.tl-stat--scope b {
+  color: var(--signal-soft);
 }
 
 .tl-pulse__spark {
@@ -684,6 +735,30 @@
 
 .tl-tracks {
   position: relative;
+  min-width: 0;
+}
+
+/* The arrangement is canvas-rendered so dense takes stay smooth and every
+   visual object can be layered like a DAW lane. The DOM version is retained in
+   the source temporarily but intentionally not painted. */
+.tl-arrangement-canvas {
+  width: 100%;
+  min-width: 0;
+  cursor: pointer;
+}
+
+.tl-arrangement-canvas canvas {
+  display: block;
+  outline: none;
+}
+
+.tl-arrangement-canvas--loading {
+  min-height: 116px;
+  background: rgba(11, 14, 22, 0.84);
+}
+
+.tl-legacy-arrangement {
+  display: none;
 }
 
 .tl-ruler {
@@ -712,31 +787,21 @@
   border-bottom: 1px solid rgba(255, 255, 255, 0.045);
   cursor: pointer;
   text-align: left;
-  background:
-    repeating-linear-gradient(
-      90deg,
-      transparent,
-      transparent calc(10% - 1px),
-      rgba(255, 255, 255, 0.03) 10%,
-      rgba(255, 255, 255, 0.03) calc(10% + 1px)
-    );
+  background: transparent;
   transition: background 120ms ease;
 }
 
 .tl-lane:hover {
-  background:
-    linear-gradient(rgb(var(--signal-rgb) / 0.05), rgb(var(--signal-rgb) / 0.05)),
-    repeating-linear-gradient(90deg, transparent, transparent calc(10% - 1px), rgba(255, 255, 255, 0.03) 10%, rgba(255, 255, 255, 0.03) calc(10% + 1px));
+  background: rgb(var(--signal-rgb) / 0.05);
 }
 
 .tl-lane.is-sel {
-  background:
-    linear-gradient(rgb(var(--signal-rgb) / 0.1), rgb(var(--signal-rgb) / 0.1)),
-    repeating-linear-gradient(90deg, transparent, transparent calc(10% - 1px), rgba(255, 255, 255, 0.04) 10%, rgba(255, 255, 255, 0.04) calc(10% + 1px));
+  background: rgb(var(--signal-rgb) / 0.1);
 }
 
 .tl-mk {
   position: absolute;
+  z-index: 2;
   top: 50%;
   transform: translate(-50%, -50%);
   display: flex;
@@ -748,11 +813,40 @@
    much a channel was changed, scaled against the busiest lane. */
 .tl-graph {
   position: absolute;
+  z-index: 1;
   inset: 0;
   width: 100%;
   height: 100%;
   pointer-events: none;
   overflow: visible;
+}
+
+/* The heat strip is deliberately a quiet bed under the cumulative curve. It
+   makes a dense session readable in one glance, while the curve and markers
+   retain their job of describing the exact musical story. */
+.tl-heat {
+  position: absolute;
+  z-index: 0;
+  inset: 7px 4px;
+  display: grid;
+  gap: 2px;
+  pointer-events: none;
+}
+
+.tl-heat__cell {
+  min-width: 0;
+  border-radius: 2px;
+  background: transparent;
+  transition: opacity var(--motion-response) var(--ease-response);
+}
+
+.tl-heat__cell.is-active {
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.12);
+}
+
+.tl-lane:hover .tl-heat__cell.is-active,
+.tl-lane.is-sel .tl-heat__cell.is-active {
+  filter: saturate(1.18) brightness(1.1);
 }
 
 /* Fill comes from a per-instance vertical gradient (set inline), so the area
@@ -818,6 +912,7 @@
 
 .tl-playhead {
   position: absolute;
+  z-index: 3;
   top: 0;
   bottom: 0;
   width: 2px;
@@ -1848,6 +1943,48 @@
   border-bottom: 1px solid var(--line);
 }
 
+/* Sittings are deliberately a page break in one continuous project record.
+   The elapsed wall-clock time is named once, between sections, never counted
+   as work or turned into a second take. */
+.tl-activity-log__break {
+  display: grid;
+  grid-template-columns: minmax(20px, 1fr) auto minmax(20px, 1fr);
+  align-items: center;
+  gap: 10px;
+  padding: 17px 4px 11px;
+  color: var(--faint-aa);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.035em;
+  text-align: center;
+  text-transform: uppercase;
+}
+
+.tl-activity-log__break-rule {
+  height: 0;
+  border-top: 1px dashed rgba(255, 255, 255, 0.16);
+}
+
+.tl-activity-log__sitting {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 8px 10px;
+  border: 1px solid rgb(var(--signal-rgb) / 0.22);
+  border-radius: 7px;
+  background: rgb(var(--signal-rgb) / 0.07);
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.tl-activity-log__sitting time {
+  color: var(--paper);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
 .tl-activity-log__end {
   scroll-margin-bottom: 24px;
 }
@@ -1920,6 +2057,12 @@
 }
 
 @media (max-width: 620px) {
+  .tl-take-redirect {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 10px;
+  }
+
   .tl-pulse {
     align-items: flex-start;
     flex-wrap: wrap;
@@ -1951,6 +2094,18 @@
     align-items: flex-start;
     flex-direction: column;
     gap: 1px;
+  }
+
+  .tl-activity-log__sitting {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 3px;
+  }
+
+  .tl-activity-log__break {
+    grid-template-columns: minmax(12px, 1fr) auto minmax(12px, 1fr);
+    gap: 7px;
+    font-size: 9px;
   }
 
 }

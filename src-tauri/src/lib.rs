@@ -13,7 +13,7 @@ use metrics::{BridgeMetrics, BridgeMetricsSnapshot};
 use planner::PlannerTask;
 use protocol::RecallEvent;
 use schema_projection::{
-    CreativeMoment, CreativeMomentTarget, NoteEdit, ParameterChange, ProjectSchema,
+    CreativeMoment, CreativeMomentTarget, NoteEdit, ParameterChange, ProjectSchema, TimelineClipEvent,
 };
 use session::{
     ProjectFolderMetadata, SavedProject, SavedSession, SavedSessionMetadata, SessionState,
@@ -55,6 +55,57 @@ fn show_main_window(app: &tauri::AppHandle) {
         let _ = window.set_focus();
         let _ = window.emit("recall://window-visibility", true);
     }
+}
+
+// The Tauri notification plugin deliberately exposes a fire-and-forget API. The
+// planner reminder needs to respond to a click, so retain notify-rust's handle
+// until Windows reports that the toast body was activated.
+#[tauri::command]
+fn send_daily_plan_notification(
+    app: tauri::AppHandle,
+    title: String,
+    body: String,
+) -> Result<(), String> {
+    let mut notification = notify_rust::Notification::new();
+    notification.summary(&title).body(&body);
+
+    #[cfg(windows)]
+    {
+        // A development executable has no registered AppUserModelID, so retain
+        // the PowerShell fallback there. Installed Recall builds are registered
+        // under the configured identifier and receive Recall's name and icon.
+        let running_from_build_directory = std::env::current_exe()
+            .ok()
+            .and_then(|path| path.parent().map(std::path::Path::to_path_buf))
+            .is_some_and(|directory| {
+                directory.ends_with(std::path::Path::new("target").join("debug"))
+                    || directory.ends_with(std::path::Path::new("target").join("release"))
+            });
+        if !running_from_build_directory {
+            notification.app_id(&app.config().identifier);
+        }
+    }
+
+    let handle = notification
+        .show()
+        .map_err(|error| format!("Failed to show daily studio plan notification: {error}"))?;
+
+    std::thread::spawn(move || {
+        let result = handle.wait_for_response(|response: &notify_rust::NotificationResponse| {
+            if response.is_default_action() {
+                let app_for_main_thread = app.clone();
+                let _ = app.run_on_main_thread(move || {
+                    show_main_window(&app_for_main_thread);
+                    let _ = app_for_main_thread.emit("recall://open-planner", ());
+                });
+            }
+        });
+        if let Err(error) = result {
+            log::warn!("Failed to receive daily studio plan notification action: {error}");
+        }
+    });
+
+    Ok(())
 }
 
 fn optional_trimmed(value: Option<String>, limit: usize, label: &str) -> Result<Option<String>, String> {
@@ -764,7 +815,7 @@ fn start_session(state: State<'_, AppState>) -> SessionStatus {
 
         match storage.save_session_started(&status) {
             Ok(_) => println!("SESSION PERSISTED -> session_id: {:?}", status.session_id),
-            Err(error) => eprintln!("FAILED TO PERSIST SESSION START -> {}", error),
+            Err(error) => log::error!("FAILED TO PERSIST SESSION START -> {}", error),
         }
     }
 
@@ -794,7 +845,7 @@ fn stop_session(state: State<'_, AppState>) -> SessionStatus {
                 "SESSION STOP PERSISTED -> session_id: {:?}",
                 status.session_id
             ),
-            Err(error) => eprintln!("FAILED TO PERSIST SESSION STOP -> {}", error),
+            Err(error) => log::error!("FAILED TO PERSIST SESSION STOP -> {}", error),
         }
     }
 
@@ -1445,6 +1496,146 @@ fn ensure_project_exists(
     Ok(())
 }
 
+/// Whether an `.als` path is inside a connected project folder. Paths arriving
+/// from Live are Windows paths, so comparison is intentionally case-insensitive
+/// and separator-normalized. No filesystem access is needed: the file may be on
+/// an offline sample drive, but its textual location still tells us whether it
+/// belongs to the selected project.
+fn open_file_belongs_to_project(open_als: &str, project_path: &str) -> bool {
+    let normalize = |value: &str| value.trim().replace('/', "\\").trim_end_matches('\\').to_lowercase();
+    let open = normalize(open_als);
+    let project = normalize(project_path);
+    if project.ends_with(".als") {
+        return open == project;
+    }
+    open.strip_prefix(&(project + "\\")).is_some()
+}
+
+/// Refuse a manual capture switch when Recall can prove Ableton has a different
+/// project open. When the control surface cannot provide an open `.als` path we
+/// keep the explicit project-selection flow available; the user remains the
+/// authority in that degraded mode.
+fn ensure_open_file_matches_project(
+    state: &State<'_, AppState>,
+    project_id: Option<&str>,
+) -> Result<(), String> {
+    let (Some(project_id), Some(open_als)) = (
+        project_id,
+        state
+            .connection
+            .lock()
+            .expect("Connection state lock failed")
+            .open_als_path
+            .clone(),
+    ) else {
+        return Ok(());
+    };
+
+    let project_path = state
+        .storage
+        .lock()
+        .expect("Storage state lock failed")
+        .project_ableton_path(project_id)?;
+    let Some(project_path) = project_path else {
+        return Ok(());
+    };
+
+    if open_file_belongs_to_project(&open_als, &project_path) {
+        return Ok(());
+    }
+
+    Err(format!(
+        "Ableton currently has '{}' open, not a version in this project. Open the matching set before starting this capture.",
+        std::path::Path::new(&open_als)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or(&open_als)
+    ))
+}
+
+#[cfg(test)]
+mod project_capture_guard_tests {
+    use super::open_file_belongs_to_project;
+
+    #[test]
+    fn open_file_guard_accepts_a_version_inside_its_project_folder() {
+        assert!(open_file_belongs_to_project(
+            "M:/Ableton Projects/Recall_Test Project/Recall_Test.als",
+            "m:\\Ableton Projects\\Recall_Test Project",
+        ));
+    }
+
+    #[test]
+    fn open_file_guard_rejects_a_different_project() {
+        assert!(!open_file_belongs_to_project(
+            "M:\\Ableton Projects\\Breaking Point Project\\Breaking Point.als",
+            "M:\\Ableton Projects\\Recall_Test Project",
+        ));
+    }
+
+    // The isolation failure that would actually hurt: a sibling folder whose name
+    // starts with the project's name. A naive prefix test would silently pull
+    // "Recall_Test Project 2" into "Recall_Test Project" and cross-assign takes.
+    #[test]
+    fn open_file_guard_rejects_a_sibling_folder_sharing_the_project_name_prefix() {
+        assert!(!open_file_belongs_to_project(
+            "M:\\Ableton Projects\\Recall_Test Project 2\\Recall_Test.als",
+            "M:\\Ableton Projects\\Recall_Test Project",
+        ));
+    }
+
+    // Ableton writes older versions into a Backup/ subfolder; those are still this
+    // project's takes, so nesting below the folder must stay accepted.
+    #[test]
+    fn open_file_guard_accepts_a_version_nested_below_the_project_folder() {
+        assert!(open_file_belongs_to_project(
+            "M:\\Ableton Projects\\Recall_Test Project\\Backup\\Recall_Test [2026-08-11].als",
+            "M:\\Ableton Projects\\Recall_Test Project",
+        ));
+    }
+
+    // A project may be connected to a single .als rather than a folder. Then the
+    // match is exact: a neighbouring set in the same folder is a different project.
+    #[test]
+    fn open_file_guard_matches_a_file_connected_project_exactly() {
+        assert!(open_file_belongs_to_project(
+            "M:/Ableton Projects/Recall_Test Project/Recall_Test.als",
+            "M:\\Ableton Projects\\Recall_Test Project\\Recall_Test.ALS",
+        ));
+        assert!(!open_file_belongs_to_project(
+            "M:\\Ableton Projects\\Recall_Test Project\\Other Idea.als",
+            "M:\\Ableton Projects\\Recall_Test Project\\Recall_Test.als",
+        ));
+    }
+
+    // Stored folder paths arrive with and without a trailing separator; both must
+    // describe the same folder, and neither may turn into a looser match.
+    #[test]
+    fn open_file_guard_ignores_a_trailing_separator_on_the_project_folder() {
+        assert!(open_file_belongs_to_project(
+            "M:\\Ableton Projects\\Recall_Test Project\\Recall_Test.als",
+            "M:\\Ableton Projects\\Recall_Test Project\\",
+        ));
+        assert!(!open_file_belongs_to_project(
+            "M:\\Ableton Projects\\Recall_Test Project 2\\Recall_Test.als",
+            "M:\\Ableton Projects\\Recall_Test Project\\",
+        ));
+    }
+
+    // The folder itself is not a version, and an absent path must never match.
+    #[test]
+    fn open_file_guard_rejects_the_bare_folder_and_an_empty_path() {
+        assert!(!open_file_belongs_to_project(
+            "M:\\Ableton Projects\\Recall_Test Project",
+            "M:\\Ableton Projects\\Recall_Test Project",
+        ));
+        assert!(!open_file_belongs_to_project(
+            "",
+            "M:\\Ableton Projects\\Recall_Test Project",
+        ));
+    }
+}
+
 /// Stop the current take (if any) and start a fresh one, optionally assigned to a
 /// project. Shared by start_capture_for_project (create path) and new_take_for_project.
 fn create_capture_for_project(
@@ -1496,6 +1687,7 @@ fn start_capture_for_project(
     project_id: Option<String>,
 ) -> Result<SessionStatus, String> {
     ensure_project_exists(&state, project_id.as_deref())?;
+    ensure_open_file_matches_project(&state, project_id.as_deref())?;
 
     // Reuse an existing active take instead of creating another one.
     {
@@ -1527,6 +1719,7 @@ fn open_take_for_open_file(
     project_id: Option<String>,
 ) -> Result<SessionStatus, String> {
     ensure_project_exists(&state, project_id.as_deref())?;
+    ensure_open_file_matches_project(&state, project_id.as_deref())?;
 
     let open_als = {
         let connection = state
@@ -1568,6 +1761,17 @@ fn open_take_for_open_file(
         session.restore_active(session_id, started_at_ms, started_at_ms);
     }
 
+    // A manual project/take switch has the same authority as auto-rotation.
+    // Remember the active anchor so the next heartbeat cannot rotate this take
+    // back out merely because it sees the file we just intentionally selected.
+    {
+        let mut connection = state
+            .connection
+            .lock()
+            .expect("Connection state lock failed");
+        connection.session_als_path = open_als.clone();
+    }
+
     println!(
         "COMMAND open_take_for_open_file -> take {:?} (project {:?}, open_als {:?})",
         status.session_id, project_id, open_als
@@ -1582,6 +1786,7 @@ fn new_take_for_project(
     project_id: Option<String>,
 ) -> Result<SessionStatus, String> {
     ensure_project_exists(&state, project_id.as_deref())?;
+    ensure_open_file_matches_project(&state, project_id.as_deref())?;
     let status = create_capture_for_project(&state, project_id.as_deref())?;
     println!(
         "COMMAND new_take_for_project -> new take {:?} (project {:?})",
@@ -1701,6 +1906,15 @@ fn get_note_edits(state: State<'_, AppState>, session_id: String) -> Result<Vec<
 }
 
 #[tauri::command]
+fn get_timeline_clip_events(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<Vec<TimelineClipEvent>, String> {
+    let storage = state.storage.lock().expect("Storage state lock failed");
+    storage.get_timeline_clip_events(&session_id)
+}
+
+#[tauri::command]
 fn list_creative_moments(
     state: State<'_, AppState>,
     session_id: String,
@@ -1805,12 +2019,15 @@ pub fn run() {
     let storage_state_for_setup = storage_state.clone();
     let bridge_metrics_for_setup = bridge_metrics.clone();
 
-    println!(
-        "Starting Recall Studio backend... (PID {})",
-        std::process::id()
-    );
-
     tauri::Builder::default()
+        .plugin(
+            tauri_plugin_log::Builder::new()
+                .level(log::LevelFilter::Info)
+                .level_for("recall_studio_lib", log::LevelFilter::Debug)
+                .max_file_size(1_000_000)
+                .timezone_strategy(tauri_plugin_log::TimezoneStrategy::UseLocal)
+                .build(),
+        )
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
@@ -1825,6 +2042,11 @@ pub fn run() {
             }
         })
         .setup(move |app| {
+            log::info!(
+                "Starting Recall Studio backend... (PID {})",
+                std::process::id()
+            );
+
             let open_item = MenuItem::with_id(app, "open", "Open Recall", true, None::<&str>)?;
             let quit_item = MenuItem::with_id(app, "quit", "Quit Recall", true, None::<&str>)?;
             let tray_menu = Menu::with_items(app, &[&open_item, &quit_item])?;
@@ -1874,7 +2096,7 @@ pub fn run() {
                 storage.configure(db_path.clone());
             }
 
-            println!("SQLite database initialized at {:?}", db_path);
+            log::info!("SQLite database initialized at {:?}", db_path);
 
             // Keep the installed control surface in step with the one this build
             // ships. Installing a new Recall replaces the bundled resource but
@@ -1888,14 +2110,14 @@ pub fn run() {
             let repair = install::auto_repair_installed_script(app.handle());
             match (&repair.error, repair.repaired, repair.attempted) {
                 (Some(error), _, _) => {
-                    eprintln!("Recall Studio: control surface auto-repair skipped: {error}")
+                    log::warn!("Recall Studio: control surface auto-repair skipped: {error}")
                 }
-                (None, true, _) => println!(
+                (None, true, _) => log::info!(
                     "Recall Studio: control surface updated to {} at {:?} — Ableton must restart to load it",
                     repair.script_version.as_deref().unwrap_or("unknown"),
                     repair.install_dir.as_deref().unwrap_or("?")
                 ),
-                (None, false, true) => println!("Recall Studio: control surface already current"),
+                (None, false, true) => log::info!("Recall Studio: control surface already current"),
                 (None, false, false) => {
                     println!("Recall Studio: no control surface installed yet — setup will ask")
                 }
@@ -1936,11 +2158,11 @@ pub fn run() {
                 session.restore_active(session_id, started_at_ms, last_activity_ms);
             }
 
-            println!(
+            log::info!(
                 "Active session ready -> session_id: {:?}",
                 active_status.session_id
             );
-            println!("Starting UDP listener...");
+            log::info!("Starting UDP listener...");
 
             start_udp_listener(
                 connection_state_for_setup.clone(),
@@ -1971,6 +2193,7 @@ pub fn run() {
             create_planner_task,
             update_planner_task,
             delete_planner_task,
+            send_daily_plan_notification,
             get_connection_status,
             get_recent_events,
             start_session,
@@ -2006,6 +2229,7 @@ pub fn run() {
             get_project_schema,
             get_parameter_changes,
             get_note_edits,
+            get_timeline_clip_events,
             list_creative_moments,
             create_creative_moment,
             update_creative_moment,

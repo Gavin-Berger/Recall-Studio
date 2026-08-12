@@ -36,15 +36,6 @@ import { Waveform } from "./Waveform";
 
 type ReleaseType = "album" | "ep" | "single";
 
-type ChecklistTarget = "name" | "artist" | "date" | "tracklist" | "delivery";
-
-type ReleaseChecklistItem = {
-  id: string;
-  target: ChecklistTarget;
-  title: string;
-  detail: string;
-};
-
 type QuickTaskType = "artist" | "mix" | "master" | "admin";
 
 const RELEASE_TYPES: ReleaseType[] = ["album", "ep", "single"];
@@ -524,6 +515,85 @@ function versionLabel(index: number): string {
   return index < 26 ? String.fromCharCode(65 + index) : `${index + 1}`;
 }
 
+function scaleMixMetric(value: number | null, min: number, max: number): number | null {
+  if (value == null || !Number.isFinite(value)) return null;
+  return Math.max(0, Math.min(100, ((value - min) / (max - min)) * 100));
+}
+
+function MixVersionProfile({
+  bounces,
+  finalBounceId,
+}: {
+  bounces: ExportBounce[];
+  finalBounceId: string | null;
+}) {
+  return (
+    <section className="organizer__mix-profile" aria-label="Mix version profile">
+      <div className="organizer__mix-profile-head">
+        <span className="organizer__field-label">Mix profile</span>
+        <small>Level, peak, and dynamics across versions</small>
+      </div>
+      <div className="organizer__mix-profile-grid" role="table" aria-label="Mix metrics by version">
+        <div className="organizer__mix-profile-labels" role="row">
+          <span role="columnheader">Version</span>
+          <span role="columnheader">Loudness <em>−24 to −6 LUFS</em></span>
+          <span role="columnheader">Peak <em>−6 to 0 dB</em></span>
+          <span role="columnheader">Dynamics <em>0 to 20 dB</em></span>
+        </div>
+        {bounces.map((bounce, index) => {
+          const dynamics = producerDynamicRangeDb(bounce.integratedLufs, bounce.peakDb);
+          const metrics = [
+            {
+              id: "loudness",
+              label: "Integrated loudness",
+              value: bounce.integratedLufs,
+              percent: scaleMixMetric(bounce.integratedLufs, -24, -6),
+              text: formatLufs(bounce.integratedLufs),
+            },
+            {
+              id: "peak",
+              label: bounce.peakKind === "true" ? "True peak" : "Sample peak",
+              value: bounce.peakDb,
+              percent: scaleMixMetric(bounce.peakDb, -6, 0),
+              text: formatDb(bounce.peakDb, bounce.peakKind === "true" ? "dBTP" : "dBFS"),
+            },
+            {
+              id: "dynamics",
+              label: "Peak-to-loudness ratio",
+              value: dynamics,
+              percent: scaleMixMetric(dynamics, 0, 20),
+              text: formatDynamicRange(dynamics),
+            },
+          ];
+
+          return (
+            <div className="organizer__mix-profile-row" role="row" key={bounce.id}>
+              <span className="organizer__mix-profile-version" role="rowheader">
+                {versionLabel(index)}
+                {bounce.id === finalBounceId && <i>Final</i>}
+              </span>
+              {metrics.map((metric) => (
+                <span
+                  key={metric.id}
+                  className="organizer__mix-profile-meter"
+                  data-metric={metric.label}
+                  role="cell"
+                  aria-label={`${metric.label}: ${metric.text}`}
+                >
+                  <span className="organizer__mix-profile-rail" aria-hidden="true">
+                    {metric.percent != null && <i style={{ width: `${metric.percent}%` }} />}
+                  </span>
+                  <b>{metric.text}</b>
+                </span>
+              ))}
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
 async function prepareCoverImage(file: File): Promise<string> {
   const objectUrl = URL.createObjectURL(file);
   try {
@@ -591,11 +661,6 @@ export function ProjectOrganizerScreen({
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const coverInputRef = useRef<HTMLInputElement | null>(null);
-  const releaseNameRef = useRef<HTMLInputElement | null>(null);
-  const artistInputRef = useRef<HTMLInputElement | null>(null);
-  const releaseDateInputRef = useRef<HTMLInputElement | null>(null);
-  const tracklistRef = useRef<HTMLDivElement | null>(null);
-  const deliveryRef = useRef<HTMLElement | null>(null);
   const pendingExportTrackId = useRef<string | null>(null);
   const pendingReplaceBounceId = useRef<string | null>(null);
   const pendingExportAutoPlay = useRef(false);
@@ -687,41 +752,6 @@ export function ProjectOrganizerScreen({
         && knownBitDepths.size <= 1,
     };
   }, [selected]);
-  const releaseChecklist = useMemo((): ReleaseChecklistItem[] => {
-    if (!selected) return [];
-
-    const items: ReleaseChecklistItem[] = [];
-    const unnamedTracks = selected.tracks.filter((track) => !track.title.trim()).length;
-    const unlinkedTracks = selected.tracks.filter((track) => !track.alsFile).length;
-
-    if (!selected.name.trim()) {
-      items.push({ id: "name", target: "name", title: "Name this release", detail: "Use a clear title before you start sharing versions." });
-    }
-    if (!selected.artist.trim()) {
-      items.push({ id: "artist", target: "artist", title: "Add the artist credit", detail: "This will carry into the release preview and exported record." });
-    }
-    if (!selected.releaseDate) {
-      items.push({ id: "date", target: "date", title: "Set a release date", detail: "It will automatically appear in the Studio Planner." });
-    }
-    if (selected.tracks.length === 0) {
-      items.push({ id: "tracks", target: "tracklist", title: "Build the tracklist", detail: "Add the songs that belong in this release." });
-    } else {
-      if (unnamedTracks > 0) {
-        items.push({ id: "titles", target: "tracklist", title: `Name ${unnamedTracks} track${unnamedTracks === 1 ? "" : "s"}`, detail: "A named tracklist makes revisions and delivery easier to follow." });
-      }
-      if (unlinkedTracks > 0) {
-        items.push({ id: "sets", target: "tracklist", title: `Link ${unlinkedTracks} Ableton set${unlinkedTracks === 1 ? "" : "s"}`, detail: "Keep each release track connected to its source project." });
-      }
-    }
-    if (releaseStats?.clippedSampleCount) {
-      items.push({ id: "clipping", target: "delivery", title: "Review clipped samples", detail: `${releaseStats.clippedSampleCount.toLocaleString()} full-scale sample${releaseStats.clippedSampleCount === 1 ? "" : "s"} need attention.` });
-    }
-    if (releaseStats && releaseStats.completedCount > 1 && !releaseStats.formatsMatch) {
-      items.push({ id: "format", target: "delivery", title: "Match delivery formats", detail: "Selected mixes use different sample rates, channel counts, or bit depth." });
-    }
-    return items;
-  }, [releaseStats, selected]);
-
   useEffect(() => {
     let cancelled = false;
     void (async () => {
@@ -1027,28 +1057,6 @@ export function ProjectOrganizerScreen({
   function handleSetNotes(notes: string) {
     if (!selected) return;
     mutateProject(selected.id, (p) => ({ ...p, notes }));
-  }
-
-  function openChecklistTarget(target: ChecklistTarget) {
-    const field = target === "name"
-      ? releaseNameRef.current
-      : target === "artist"
-        ? artistInputRef.current
-        : target === "date"
-          ? releaseDateInputRef.current
-          : null;
-    const section = target === "tracklist"
-      ? tracklistRef.current
-      : target === "delivery"
-        ? deliveryRef.current
-        : null;
-
-    if (field) {
-      field.scrollIntoView({ behavior: "smooth", block: "center" });
-      window.setTimeout(() => field.focus(), 250);
-      return;
-    }
-    section?.scrollIntoView({ behavior: "smooth", block: "center" });
   }
 
   async function addQuickPlannerTask(title: string, taskType: PlannerTaskType) {
@@ -1783,7 +1791,6 @@ export function ProjectOrganizerScreen({
         <section className="organizer__detail" aria-label="Project">
           <div className="organizer__detail-bar">
             <input
-              ref={releaseNameRef}
               className="organizer__name"
               value={selected.name}
               placeholder="Untitled project"
@@ -1842,7 +1849,6 @@ export function ProjectOrganizerScreen({
                 <label className="organizer__project-field">
                   <span className="organizer__field-label">Artist</span>
                   <input
-                    ref={artistInputRef}
                     className="organizer__project-input"
                     value={selected.artist}
                     placeholder="Artist or alias"
@@ -1853,7 +1859,6 @@ export function ProjectOrganizerScreen({
                 <label className="organizer__project-field organizer__project-field--date">
                   <span className="organizer__field-label">Release date</span>
                   <input
-                    ref={releaseDateInputRef}
                     className="organizer__project-input"
                     type="date"
                     value={selected.releaseDate}
@@ -1886,34 +1891,7 @@ export function ProjectOrganizerScreen({
             </div>
           </div>
 
-          <section className={`organizer__finish-line ${releaseChecklist.length === 0 ? "is-clear" : ""}`} aria-label="What is left to do">
-            <div className="organizer__finish-line-head">
-              <div>
-                <span className="organizer__field-label">What&apos;s left</span>
-                <strong>{releaseChecklist.length === 0 ? "This release is ready to review." : `${releaseChecklist.length} thing${releaseChecklist.length === 1 ? "" : "s"} to finish`}</strong>
-              </div>
-              <span className="organizer__finish-line-status">{releaseChecklist.length === 0 ? "Ready" : "In progress"}</span>
-            </div>
-            {releaseChecklist.length === 0 ? (
-              <p className="organizer__finish-line-empty">All core release details, source sets, and delivery checks are in place. Use Preview release when you&apos;re ready to share it.</p>
-            ) : (
-              <ol className="organizer__finish-line-list">
-                {releaseChecklist.map((item) => (
-                  <li key={item.id}>
-                    <button type="button" onClick={() => openChecklistTarget(item.target)}>
-                      <span className="organizer__finish-line-mark" aria-hidden="true" />
-                      <span>
-                        <strong>{item.title}</strong>
-                        <small>{item.detail}</small>
-                      </span>
-                      <span className="organizer__finish-line-go" aria-hidden="true">Go</span>
-                    </button>
-                  </li>
-                ))}
-              </ol>
-            )}
-          </section>
-
+          <div className="organizer__release-workspace">
           <section className="organizer__quick-plan" aria-labelledby="quick-plan-title">
             <div className="organizer__quick-plan-head">
               <div>
@@ -1977,7 +1955,7 @@ export function ProjectOrganizerScreen({
           </section>
 
           {releaseStats && releaseStats.completedCount > 0 && (
-            <section ref={deliveryRef} className="organizer__mastering-overview" aria-label="Release mastering consistency">
+            <section className="organizer__mastering-overview" aria-label="Release mastering consistency">
               <div>
                 <span className="organizer__field-label">Release consistency</span>
                 <strong>{releaseStats.completedCount} selected mix{releaseStats.completedCount === 1 ? "" : "es"}</strong>
@@ -2017,7 +1995,7 @@ export function ProjectOrganizerScreen({
             </p>
           )}
 
-          <div ref={tracklistRef} className="organizer__tracklist">
+          <div className="organizer__tracklist">
             {selected.tracks.map((track, index) => {
               const expanded = expandedTrackIds.has(track.id);
               const label = track.title.trim() || `Track ${index + 1}`;
@@ -2065,6 +2043,13 @@ export function ProjectOrganizerScreen({
                       <button type="button" className="px-btn px-btn--primary" disabled={analyzing !== null} onClick={() => void startAddExport(track.id)}>Add version</button>
                     </div>
                   </div>
+
+                  {expanded && track.bounces.length > 0 && (
+                    <MixVersionProfile
+                      bounces={track.bounces}
+                      finalBounceId={track.finalBounceId}
+                    />
+                  )}
 
                   {track.bounces.length > 0 ? track.bounces.map((exp, bounceIndex) => {
                     const playable = urls.current.has(exp.id);
@@ -2258,6 +2243,7 @@ export function ProjectOrganizerScreen({
               );
             })}
             {selected.tracks.length === 0 && <div className="organizer__exports-empty"><strong>No tracks yet.</strong><button type="button" className="px-btn px-btn--primary" onClick={handleAddTrack}>Add track</button></div>}
+          </div>
           </div>
 
           <div className="organizer__release">

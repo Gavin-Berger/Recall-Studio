@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { Fragment, lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { save } from "@tauri-apps/plugin-dialog";
 import "./SchemaTimeline.css";
@@ -8,13 +8,14 @@ import {
   getNoteEdits,
   getParameterChanges,
   getProjectSchema,
+  getTimelineClipEvents,
   listCreativeMoments,
   materializeSessionSchema,
   writeTextFile,
 } from "../../lib/schema/api";
+import { describeMidiChange, midiChangeSubject } from "./timeline/midiChange";
 import {
   DEVICE_ROLE_LABEL,
-  NOTE_KIND_LABEL,
   TRACK_TYPE_LABEL,
   type CreativeMoment,
   type NoteEdit,
@@ -22,6 +23,7 @@ import {
   type ProjectSchema,
   type SavedProject,
   type SavedSessionMetadata,
+  type TimelineClipEvent,
 } from "../../types";
 import { abletonSetName, alsSetName } from "../../features/sessionFormat";
 import { buildSittings, sittingWork, storyLedger } from "../../features/projects/songStory";
@@ -69,22 +71,29 @@ import {
   type LoadStatus,
 } from "./timeline";
 
+const ArrangementCanvas = lazy(() => import("./timeline/ArrangementCanvas"));
+
 export function SchemaTimeline({
   sessionId,
   session,
   project,
   producerName,
   onOpenProjects,
+  onStartCapture,
+  onOpenTimeline,
 }: {
   sessionId: string | null;
   session: SavedSessionMetadata | null;
   project: SavedProject | null;
   producerName: string;
   onOpenProjects: () => void;
+  onStartCapture: (projectId: string) => void;
+  onOpenTimeline: (sessionId: string) => void;
 }) {
   const [schema, setSchema] = useState<ProjectSchema | null>(null);
   const [changes, setChanges] = useState<ParameterChange[]>([]);
   const [noteEdits, setNoteEdits] = useState<NoteEdit[]>([]);
+  const [clipEvents, setClipEvents] = useState<TimelineClipEvent[]>([]);
   const [moments, setMoments] = useState<CreativeMoment[]>([]);
   const [status, setStatus] = useState<LoadStatus>("idle");
   const [error, setError] = useState<string | null>(null);
@@ -119,15 +128,17 @@ export function SchemaTimeline({
       setError(null);
       try {
         if (rematerialize) await materializeSessionSchema(sessionId);
-        const [nextSchema, nextChanges, nextNoteEdits, nextMoments] = await Promise.all([
+        const [nextSchema, nextChanges, nextNoteEdits, nextClipEvents, nextMoments] = await Promise.all([
           getProjectSchema(sessionId),
           getParameterChanges(sessionId),
           getNoteEdits(sessionId),
+          getTimelineClipEvents(sessionId),
           listCreativeMoments(sessionId),
         ]);
         setSchema(nextSchema);
         setChanges(nextChanges);
         setNoteEdits(nextNoteEdits);
+        setClipEvents(nextClipEvents);
         setMoments(nextMoments);
         setStatus("ready");
       } catch (loadError) {
@@ -142,6 +153,7 @@ export function SchemaTimeline({
     setSchema(null);
     setChanges([]);
     setNoteEdits([]);
+    setClipEvents([]);
     setMoments([]);
     setSelectedTrackId(null);
     setShowQuietTracks(false);
@@ -199,6 +211,17 @@ export function SchemaTimeline({
       cancelled = true;
     };
   }, [project?.id, projectCaptureKey, sessionId]);
+
+  // A take remains the capture/storage unit, but the timeline is the project's
+  // memory. Flatten the older captures with the open take here, rather than
+  // changing how a take is created or rotated. While the older reads are in
+  // flight we keep the open take visible; it expands into the full record as
+  // soon as they arrive.
+  const timelineChanges = useMemo(() => {
+    const historicChanges = projectHistorySources?.flatMap((source) => source.changes) ?? [];
+    return [...historicChanges, ...changes].sort((a, b) => a.changed_at_ms - b.changed_at_ms);
+  }, [changes, projectHistorySources]);
+  const projectHistoryLoading = Boolean(project && projectHistorySources === null);
 
   useEffect(() => {
     if (!sessionId || session?.ended_at_ms !== null) return;
@@ -293,14 +316,15 @@ export function SchemaTimeline({
 
   const bounds = useMemo(() => {
     const recording = session?.ended_at_ms === null;
-    const sessionStart = session?.started_at_ms ?? (changes[0]?.changed_at_ms ?? Date.now());
+    const sessionStart = timelineChanges[0]?.changed_at_ms ?? session?.started_at_ms ?? Date.now();
 
     // Fit the axis to where work actually happened. A session left recording for
     // hours otherwise crushes every move into a sliver at the far left; we drop
     // that leading/trailing dead air by bounding to the first and last activity.
     const stamps: number[] = [];
-    for (const change of changes) stamps.push(change.changed_at_ms);
+    for (const change of timelineChanges) stamps.push(change.changed_at_ms);
     for (const edit of noteEdits) stamps.push(edit.changed_at_ms);
+    for (const event of clipEvents) stamps.push(event.changed_at_ms);
     for (const moment of moments) stamps.push(moment.timeline_start_ms ?? moment.created_at_ms);
 
     let start: number;
@@ -320,11 +344,11 @@ export function SchemaTimeline({
     if (end - start < 60_000) end = start + 60_000;
 
     return { start, end, span: end - start, recording, sessionStart };
-  }, [session, changes, noteEdits, moments]);
+  }, [session, timelineChanges, noteEdits, clipEvents, moments]);
 
   const activities = useMemo<Activity[]>(() => {
     const out: Activity[] = [];
-    for (const change of changes) {
+    for (const change of timelineChanges) {
       const trackId =
         (change.parameter_id ? lookups.paramTrack.get(change.parameter_id) : undefined) ??
         (change.track_name ? lookups.nameTrack.get(change.track_name.toLowerCase()) : undefined);
@@ -351,9 +375,9 @@ export function SchemaTimeline({
       // clip, and clips are not in the parameter/device lookups. A clip on a
       // track the schema hasn't seen yet is dropped rather than floated on a
       // lane it doesn't belong to.
-      const trackId = edit.track_name
-        ? lookups.nameTrack.get(edit.track_name.toLowerCase())
-        : undefined;
+      const trackId =
+        (edit.track_id ? lookups.abletonTrack.get(edit.track_id) : undefined) ??
+        (edit.track_name ? lookups.nameTrack.get(edit.track_name.toLowerCase()) : undefined);
       if (!trackId) continue;
       out.push({
         id: edit.id,
@@ -374,6 +398,21 @@ export function SchemaTimeline({
         summary: edit.summary,
       });
     }
+    for (const event of clipEvents) {
+      const trackId =
+        (event.track_id ? lookups.abletonTrack.get(event.track_id) : undefined) ??
+        (event.track_name ? lookups.nameTrack.get(event.track_name.toLowerCase()) : undefined);
+      if (!trackId) continue;
+      out.push({
+        id: event.id,
+        kind: "clip",
+        trackId,
+        atMs: event.changed_at_ms,
+        clipName: event.clip_name,
+        assetName: event.sample_name,
+        eventType: event.event_type,
+      });
+    }
     for (const moment of moments) {
       const trackId = noteTrackId(moment, lookups);
       if (!trackId) continue;
@@ -387,7 +426,7 @@ export function SchemaTimeline({
       });
     }
     return out;
-  }, [changes, noteEdits, moments, lookups]);
+  }, [timelineChanges, noteEdits, clipEvents, moments, lookups]);
 
   // Buses sink to the bottom, Main last of all — the order Ableton's own mixer
   // uses, so it reads as a fixture rather than as a track that happened to sort
@@ -409,9 +448,27 @@ export function SchemaTimeline({
     [lanes, showQuietTracks, activeLaneCount],
   );
 
-  // Shared y-scale for the per-lane activity graphs: the busiest channel peaks
-  // at the top, so taller curve = more changes. Sorted move timestamps per lane
-  // feed a cumulative step-line that builds left→right.
+  // A Song Story is project-wide while this map is deliberately one take at a
+  // time. When a new take contains only setup traffic (focus, transport, or a
+  // snapshot), make that difference explicit and offer the most recent recorded
+  // take instead of presenting a quiet map as a broken one.
+  const hasCurrentTakeActivity = changes.length + noteEdits.length + clipEvents.length + moments.length > 0;
+  const recordedTake = useMemo(
+    () =>
+      [...(project?.captures ?? [])]
+        .filter(
+          (capture) =>
+            capture.id !== sessionId &&
+            capture.take_origin !== "scanned" &&
+            capture.ended_at_ms !== null &&
+            capture.creative_event_count > 0,
+        )
+        .sort((a, b) => b.last_updated_at_ms - a.last_updated_at_ms)[0] ?? null,
+    [project?.captures, sessionId],
+  );
+
+  // Kept while the legacy DOM arrangement remains mounted for a safe visual
+  // transition to the canvas renderer below. The active surface is the canvas.
   const laneGraphs = useMemo(() => {
     const moveTimesByLane = new Map<string, number[]>();
     let maxMoves = 0;
@@ -426,6 +483,26 @@ export function SchemaTimeline({
     return { moveTimesByLane, maxMoves };
   }, [lanes]);
 
+  const heatmap = useMemo(() => {
+    const bucketCount = 32;
+    const bucketsByTrack = new Map<string, number[]>();
+    let peak = 0;
+    for (const lane of lanes) {
+      const buckets = Array.from({ length: bucketCount }, () => 0);
+      for (const item of lane.items) {
+        const relative = (item.atMs - bounds.start) / bounds.span;
+        const index = Math.max(0, Math.min(bucketCount - 1, Math.floor(relative * bucketCount)));
+        buckets[index] += 1;
+        peak = Math.max(peak, buckets[index]);
+      }
+      bucketsByTrack.set(lane.track.id, buckets);
+    }
+    return { bucketCount, bucketsByTrack, peak };
+  }, [lanes, bounds]);
+
+  // Shared y-scale for the per-lane activity graphs: the busiest channel peaks
+  // at the top, so taller curve = more changes. Sorted move timestamps per lane
+  // feed a cumulative step-line that builds left→right.
   // Right edge of every lane graph: the live playhead while recording, else the
   // full width so a finished take's curve reaches the end.
   const xEnd = bounds.recording ? pct(Date.now(), bounds) : 100;
@@ -503,6 +580,7 @@ export function SchemaTimeline({
 
   const moveCountForTrack = trackActivity.filter((a) => a.kind === "move").length;
   const noteEditCountForTrack = trackActivity.filter((a) => a.kind === "noteEdit").length;
+  const clipEventCountForTrack = trackActivity.filter((a) => a.kind === "clip").length;
 
   // Session-wide "worth keeping" candidates. Notes are intentional, so they rank
   // first; then deliberate mode flips; then the biggest net parameter swings.
@@ -517,7 +595,7 @@ export function SchemaTimeline({
       (change.track_name ? lookups.nameTrack.get(change.track_name.toLowerCase()) : undefined) ??
       null;
 
-    const sorted = [...changes]
+    const sorted = [...timelineChanges]
       .filter((change) => change.parameter_name)
       .sort((a, b) => a.changed_at_ms - b.changed_at_ms);
 
@@ -585,21 +663,54 @@ export function SchemaTimeline({
       devices: rankNames(block.deviceCounts).map((entry) => entry.name),
       topParams: rankNames(block.paramCounts).slice(0, 3),
     }));
-  }, [changes, lookups]);
+  }, [timelineChanges, lookups]);
+
+  // The page structure comes from the shared Song Story engine, not capture
+  // boundaries. A producer can leave the same set open long enough to rotate
+  // into a new take, so the visible break belongs at the real gap in work.
+  const timelineSittings = useMemo(() => {
+    const typeByName = new Map(
+      tracks
+        .filter((track) => Boolean(track.name))
+        .map((track) => [track.name!.toLowerCase(), track.type]),
+    );
+    return buildSittings(
+      timelineChanges.map((change) => ({
+        atMs: change.changed_at_ms,
+        trackName: change.track_name,
+        trackId: change.track_id,
+        deviceName: change.device_name,
+        role: null,
+        trackType: change.track_name ? typeByName.get(change.track_name.toLowerCase()) ?? null : null,
+        kind: "move" as const,
+      })),
+    );
+  }, [timelineChanges, tracks]);
+
+  const activityLogSittings = useMemo(
+    () =>
+      timelineSittings.map((sitting) => ({
+        sitting,
+        blocks: sessionBlocks.filter(
+          (block) => block.startMs >= sitting.startMs && block.startMs <= sitting.endMs,
+        ),
+      })),
+    [sessionBlocks, timelineSittings],
+  );
 
 
   // Session-level "pulse": headline counts + a momentum read, so the take feels
   // like an event you're in, not a table you're reading.
   const pulse = useMemo(() => {
-    const moveCount = changes.length;
-    const decisionCount = changes.filter((c) => c.is_quantized).length;
+    const moveCount = timelineChanges.length;
+    const decisionCount = timelineChanges.filter((c) => c.is_quantized).length;
     const keeperCount = moments.filter(
       (m) => m.confidence === "keeper" || m.confidence === "final" || m.tags.includes("keeper"),
     ).length;
     const tracksTouched = new Set(
-      changes.map((c) => c.track_name).filter((name): name is string => Boolean(name)),
+      timelineChanges.map((c) => c.track_name).filter((name): name is string => Boolean(name)),
     ).size;
-    const times = changes.map((c) => c.changed_at_ms).sort((a, b) => a - b);
+    const times = timelineChanges.map((c) => c.changed_at_ms);
 
     // Momentum from recent cadence (moves in the last two minutes).
     const now = Date.now();
@@ -616,30 +727,31 @@ export function SchemaTimeline({
     }
 
     return { moveCount, decisionCount, keeperCount, tracksTouched, times, momentum };
-  }, [changes, moments, bounds.recording]);
+  }, [timelineChanges, moments, bounds.recording]);
 
   // Hands-on time, not wall-clock. A set left open overnight must never read as
   // "39 hr" of work — only stretches with recorded activity count.
   const activeMs = useMemo(() => {
     const stamps = [
-      ...changes.map((change) => change.changed_at_ms),
+      ...timelineChanges.map((change) => change.changed_at_ms),
       // Writing a part is hands-on time as surely as riding a knob is. Without
       // these, a session spent entirely in the piano roll would read as idle.
       ...noteEdits.map((edit) => edit.changed_at_ms),
+      ...clipEvents.map((event) => event.changed_at_ms),
       ...moments.map((moment) => moment.timeline_start_ms ?? moment.created_at_ms),
     ];
     return activeDurationMs(stamps, bounds.recording ? Date.now() : null);
-  }, [changes, noteEdits, moments, bounds.recording]);
+  }, [timelineChanges, noteEdits, clipEvents, moments, bounds.recording]);
 
   // An auto-written recap of the take — prose that ties the numbers together so
   // the session reads like a memory you can skim, not a table you decode.
   const sessionStory = useMemo<string[] | null>(() => {
-    if (changes.length === 0) return null;
+    if (timelineChanges.length === 0) return null;
     const sentences: string[] = [];
 
     const trackTally = new Map<string, number>();
     const deviceTally = new Map<string, number>();
-    for (const change of changes) {
+    for (const change of timelineChanges) {
       if (change.track_name) trackTally.set(change.track_name, (trackTally.get(change.track_name) ?? 0) + 1);
       if (change.device_name) deviceTally.set(change.device_name, (deviceTally.get(change.device_name) ?? 0) + 1);
     }
@@ -649,7 +761,7 @@ export function SchemaTimeline({
 
     // Boldest continuous swing, by percent-of-range.
     let biggest: { param: string; before: string; after: string; mag: number } | null = null;
-    for (const change of changes) {
+    for (const change of timelineChanges) {
       if (!change.parameter_name || change.is_quantized) continue;
       if (change.after_value_percent === null || change.before_value_percent === null) continue;
       const mag = Math.abs(change.after_value_percent - change.before_value_percent);
@@ -663,7 +775,7 @@ export function SchemaTimeline({
       }
     }
 
-    const modes = changes.filter((c) => c.is_quantized && c.parameter_name);
+    const modes = timelineChanges.filter((c) => c.is_quantized && c.parameter_name);
     const keepers = moments.filter(
       (m) => m.confidence === "keeper" || m.confidence === "final" || m.tags.includes("keeper"),
     ).length;
@@ -697,7 +809,7 @@ export function SchemaTimeline({
     }
 
     return sentences;
-  }, [changes, moments, session, activeMs]);
+  }, [timelineChanges, moments, session, activeMs]);
 
   function toggleGroup(key: string) {
     setExpandedGroups((prev) => {
@@ -709,6 +821,7 @@ export function SchemaTimeline({
   }
 
   const hasMap = Boolean(schema?.has_snapshot) && tracks.length > 0;
+  const isProjectTimeline = Boolean(project && project.captures.length > 1);
   const takeTitle = formatTakeTitle(session, schema?.name ?? null);
   const rawTakeId = session?.name ?? session?.id ?? sessionId;
   const projectContext = session?.display_name ?? session?.project_name ?? null;
@@ -843,7 +956,7 @@ export function SchemaTimeline({
       project: projectContext,
       duration: durationLabel,
       recordedAtMs: session?.started_at_ms ?? null,
-      changes,
+      changes: timelineChanges,
       stats: {
         moves: pulse.moveCount,
         characterMoves: pulse.decisionCount,
@@ -1011,13 +1124,40 @@ export function SchemaTimeline({
       {!hasMap ? (
         <ScanEmptyState
           existingSet={Boolean(session?.project_path)}
+          scannedTake={session?.take_origin === "scanned"}
           loading={status === "loading"}
           onScan={() => void load(true)}
+          onStartCapture={project?.id ? () => onStartCapture(project.id) : undefined}
         />
       ) : (
         <>
+          {!hasCurrentTakeActivity && recordedTake && (
+            <section className="tl-take-redirect" aria-label="Recorded take available">
+              <div>
+                <span className="tl-take-redirect__eyebrow">This take is quiet</span>
+                <p>
+                  It has the current set map, but no musical changes yet. The project timeline below
+                  includes earlier sittings; this recorded take is <b>{formatTakeTitle(recordedTake, null)}</b>.
+                </p>
+              </div>
+              <button type="button" className="tl-btn" onClick={() => onOpenTimeline(recordedTake.id)}>
+                Open recorded take
+              </button>
+            </section>
+          )}
+
           <div className="tl-pulse">
             <div className="tl-pulse__stats">
+              {isProjectTimeline && (
+                <span className="tl-stat tl-stat--scope">
+                  <b>{projectHistoryLoading ? "…" : timelineSittings.length}</b>
+                  <span>
+                    {projectHistoryLoading
+                      ? "loading earlier takes"
+                      : `sitting${timelineSittings.length === 1 ? "" : "s"}`}
+                  </span>
+                </span>
+              )}
               <span className="tl-stat">
                 <b>{pulse.moveCount}</b>
                 <span>move{pulse.moveCount === 1 ? "" : "s"}</span>
@@ -1065,7 +1205,7 @@ export function SchemaTimeline({
             <div className="tl-capture-scope">
               <span className="tl-capture-scope__label">
                 <span className="tl-capture-scope__dot" aria-hidden="true" />
-                Showing {visibleLanes.length} track{visibleLanes.length === 1 ? "" : "s"} with recorded work
+                {isProjectTimeline ? "Project timeline" : "This take"}: showing {visibleLanes.length} track{visibleLanes.length === 1 ? "" : "s"} with recorded work
                 {quietLaneCount > 0 && ` · ${quietLaneCount} quiet`}
               </span>
               {quietLaneCount > 0 && (
@@ -1082,7 +1222,8 @@ export function SchemaTimeline({
           )}
 
           <div className="tl-legend">
-            <span><span className="tl-key tl-key--move" /> activity (taller = more changes)</span>
+            <span><span className="tl-key tl-key--heat" /> activity density</span>
+            <span><span className="tl-key tl-key--move" /> running total</span>
             <span><span className="tl-key tl-key--note" /> note</span>
             {bounds.recording && <span><span className="tl-key tl-key--now" /> now</span>}
           </div>
@@ -1092,8 +1233,6 @@ export function SchemaTimeline({
               <div className="tl-rspacer" />
               {visibleLanes.map((lane) => {
                 const color = trackColor(lane.track);
-                const moveCount = (laneGraphs.moveTimesByLane.get(lane.track.id) ?? []).length;
-                const activityCount = lane.items.length;
                 return (
                   <button
                     key={lane.track.id}
@@ -1103,23 +1242,30 @@ export function SchemaTimeline({
                     }`}
                     style={{ ["--lane-color" as string]: color }}
                     onClick={() => setSelectedTrackId(lane.track.id)}
-                    title={`${lane.track.name ?? "Untitled track"} — ${moveCount} move${moveCount === 1 ? "" : "s"}`}
+                    title={`${lane.track.name ?? "Untitled track"} — recorded activity`}
                   >
                     <span className="tl-hdr__sw" style={{ background: color }} />
                     <span className="tl-hdr__name">
                       {lane.track.type === "master" ? "Main" : lane.track.name ?? "Untitled track"}
                     </span>
-                    {activityCount > 0 ? (
-                      <span className="tl-hdr__count">{activityCount}</span>
-                    ) : (
-                      <span className="tl-hdr__quiet" aria-hidden="true" />
-                    )}
+                    <span className="tl-hdr__quiet" aria-hidden="true" />
                   </button>
                 );
               })}
             </div>
 
             <div className="tl-tracks">
+              <Suspense fallback={<div className="tl-arrangement-canvas tl-arrangement-canvas--loading" />}>
+                <ArrangementCanvas
+                  lanes={visibleLanes}
+                  bounds={bounds}
+                  selectedTrackId={selectedTrackId}
+                  onSelectTrack={setSelectedTrackId}
+                  recording={bounds.recording}
+                  sittingBreaks={timelineSittings.slice(1).map((sitting) => ({ atMs: sitting.startMs }))}
+                />
+              </Suspense>
+              <div className="tl-legacy-arrangement" aria-hidden="true">
               <div className="tl-ruler">
                 {buildTicks(bounds).map((tick) => (
                   <span key={tick.label + tick.pct} className="tl-tick" style={{ left: `${tick.pct}%` }}>
@@ -1131,6 +1277,8 @@ export function SchemaTimeline({
                 const moveTimes = laneGraphs.moveTimesByLane.get(lane.track.id) ?? [];
                 const graph = cumulativeMovePaths(moveTimes, bounds, laneGraphs.maxMoves, xEnd);
                 const moveCount = moveTimes.length;
+                const heatBuckets = heatmap.bucketsByTrack.get(lane.track.id) ?? [];
+                const heatColor = trackColor(lane.track);
                 return (
                   <button
                     key={lane.track.id}
@@ -1141,6 +1289,29 @@ export function SchemaTimeline({
                     onClick={() => setSelectedTrackId(lane.track.id)}
                     aria-label={`${lane.track.name ?? "Untitled track"} — ${moveCount} moves`}
                   >
+                    <span
+                      className="tl-heat"
+                      aria-hidden="true"
+                      style={{ gridTemplateColumns: `repeat(${heatmap.bucketCount}, minmax(0, 1fr))` }}
+                    >
+                      {heatBuckets.map((count, index) => {
+                        const intensity = heatmap.peak > 0 ? count / heatmap.peak : 0;
+                        return (
+                          <span
+                            key={index}
+                            className={`tl-heat__cell ${count > 0 ? "is-active" : ""}`}
+                            style={
+                              count > 0
+                                ? {
+                                    backgroundColor: heatColor,
+                                    opacity: 0.14 + Math.sqrt(intensity) * 0.7,
+                                  }
+                                : undefined
+                            }
+                          />
+                        );
+                      })}
+                    </span>
                     {graph && (
                       <ActivitySpark
                         paths={graph}
@@ -1177,6 +1348,7 @@ export function SchemaTimeline({
                 );
               })}
               {bounds.recording && <span className="tl-playhead" style={{ left: `${pct(Date.now(), bounds)}%` }} />}
+              </div>
             </div>
           </div>
 
@@ -1194,6 +1366,9 @@ export function SchemaTimeline({
                   {moveCountForTrack === 1 ? "" : "s"}
                   {noteEditCountForTrack > 0 && (
                     <> · {noteEditCountForTrack} note edit{noteEditCountForTrack === 1 ? "" : "s"}</>
+                  )}
+                  {clipEventCountForTrack > 0 && (
+                    <> · {clipEventCountForTrack} clip added</>
                   )}
                 </span>
                 {mostTouched && mostTouched.count > 1 && (
@@ -1267,6 +1442,27 @@ export function SchemaTimeline({
                               <span className="tl-notes-val__text">{describeNoteEdit(net)}</span>
                               {count > 1 && <span className="tl-ba__count">{count}×</span>}
                             </span>
+                          </span>
+                          <span className="tl-ci__when">{when}</span>
+                        </li>
+                      );
+                    }
+
+                    if (lead.kind === "clip") {
+                      return (
+                        <li key={group.key} className="tl-ci">
+                          <span className="tl-ci__ic tl-ci__ic--note" aria-hidden="true">+</span>
+                          <span className="tl-ci__body">
+                            <span className="tl-ci__what"><b>{
+                              lead.eventType === "sample_added"
+                                ? "Sample added"
+                                : lead.eventType === "audio_clip_recorded"
+                                  ? "Recorded audio"
+                                  : lead.eventType === "midi_clip_recorded"
+                                    ? "Recorded MIDI"
+                                    : "Clip added"
+                            }</b></span>
+                            <span className="tl-ci__val">{lead.assetName ?? lead.clipName ?? "Untitled clip"}</span>
                           </span>
                           <span className="tl-ci__when">{when}</span>
                         </li>
@@ -1382,8 +1578,16 @@ export function SchemaTimeline({
             <section className="tl-activity-log" aria-label="Activity log">
               <div className="tl-activity-log__head">
                 <div>
-                  <span className="tl-activity-log__kick">Activity log</span>
-                  <span className="tl-activity-log__sub">clock time, newest first</span>
+                  <span className="tl-activity-log__kick">
+                    {isProjectTimeline ? "Project timeline" : "Activity log"}
+                  </span>
+                  <span className="tl-activity-log__sub">
+                    {projectHistoryLoading
+                      ? "reading earlier takes"
+                      : timelineSittings.length > 1
+                        ? `${timelineSittings.length} sittings, newest first`
+                        : "clock time, newest first"}
+                  </span>
                 </div>
                 <button
                   type="button"
@@ -1396,10 +1600,37 @@ export function SchemaTimeline({
                 </button>
               </div>
               <ol className="tl-activity-log__list">
-                {[...sessionBlocks].reverse().map((block) => {
-                  const track = block.trackId
-                    ? tracks.find((t) => t.id === block.trackId)
-                    : null;
+                {[...activityLogSittings].reverse().map(({ sitting, blocks }, index, newestFirst) => {
+                  const newerSitting = newestFirst[index - 1]?.sitting;
+                  const gapMs = newerSitting ? Math.max(0, newerSitting.startMs - sitting.endMs) : 0;
+                  const date = new Date(sitting.startMs);
+                  return (
+                    <Fragment key={sitting.id}>
+                      {newerSitting && (
+                        <li className="tl-activity-log__break">
+                          <span className="tl-activity-log__break-rule" aria-hidden="true" />
+                          <span>Break between sittings · {formatDuration(gapMs)} elapsed</span>
+                          <span className="tl-activity-log__break-rule" aria-hidden="true" />
+                        </li>
+                      )}
+                      {timelineSittings.length > 1 && (
+                        <li className="tl-activity-log__sitting">
+                          <time dateTime={date.toISOString()} title={date.toLocaleString()}>
+                            Sitting {sitting.index + 1} · {date.toLocaleDateString(undefined, { month: "short", day: "numeric" })} · {formatClock(sitting.startMs)}
+                          </time>
+                          <span>
+                            {sitting.moveCount} move{sitting.moveCount === 1 ? "" : "s"} · {formatDuration(sitting.activeMs)} active · {sitting.label}
+                          </span>
+                        </li>
+                      )}
+                      {[...blocks].reverse().map((block) => {
+                  const track =
+                    (block.trackId ? tracks.find((candidate) => candidate.id === block.trackId) : null) ??
+                    (block.trackName
+                      ? tracks.find(
+                          (candidate) => candidate.name?.toLowerCase() === block.trackName?.toLowerCase(),
+                        )
+                      : null);
                   const color = track ? trackColor(track) : "var(--signal)";
                   const detail = [
                     block.moveCount === 1 ? "1 move" : `${block.moveCount} moves`,
@@ -1414,12 +1645,8 @@ export function SchemaTimeline({
                         type="button"
                         className="tl-activity-log__row"
                         style={{ ["--lane-color" as string]: color }}
-                        onClick={() => block.trackId && setSelectedTrackId(block.trackId)}
-                        title={
-                          block.trackId
-                            ? `Focus ${block.trackName ?? "track"}`
-                            : undefined
-                        }
+                        onClick={() => track && setSelectedTrackId(track.id)}
+                        title={track ? `Focus ${block.trackName ?? "track"}` : undefined}
                       >
                         <time
                           className="tl-activity-log__time"
@@ -1437,6 +1664,9 @@ export function SchemaTimeline({
                         </span>
                       </button>
                     </li>
+                      );
+                    })}
+                    </Fragment>
                   );
                 })}
               </ol>
@@ -1452,7 +1682,7 @@ export function SchemaTimeline({
               no data cannot say it. */}
           <div className="tl-notes">
             <div className="tl-blocks__head">
-              <span className="tl-blocks__kick">MIDI notes</span>
+              <span className="tl-blocks__kick">MIDI changes</span>
               <span className="tl-blocks__sub">
                 {noteEdits.length > 0
                   ? `${noteEdits.length} edit${noteEdits.length === 1 ? "" : "s"}, newest first`
@@ -1467,6 +1697,7 @@ export function SchemaTimeline({
                         (t) => t.name?.toLowerCase() === edit.track_name?.toLowerCase(),
                       )
                     : null;
+                  const summary = describeMidiChange(edit);
                   return (
                     <div
                       key={edit.id}
@@ -1475,16 +1706,12 @@ export function SchemaTimeline({
                     >
                       <span className="tl-block__rail" aria-hidden="true" />
                       <span className="tl-block__main">
+                        {/* The musical act first, the numbers under it. A
+                            producer recognises "moved up an octave"; they do not
+                            recognise "distinct_pitches 1 → 4". */}
                         <span className="tl-block__top">
-                          <span className="tl-block__track">{clipLabel(edit.clip_name)}</span>
-                          <span className="tl-note-row__track">
-                            {edit.track_name ?? "unknown track"}
-                          </span>
-                          {edit.change_kind && (
-                            <span className={`tl-note-kind is-${edit.change_kind}`}>
-                              {NOTE_KIND_LABEL[edit.change_kind] ?? edit.change_kind}
-                            </span>
-                          )}
+                          <span className="tl-block__track">{summary.headline}</span>
+                          <span className="tl-note-row__track">{midiChangeSubject(edit)}</span>
                         </span>
                         <span className="tl-notes-val">
                           <PitchBar
@@ -1494,14 +1721,16 @@ export function SchemaTimeline({
                             previousMax={edit.previous_pitch_max}
                             label={edit.pitch_range}
                           />
-                          <span className="tl-block__params">{edit.summary ?? "—"}</span>
+                          {summary.detail && (
+                            <span className="tl-block__params">{summary.detail}</span>
+                          )}
                         </span>
-                        {/* Raw fields, for checking the capture against Live
-                            rather than trusting the rendered phrase. */}
+                        {/* Raw fields, kept so the capture can still be checked
+                            against Live rather than trusting the phrase above —
+                            but demoted, because they are evidence, not the story. */}
                         <span className="tl-note-row__raw">
                           {edit.previous_note_count ?? "—"} → {edit.note_count ?? "—"} notes
                           {edit.distinct_pitches !== null && ` · ${edit.distinct_pitches} pitches`}
-                          {edit.pitch_range && ` · ${edit.pitch_range}`}
                           {edit.velocity_mean !== null && ` · vel ${edit.velocity_mean}`}
                           {edit.length_beats !== null && ` · ${edit.length_beats} beats`}
                         </span>

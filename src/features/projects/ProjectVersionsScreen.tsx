@@ -145,7 +145,10 @@ export function ProjectVersionsScreen({
       loadSchema(selected);
       loadActivity(selected);
     }
-    if (previous) loadSchema(previous);
+    if (previous) {
+      loadSchema(previous);
+      loadActivity(previous);
+    }
   }, [selected, previous, loadSchema, loadActivity]);
 
   async function runAction(label: string, action: () => Promise<void>) {
@@ -291,6 +294,11 @@ export function ProjectVersionsScreen({
                   ? null
                   : activity[selected.id] ?? { status: "loading" }
               }
+              previousActivityState={
+                previous && previous.take_origin !== "scanned"
+                  ? activity[previous.id] ?? { status: "loading" }
+                  : null
+              }
               busy={busy}
               onOpenTimeline={onOpenTimeline}
               onOpenRecap={onOpenRecap}
@@ -371,6 +379,7 @@ function VersionDetail({
   schemaState,
   previousSchemaState,
   activityState,
+  previousActivityState,
   busy,
   onOpenTimeline,
   onOpenRecap,
@@ -382,6 +391,7 @@ function VersionDetail({
   schemaState: SchemaState;
   previousSchemaState: SchemaState | null;
   activityState: ActivityState | null;
+  previousActivityState: ActivityState | null;
   busy: boolean;
   onOpenTimeline: (sessionId: string) => void;
   onOpenRecap: (sessionId: string) => void;
@@ -457,6 +467,13 @@ function VersionDetail({
                 <span>{activityState.tracks === 1 ? "track touched" : "tracks touched"}</span>
               </div>
             </div>
+            {previous && previousActivityState?.status === "ready" && (
+              <ActivityMoveComparison
+                currentMoves={activityState.moves}
+                previousMoves={previousActivityState.moves}
+                previousName={takeName(previous)}
+              />
+            )}
             <div className="vd-card__actions">
               <button type="button" className="px-btn" disabled={busy} onClick={() => onOpenTimeline(take.id)}>
                 Open timeline
@@ -509,6 +526,47 @@ function VersionDetail({
         </div>
       </section>
     </section>
+  );
+}
+
+function ActivityMoveComparison({
+  currentMoves,
+  previousMoves,
+  previousName,
+}: {
+  currentMoves: number;
+  previousMoves: number;
+  previousName: string;
+}) {
+  const largest = Math.max(currentMoves, previousMoves, 1);
+  const change = currentMoves - previousMoves;
+  const changeLabel = change === 0 ? "same amount of activity" : `${change > 0 ? "+" : ""}${change} moves`;
+
+  return (
+    <div
+      className="vd-activity-compare"
+      role="img"
+      aria-label={`${currentMoves} recorded sound and mix moves in this version, ${changeLabel} compared with ${previousName}`}
+    >
+      <div className="vd-activity-compare__head">
+        <span>Mix activity vs. previous</span>
+        <strong>{changeLabel}</strong>
+      </div>
+      <div className="vd-activity-compare__row">
+        <span>This version</span>
+        <div className="vd-activity-compare__track" aria-hidden="true">
+          <i style={{ width: `${(currentMoves / largest) * 100}%` }} />
+        </div>
+        <b>{currentMoves}</b>
+      </div>
+      <div className="vd-activity-compare__row is-previous">
+        <span title={previousName}>Previous</span>
+        <div className="vd-activity-compare__track" aria-hidden="true">
+          <i style={{ width: `${(previousMoves / largest) * 100}%` }} />
+        </div>
+        <b>{previousMoves}</b>
+      </div>
+    </div>
   );
 }
 

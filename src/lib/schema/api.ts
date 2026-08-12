@@ -12,6 +12,7 @@ import type {
   NoteEdit,
   ParameterChange,
   ProjectSchema,
+  TimelineClipEvent,
 } from "../../types/schema";
 
 /** Rebuild the normalized tables for a session from its event log. */
@@ -34,6 +35,11 @@ export function getParameterChanges(sessionId: string): Promise<ParameterChange[
 
 export function getNoteEdits(sessionId: string): Promise<NoteEdit[]> {
   return invoke<NoteEdit[]>("get_note_edits", { sessionId });
+}
+
+/** Audio/sample drops and newly created clips, for timeline activity density. */
+export function getTimelineClipEvents(sessionId: string): Promise<TimelineClipEvent[]> {
+  return invoke<TimelineClipEvent[]>("get_timeline_clip_events", { sessionId });
 }
 
 export function listCreativeMoments(sessionId: string): Promise<CreativeMoment[]> {

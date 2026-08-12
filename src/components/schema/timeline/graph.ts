@@ -14,7 +14,8 @@ export function buildLookups(schema: ProjectSchema | null): Lookups {
   const paramTrack = new Map<string, string>();
   const deviceTrack = new Map<string, string>();
   const nameTrack = new Map<string, string>();
-  if (!schema) return { paramTrack, deviceTrack, nameTrack };
+  const abletonTrack = new Map<string, string>();
+  if (!schema) return { paramTrack, deviceTrack, nameTrack, abletonTrack };
 
   const walkParams = (params: ParameterObj[], trackId: string) => {
     for (const param of params) {
@@ -25,12 +26,13 @@ export function buildLookups(schema: ProjectSchema | null): Lookups {
 
   for (const track of schema.tracks) {
     if (track.name) nameTrack.set(track.name.toLowerCase(), track.id);
+    if (track.ableton_id) abletonTrack.set(track.ableton_id, track.id);
     for (const device of track.devices) {
       deviceTrack.set(device.id, track.id);
       walkParams(device.parameters, track.id);
     }
   }
-  return { paramTrack, deviceTrack, nameTrack };
+  return { paramTrack, deviceTrack, nameTrack, abletonTrack };
 }
 
 export function noteTrackId(moment: CreativeMoment, lookups: Lookups): string | null {

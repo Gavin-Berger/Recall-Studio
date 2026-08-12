@@ -195,6 +195,9 @@ pub struct ParameterChange {
 pub struct NoteEdit {
     pub id: String,
     pub track_name: Option<String>,
+    /// Live's stable pointer for the track. Display names can change between
+    /// an edit and a later schema snapshot, so timeline joins must prefer this.
+    pub track_id: Option<String>,
     pub clip_name: Option<String>,
     /// Live's pointer for the clip. The only reliable way to tell two clips
     /// apart — names are frequently blank, so grouping on name alone merges
@@ -222,6 +225,19 @@ pub struct NoteEdit {
     pub changed_at_ms: u64,
 }
 
+/// A discrete clip or sample addition that belongs in the arrangement activity
+/// density even though it is not a parameter move or a MIDI-note edit.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TimelineClipEvent {
+    pub id: String,
+    pub event_type: String,
+    pub track_name: Option<String>,
+    pub track_id: Option<String>,
+    pub clip_name: Option<String>,
+    pub sample_name: Option<String>,
+    pub changed_at_ms: u64,
+}
+
 /// Build a [`NoteEdit`] from one `clip_notes_changed` event row.
 ///
 /// `payload` is the raw JSON *string* stored in `events.payload`. Anything
@@ -232,6 +248,7 @@ pub fn parse_note_edit(
     event_id: i64,
     timestamp_ms: u64,
     column_track_name: Option<String>,
+    column_track_id: Option<String>,
     payload: Option<&str>,
 ) -> Option<NoteEdit> {
     let parsed: Value = serde_json::from_str(payload?).ok()?;
@@ -249,6 +266,7 @@ pub fn parse_note_edit(
         // The first-class column wins when present — it is what every other
         // read path joins tracks on — with the payload as the fallback.
         track_name: column_track_name.or_else(|| text("track_name")),
+        track_id: column_track_id.or_else(|| text("track_id")),
         clip_name: text("clip_name"),
         clip_id: text("clip_id"),
         change_kind: text("change_kind"),
@@ -667,6 +685,57 @@ mod tests {
         assert_eq!(parse_session_tree(&payload)[0].track_type, TrackType::Group);
     }
 
+    // The exact payload shape _serialize_track now sends: a group parent, and a
+    // child carrying group_track_id pointing at the parent's id. Before the
+    // script sent that key this field was always None, so group nesting could not
+    // be rebuilt even though every layer below the script already supported it.
+    // The child's group_ableton_id must land in the SAME id space as the parent's
+    // ableton_id, or parent and child can never be matched up.
+    #[test]
+    fn a_child_track_records_the_group_it_belongs_to() {
+        let payload = json!({
+            "tracks": [
+                { "index": 0, "id": "g1", "name": "Drums", "is_foldable": true, "devices": [] },
+                { "index": 1, "id": "t2", "name": "Kick", "group_track_id": "g1", "devices": [] }
+            ]
+        });
+
+        let tracks = parse_session_tree(&payload);
+        let parent = &tracks[0];
+        let child = &tracks[1];
+
+        assert_eq!(parent.track_type, TrackType::Group);
+        assert_eq!(parent.group_ableton_id, None, "a top-level group has no parent");
+        assert_eq!(child.group_ableton_id.as_deref(), Some("g1"));
+        assert_eq!(
+            child.group_ableton_id.as_deref(),
+            parent.ableton_id.as_deref(),
+            "the child's group pointer must be in the same id space as the parent's id"
+        );
+    }
+
+    // Older bridge builds send neither key; absent must stay absent rather than
+    // becoming a track that claims to belong to a group called "".
+    #[test]
+    fn a_track_without_a_group_pointer_has_no_group() {
+        let payload = json!({
+            "tracks": [{ "index": 0, "id": "t1", "name": "Kick", "devices": [] }]
+        });
+        assert_eq!(parse_session_tree(&payload)[0].group_ableton_id, None);
+    }
+
+    // Live hands back an int for track colour; the script forwards it raw.
+    #[test]
+    fn track_colour_survives_as_the_raw_value_live_sent() {
+        let payload = json!({
+            "tracks": [{ "index": 0, "id": "t1", "name": "Kick", "color": 16711680, "devices": [] }]
+        });
+        assert_eq!(
+            parse_session_tree(&payload)[0].color.as_deref(),
+            Some("16711680")
+        );
+    }
+
     #[test]
     fn return_tracks_typed_as_return() {
         let payload = json!({
@@ -869,6 +938,38 @@ mod tests {
         assert_eq!(track_identity_key(None, None), "");
     }
 
+    // The reason this function exists at all (see its doc comment): Ableton
+    // auto-names a track after its first device, so two unrelated tracks are
+    // routinely both called "Serum 2". Keying on the name would splice their
+    // before/after parameter chains into one, inventing transitions that never
+    // happened. Distinct ids must stay distinct even when the names are identical.
+    #[test]
+    fn track_identity_key_separates_two_tracks_that_share_a_name() {
+        let left = track_identity_key(Some("42"), Some("Serum 2"));
+        let right = track_identity_key(Some("77"), Some("Serum 2"));
+        assert_ne!(left, right);
+    }
+
+    // An id present but blank is the same thing as no id — it must fall through
+    // to the name rather than keying every such track to one shared "" bucket,
+    // which would splice all of them together.
+    #[test]
+    fn track_identity_key_treats_a_blank_id_as_absent() {
+        assert_eq!(track_identity_key(Some(""), Some("Serum 2")), "Serum 2");
+    }
+
+    // The documented limit of the legacy fallback, pinned honestly: events captured
+    // before the bridge sent track_id have only a name to go on, so two same-named
+    // tracks DO collide there. This is accepted behavior for old sessions, not a
+    // bug to fix silently — if it ever changes, it should change deliberately.
+    #[test]
+    fn track_identity_key_still_collides_for_legacy_events_with_no_id() {
+        assert_eq!(
+            track_identity_key(None, Some("Serum 2")),
+            track_identity_key(None, Some("Serum 2")),
+        );
+    }
+
     #[test]
     fn note_edit_reads_the_bridge_payload() {
         let payload = json!({
@@ -886,7 +987,7 @@ mod tests {
         })
         .to_string();
 
-        let edit = parse_note_edit(42, 1_700_000_000_000, None, Some(&payload)).expect("parsed");
+        let edit = parse_note_edit(42, 1_700_000_000_000, None, None, Some(&payload)).expect("parsed");
 
         assert_eq!(edit.id, "note-edit-42");
         assert_eq!(edit.track_name.as_deref(), Some("Bass"));
@@ -903,23 +1004,24 @@ mod tests {
         // The column is what every other read path joins on; a stale payload
         // name must not win over it.
         let payload = json!({ "track_name": "payload name", "note_count": 4 }).to_string();
-        let edit = parse_note_edit(1, 0, Some("column name".into()), Some(&payload)).unwrap();
+        let edit = parse_note_edit(1, 0, Some("column name".into()), Some("stable-id".into()), Some(&payload)).unwrap();
         assert_eq!(edit.track_name.as_deref(), Some("column name"));
+        assert_eq!(edit.track_id.as_deref(), Some("stable-id"));
     }
 
     #[test]
     fn note_edit_rejects_unusable_rows() {
         // No payload, or one that isn't JSON, yields nothing rather than a row
         // that would occupy a line of the story saying nothing.
-        assert!(parse_note_edit(1, 0, None, None).is_none());
-        assert!(parse_note_edit(1, 0, None, Some("not json")).is_none());
+        assert!(parse_note_edit(1, 0, None, None, None).is_none());
+        assert!(parse_note_edit(1, 0, None, None, Some("not json")).is_none());
     }
 
     #[test]
     fn note_edit_survives_a_sparse_payload() {
         // An older bridge sending only the essentials still renders.
         let payload = json!({ "note_count": 3 }).to_string();
-        let edit = parse_note_edit(7, 5, None, Some(&payload)).expect("parsed");
+        let edit = parse_note_edit(7, 5, None, None, Some(&payload)).expect("parsed");
         assert_eq!(edit.note_count, Some(3));
         assert!(edit.summary.is_none());
         assert!(edit.pitch_range.is_none());

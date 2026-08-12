@@ -1,4 +1,4 @@
-import { isTauri } from "@tauri-apps/api/core";
+import { invoke, isTauri } from "@tauri-apps/api/core";
 import type { DailyPlanReminderSettings, PlannerTask } from "../../types";
 import type { NativeProject } from "../organizer/repository";
 
@@ -91,8 +91,11 @@ export async function requestDailyPlanPermission(): Promise<boolean> {
 
 export async function sendDailyPlanNotification(content: DailyPlanContent): Promise<boolean> {
   if (!isTauri()) return false;
-  const { isPermissionGranted, sendNotification } = await notificationApi();
-  if (!(await isPermissionGranted())) return false;
-  sendNotification(content);
-  return true;
+  try {
+    await invoke("send_daily_plan_notification", content);
+    return true;
+  } catch (error) {
+    console.error("Failed to send the daily studio plan notification:", error);
+    return false;
+  }
 }

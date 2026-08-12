@@ -102,22 +102,27 @@ function classify(input: {
   tracksTouchedCount: number;
   instrumentMoves: number;
   audioFxMoves: number;
+  mixerMoves: number;
   touchedBus: boolean;
 }): { kind: SittingKind; label: string } {
   const { moveCount, noteEditCount, newTrackCount } = input;
   const totalMoves = Math.max(1, moveCount);
 
   // Opening a project on empty tracks reads as laying the foundation.
-  if (input.index === 0 && newTrackCount >= 2) {
+  if (input.index === 0 && newTrackCount >= 2 && input.mixerMoves === 0) {
     return { kind: "foundation", label: "looks like laying foundations" };
   }
   // Bringing in new parts / writing MIDI is arrangement work.
-  if (newTrackCount >= 2 || noteEditCount >= Math.max(3, moveCount * 0.5)) {
+  if (
+    (newTrackCount >= 2 && input.mixerMoves === 0) ||
+    noteEditCount >= Math.max(3, moveCount * 0.5)
+  ) {
     return { kind: "arrangement", label: "looks like arrangement" };
   }
-  // Mix work: effect moves spread across several channels, or the Main/returns
-  // getting touched with effects.
+  // Mix work: deliberate mixer moves across channels, effect moves spread
+  // across channels, or the Main/returns getting touched with effects.
   if (
+    (input.mixerMoves / totalMoves >= 0.4 && input.tracksTouchedCount >= 2) ||
     (input.audioFxMoves / totalMoves >= 0.5 && input.tracksTouchedCount >= 3) ||
     (input.touchedBus && input.audioFxMoves >= 3)
   ) {
@@ -148,6 +153,7 @@ function summarize(
   let noteEditCount = 0;
   let instrumentMoves = 0;
   let audioFxMoves = 0;
+  let mixerMoves = 0;
   let touchedBus = false;
 
   for (const item of items) {
@@ -162,6 +168,7 @@ function summarize(
     if (item.kind === "move") {
       if (item.role === "instrument") instrumentMoves += 1;
       if (item.role === "audio_effect") audioFxMoves += 1;
+      if (item.deviceName === "Mixer") mixerMoves += 1;
     }
     if (item.trackType === "master" || item.trackType === "return") touchedBus = true;
   }
@@ -188,6 +195,7 @@ function summarize(
     tracksTouchedCount: tracksTouched.length,
     instrumentMoves,
     audioFxMoves,
+    mixerMoves,
     touchedBus,
   });
 

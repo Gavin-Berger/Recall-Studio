@@ -503,10 +503,16 @@ const LOGGED_EVENT_TYPES: &[&str] = &[
     // Parameters & automation
     "parameter_changed",
     "automation_created",
+    // Settled mix decisions
+    "volume_changed",
+    "pan_changed",
+    "send_changed",
     // Clips & samples
     "sample_added",
     "audio_clip_added",
     "midi_clip_created",
+    "audio_clip_recorded",
+    "midi_clip_recorded",
     "clip_created",
     "clip_notes_changed",
     // Deep snapshots that feed the schema projection

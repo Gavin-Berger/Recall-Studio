@@ -264,6 +264,7 @@ describe("buildShareData / buildShareDocument", () => {
             {
               id: "midi-1",
               track_name: "Hi Hats",
+              track_id: "hats",
               clip_name: "Verse hats",
               clip_id: "clip-1",
               change_kind: "notes_added",

@@ -185,6 +185,15 @@ pub static CATALOG: &[EventDef] = &[
         "Track Focus Snapshot",
         "Focused detail captured for the selected track.",
     ),
+    // Navigation, not authorship — the producer moved their attention, they did
+    // not change the set. Coalescible for the same reason track_selected is: it
+    // is high-frequency, re-derivable, and must never crowd out a real edit.
+    def(
+        "focus_changed",
+        Coalescible,
+        "Focus Changed",
+        "The focused track or device changed in Ableton.",
+    ),
     def(
         "track_created",
         Critical,
@@ -196,6 +205,18 @@ pub static CATALOG: &[EventDef] = &[
         Critical,
         "Track Deleted",
         "A track was deleted in Ableton.",
+    ),
+    // The bridge's coarse structural signal: it fires when the set's track list
+    // changes at all, without saying which track. Critical for the same reason
+    // track_created/track_deleted are — it is the only notice some structural
+    // edits give, and a producer would notice losing one. (Until this row existed
+    // it fell through to the unknown-event default, Coalescible, which made a
+    // structural change the FIRST thing shed under load.)
+    def(
+        "track_list_changed",
+        Critical,
+        "Track List Changed",
+        "Tracks were added to or removed from the set.",
     ),
     def(
         "track_name_changed",
@@ -411,6 +432,18 @@ pub static CATALOG: &[EventDef] = &[
         "A MIDI clip was created in Ableton.",
     ),
     def(
+        "audio_clip_recorded",
+        Critical,
+        "Audio Recorded",
+        "Audio was recorded into an armed Ableton track.",
+    ),
+    def(
+        "midi_clip_recorded",
+        Critical,
+        "MIDI Recorded",
+        "MIDI was recorded into an armed Ableton track.",
+    ),
+    def(
         "clip_notes_changed",
         Critical,
         "Notes Changed",
@@ -508,22 +541,23 @@ pub static CATALOG: &[EventDef] = &[
         "A clip follow action fired in Ableton.",
     ),
     // ── Mixing ──────────────────────────────────────────────────────────────
-    // Continuous mixer moves; the bridge must debounce these before emitting.
+    // The bridge settles continuous fader gestures before emitting, so each
+    // event is one intentional mix move rather than high-frequency telemetry.
     def(
         "volume_changed",
-        Coalescible,
+        Important,
         "Volume Changed",
         "A track's volume changed.",
     ),
     def(
         "pan_changed",
-        Coalescible,
+        Important,
         "Pan Changed",
         "A track's pan changed.",
     ),
     def(
         "send_changed",
-        Coalescible,
+        Important,
         "Send Changed",
         "A track send level changed.",
     ),
@@ -622,6 +656,86 @@ pub static CATALOG: &[EventDef] = &[
     ),
 ];
 
+/// Events that are NOT the producer making something.
+///
+/// Recall's "moments" count is what tells a producer how much they did in a
+/// sitting, and it was defined as "every event that isn't a heartbeat". That let
+/// navigation and bookkeeping masquerade as work: one real session recorded 85
+/// moments, of which 49 were focus changes, 16 were whole-set snapshots, and 5
+/// were the bridge starting and stopping. Three knob moves and two note edits
+/// were the actual work. A producer reads 85, looks at a nearly empty timeline,
+/// and concludes capture is broken — a number that manufactures alarm is worse
+/// than no number.
+///
+/// Kept as the exclusion list rather than a per-row flag because noise is the
+/// small, stable, well-understood set: it is where the producer's ATTENTION went
+/// (focus, selection), what Recall did to keep itself honest (snapshots,
+/// heartbeats, lifecycle), and transport state. Everything else — a knob moved, a
+/// note written, a clip made, a track added — is work, and a new creative event
+/// type should count as work the day it lands without anyone remembering to flag
+/// it. The default has to be "this counts".
+const NON_CREATIVE_EVENT_TYPES: &[&str] = &[
+    // Bookkeeping: Recall talking to itself.
+    "heartbeat",
+    "bridge_started",
+    "bridge_stopped",
+    "raw_max_message",
+    "project_context",
+    // Snapshots: a picture of the set, not a change to it.
+    "live_set_snapshot",
+    "session_snapshot",
+    "session_snapshot_started",
+    "session_snapshot_completed",
+    "transport_snapshot",
+    "selected_track_focus_snapshot",
+    // Attention, not authorship. Where the producer looked, not what they did.
+    "focus_changed",
+    "track_selected",
+    "device_selected",
+    "group_focused",
+    // Transport: pressing play is not a change to the song.
+    "transport_changed",
+    "transport_play",
+    "transport_stop",
+    "playback_state_changed",
+    "beat_time_changed",
+    "loop_toggled",
+    "metronome_toggled",
+];
+
+/// Whether an event represents the producer making something, and so should count
+/// toward a session's "moments".
+///
+/// Unknown events count as creative on purpose: an event type we don't recognize
+/// is far more likely to be new capture we haven't catalogued than new noise, and
+/// under-counting real work is the failure that sends someone hunting a capture
+/// bug that isn't there.
+/// Not called in the lib build today: the counting happens in SQL, via
+/// `non_creative_sql_list`. This is the rule stated in Rust so a test can prove
+/// the two agree (`the_sql_exclusion_list_matches_is_creative`), and so any
+/// future caller that needs the decision outside a query has one to call rather
+/// than re-deriving it. Deleting it would leave the SQL fragment as the only
+/// definition of "work", which is how the `!= 'heartbeat'` rule went unexamined
+/// for as long as it did.
+#[allow(dead_code)]
+pub fn is_creative(event_type: &str) -> bool {
+    !NON_CREATIVE_EVENT_TYPES.contains(&event_type)
+}
+
+/// The non-creative event types as a SQL literal list, e.g. `'heartbeat','...'`.
+///
+/// Exists so the counting query and `is_creative` can never disagree. The names
+/// are compile-time `&'static str` from the list above — no user input reaches
+/// this, so building the fragment by hand is safe here in a way it would not be
+/// for anything caller-supplied.
+pub fn non_creative_sql_list() -> String {
+    NON_CREATIVE_EVENT_TYPES
+        .iter()
+        .map(|event_type| format!("'{}'", event_type))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
 /// Find the catalog row for an `event_type`, or `None` if it isn't in the
 /// vocabulary. All three public helpers below funnel through this so there is one
 /// lookup rule, not three.
@@ -671,6 +785,161 @@ mod tests {
         }
     }
 
+    /// Every `event_type` the bridge can actually put on the wire, taken from the
+    /// `_emit(...)` call sites in `remote-script/Recall/__init__.py`.
+    ///
+    /// Keep this in step with the script. It is deliberately a hand-maintained
+    /// list rather than something parsed at build time: the script ships
+    /// separately (it runs from Ableton's MIDI Remote Scripts folder, not from
+    /// this crate), so there is no build-time link between the two and this list
+    /// is the only place the contract between them is written down.
+    const BRIDGE_EMITTED_EVENT_TYPES: &[&str] = &[
+        "audio_clip_added",
+        "audio_clip_recorded",
+        "bridge_started",
+        "bridge_stopped",
+        "clip_deleted",
+        "clip_notes_changed",
+        "device_toggled",
+        "focus_changed",
+        "heartbeat",
+        "live_set_snapshot",
+        "midi_clip_created",
+        "midi_clip_recorded",
+        "parameter_changed",
+        "pan_changed",
+        "send_changed",
+        "tempo_changed",
+        "track_list_changed",
+        "volume_changed",
+    ];
+
+    // An event the bridge emits but the catalog doesn't know falls through to the
+    // unknown-event defaults: Coalescible priority — FIRST to be shed when the
+    // ingest queue saturates — and an auto-generated "Recall Event: x" title in
+    // the timeline. Both failures are silent. This test is what makes the script
+    // and the catalog drifting apart loud instead.
+    #[test]
+    fn every_event_the_bridge_emits_has_a_catalog_row() {
+        let missing: Vec<&str> = BRIDGE_EMITTED_EVENT_TYPES
+            .iter()
+            .copied()
+            .filter(|event_type| lookup(event_type).is_none())
+            .collect();
+
+        assert!(
+            missing.is_empty(),
+            "the bridge emits these event types but the catalog has no row for them, \
+             so they are shed first under load and render with a generated title: {:?}",
+            missing
+        );
+    }
+
+    // Structural edits are the ones a producer would notice losing, so none of
+    // them may sit in the shed-first tier. Pinned separately from the row itself
+    // because the priority, not the row's existence, is what protects the event.
+    #[test]
+    fn structural_bridge_events_are_never_shed_first() {
+        for event_type in ["track_list_changed", "live_set_snapshot"] {
+            assert_ne!(
+                classify_priority(event_type),
+                EventPriority::Coalescible,
+                "{event_type} is structural and must not be first to shed"
+            );
+        }
+    }
+
+    // The session that exposed this. 85 events arrived, the UI said "85 moments",
+    // and the producer went looking for 85 things on a timeline that had five.
+    // Real counts from that take, by event_type.
+    #[test]
+    fn a_real_session_counts_only_the_work_the_producer_did() {
+        let session = [
+            ("focus_changed", 49),
+            ("live_set_snapshot", 16),
+            ("track_list_changed", 8),
+            ("parameter_changed", 3),
+            ("bridge_started", 3),
+            ("tempo_changed", 2),
+            ("clip_notes_changed", 2),
+            ("bridge_stopped", 2),
+        ];
+
+        let total: u32 = session.iter().map(|(_, count)| count).sum();
+        let creative: u32 = session
+            .iter()
+            .filter(|(event_type, _)| is_creative(event_type))
+            .map(|(_, count)| count)
+            .sum();
+
+        assert_eq!(total, 85, "the take really did receive 85 events");
+        // 8 track_list_changed + 3 parameter_changed + 2 tempo_changed
+        // + 2 clip_notes_changed. Structural and creative edits count; looking
+        // around, snapshotting, and the bridge connecting do not.
+        assert_eq!(creative, 15);
+    }
+
+    #[test]
+    fn looking_around_is_not_work_but_touching_the_song_is() {
+        for noise in [
+            "heartbeat",
+            "focus_changed",
+            "track_selected",
+            "live_set_snapshot",
+            "bridge_started",
+            "transport_play",
+        ] {
+            assert!(!is_creative(noise), "{noise} should not count as a moment");
+        }
+
+        for work in [
+            "parameter_changed",
+            "clip_notes_changed",
+            "midi_clip_created",
+            "audio_clip_added",
+            "midi_clip_recorded",
+            "audio_clip_recorded",
+            "volume_changed",
+            "pan_changed",
+            "send_changed",
+            "track_created",
+            "device_added",
+            "automation_created",
+        ] {
+            assert!(is_creative(work), "{work} should count as a moment");
+        }
+    }
+
+    // An event type nobody has catalogued yet is far more likely to be new
+    // capture than new noise, and under-counting real work is what sends someone
+    // hunting a capture bug that does not exist.
+    #[test]
+    fn an_unknown_event_counts_as_work() {
+        assert!(is_creative("some_future_event_we_have_not_shipped_yet"));
+    }
+
+    // The counting query builds its NOT IN list from the same constant
+    // `is_creative` reads. If these ever disagree, the number on screen stops
+    // matching the rule the code believes it is applying.
+    #[test]
+    fn the_sql_exclusion_list_matches_is_creative() {
+        let sql = non_creative_sql_list();
+
+        for event_type in NON_CREATIVE_EVENT_TYPES {
+            assert!(
+                sql.contains(&format!("'{event_type}'")),
+                "{event_type} is excluded in Rust but missing from the SQL list"
+            );
+            assert!(!is_creative(event_type));
+        }
+
+        assert_eq!(
+            sql.matches('\'').count(),
+            NON_CREATIVE_EVENT_TYPES.len() * 2,
+            "every entry should be quoted exactly once, and none should contain a quote"
+        );
+    }
+
     #[test]
     fn titles_and_descriptions_are_present() {
         // Every declared row must carry real fallback copy.
@@ -693,9 +962,10 @@ mod tests {
             "device_added",
             "sample_added",
             "midi_clip_created",
+            "midi_clip_recorded",
+            "audio_clip_recorded",
             "clip_notes_changed",
             "automation_created",
-            "track_armed",
         ] {
             assert_eq!(
                 classify_priority(et),
@@ -710,12 +980,22 @@ mod tests {
         for et in [
             "transport_snapshot",
             "selected_track_focus_snapshot",
-            "pan_changed",
         ] {
             assert_eq!(
                 classify_priority(et),
                 EventPriority::Coalescible,
                 "{et} must be Coalescible"
+            );
+        }
+    }
+
+    #[test]
+    fn settled_mixer_moves_are_important() {
+        for et in ["volume_changed", "pan_changed", "send_changed"] {
+            assert_eq!(
+                classify_priority(et),
+                EventPriority::Important,
+                "{et} must survive queue pressure once the bridge has settled it"
             );
         }
     }

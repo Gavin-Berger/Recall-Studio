@@ -458,6 +458,42 @@ mod tests {
         assert!(session.is_stale(last_activity + STALE_SESSION_IDLE_MS));
     }
 
+    // `rotate_session_if_stale` runs on every incoming packet and closes the take
+    // whenever this reads true. If staleness ever stopped being gated on `active`,
+    // an already-stopped take would qualify forever and every subsequent heartbeat
+    // would close-and-recreate a take — a rotation loop that shreds history into
+    // one-packet fragments. The `active` guard is what prevents that.
+    #[test]
+    fn a_stopped_session_is_never_stale_however_long_it_sits() {
+        let mut session = SessionState::new();
+        let status = session.start();
+        let started = status.started_at_ms.unwrap();
+
+        session.stop_at(started);
+
+        assert!(!session.is_stale(started + STALE_SESSION_IDLE_MS));
+        assert!(!session.is_stale(u64::MAX));
+    }
+
+    // Starting an already-running take must hand back the SAME take, not mint a
+    // fresh id. A new id here would leave the in-memory session pointing at a take
+    // the previous events were never written to, orphaning everything captured so
+    // far — and it must not reset the idle clock either, or a take could be kept
+    // alive indefinitely by repeated starts.
+    #[test]
+    fn starting_an_already_active_session_returns_the_same_take() {
+        let mut session = SessionState::new();
+        let first = session.start();
+        let started = first.started_at_ms.unwrap();
+
+        session.note_activity(started + HOUR_MS);
+        let second = session.start();
+
+        assert_eq!(first.session_id, second.session_id);
+        assert_eq!(first.started_at_ms, second.started_at_ms);
+        assert_eq!(session.last_activity_ms(), Some(started + HOUR_MS));
+    }
+
     #[test]
     fn active_session_id_is_none_once_stopped() {
         let mut session = SessionState::new();

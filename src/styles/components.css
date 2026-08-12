@@ -17,6 +17,23 @@
   min-width: 0;
 }
 
+.recall-surface-stage,
+.home-surface,
+.document-surface,
+.schema-surface,
+.home-surface > *,
+.document-surface > *,
+.schema-surface > * {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.recall-app input,
+.recall-app select,
+.recall-app textarea {
+  max-width: 100%;
+}
+
 .recall-sidebar {
   position: sticky;
   top: 14px;
@@ -2094,6 +2111,7 @@
    ============================================================ */
 
 .project-explorer {
+  container-type: inline-size;
   border: 1px solid rgba(255, 255, 255, 0.09);
   border-radius: 10px;
   background:
@@ -2106,7 +2124,8 @@
 
 .project-explorer__bar {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
+  flex-wrap: wrap;
   gap: 12px;
   padding: 12px 14px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.07);
@@ -2118,7 +2137,11 @@
   display: flex;
   align-items: center;
   gap: 11px;
-  flex: 1;
+  flex: 1 1 220px;
+  min-width: 0;
+}
+
+.project-explorer__crumb > div {
   min-width: 0;
 }
 
@@ -2132,12 +2155,17 @@
   margin-top: 2px;
   color: var(--faint);
   font-size: 0.72rem;
+  line-height: 1.42;
+  overflow-wrap: anywhere;
 }
 
 .project-explorer__tools {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
+  flex: 1 1 100%;
+  width: 100%;
+  min-width: 0;
   gap: 8px;
 }
 
@@ -2160,7 +2188,9 @@
     linear-gradient(180deg, rgba(255, 255, 255, 0.04), transparent),
     rgba(7, 10, 18, 0.58);
   color: var(--faint);
-  min-width: 152px;
+  flex: 1 1 180px;
+  min-width: 0;
+  max-width: 360px;
 }
 
 .project-explorer__search:focus-within {
@@ -3406,6 +3436,127 @@
   color: var(--faint);
 }
 
+@container (max-width: 660px) {
+  .project-explorer__bar {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .project-explorer__tools {
+    width: 100%;
+  }
+
+  .project-explorer__search {
+    flex: 1 1 150px;
+    min-width: 0;
+  }
+
+  .project-explorer__head,
+  .px-row {
+    grid-template-columns: 30px minmax(0, 1fr) 54px auto;
+    gap: 7px;
+  }
+
+  .project-explorer__head .px-when,
+  .project-explorer__head .px-set,
+  .px-row .px-when,
+  .px-row .px-set {
+    display: none;
+  }
+}
+
+@container (max-width: 430px) {
+  .project-explorer__crumb {
+    flex-basis: 100%;
+  }
+
+  .project-explorer__tools .home-action:not(.home-action--primary) {
+    display: none;
+  }
+
+  .project-explorer__search {
+    flex-basis: 100%;
+  }
+}
+
+@media (max-width: 1120px) {
+  .project-explorer__bar {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .project-explorer__tools {
+    width: 100%;
+  }
+
+  .project-explorer__search {
+    flex: 1 1 150px;
+    min-width: 0;
+  }
+}
+
+.vd-activity-compare {
+  margin-top: 18px;
+  padding-top: 13px;
+  border-top: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+.vd-activity-compare__head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 9px;
+  color: var(--muted);
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.055em;
+  text-transform: uppercase;
+}
+
+.vd-activity-compare__head strong {
+  color: var(--signal-soft);
+  font-weight: 800;
+}
+
+.vd-activity-compare__row {
+  display: grid;
+  grid-template-columns: 82px minmax(0, 1fr) 28px;
+  align-items: center;
+  gap: 9px;
+  min-height: 20px;
+  color: var(--paper);
+  font-size: 0.72rem;
+}
+
+.vd-activity-compare__row.is-previous {
+  color: var(--faint);
+}
+
+.vd-activity-compare__row b {
+  color: inherit;
+  font-size: 0.72rem;
+  text-align: right;
+}
+
+.vd-activity-compare__track {
+  height: 6px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.09);
+}
+
+.vd-activity-compare__track i {
+  display: block;
+  min-width: 2px;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--signal);
+}
+
+.vd-activity-compare__row.is-previous .vd-activity-compare__track i {
+  background: var(--faint);
+}
+
 /* File / take info. */
 .vd-file {
   margin: 0;
@@ -3800,8 +3951,36 @@
   }
 }
 
+/* On a narrow window the project action rail used to reserve 192px beside the
+   name. That could collapse the Name column to 0px (the "NAMETAKES" overlap
+   in an empty library was the most obvious symptom). Keep the project facts on
+   the first row and give its actions a dedicated, wrapping row instead. */
+@media (max-width: 620px) {
+  .project-explorer__head,
+  .px-row {
+    grid-template-columns: 30px minmax(0, 1fr) 54px;
+    gap: 7px;
+  }
+
+  .project-explorer__head .px-actions {
+    display: none;
+  }
+
+  .px-row {
+    grid-template-rows: auto auto;
+  }
+
+  .px-row .px-actions {
+    grid-column: 2 / -1;
+    grid-row: 2;
+    flex-wrap: wrap;
+    justify-content: flex-start;
+    padding: 0 0 8px;
+  }
+}
+
 /* Small windows: the sidebar becomes a top strip so content keeps full width. */
-@media (max-width: 860px) {
+@media (max-width: 1120px) {
   .recall-frame {
     grid-template-columns: minmax(0, 1fr);
   }
@@ -4063,6 +4242,23 @@
   gap: 14px;
   min-width: 0;
   padding: 4px 4px 40px;
+}
+
+@media (max-width: 960px) {
+  .project-manager__layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .project-manager__summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+.organizer__release-workspace {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 320px);
+  align-items: start;
+  gap: 14px;
 }
 
 
@@ -4540,6 +4736,7 @@
 }
 
 .organizer__mix--version {
+  container-type: inline-size;
   padding: 12px 0 2px 12px;
   border-top: 1px solid rgba(255, 255, 255, 0.07);
   border-left: 2px solid transparent;
@@ -4557,6 +4754,35 @@
 
 .organizer__mix--version.is-final {
   border-left-color: var(--signal);
+}
+
+@container (max-width: 560px) {
+  .organizer__versions-head,
+  .organizer__bounce-head {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .organizer__bounce-title {
+    flex: 1 1 100%;
+  }
+
+  .organizer__bounce-name {
+    white-space: normal;
+    overflow: visible;
+    overflow-wrap: anywhere;
+    text-overflow: clip;
+  }
+
+  .organizer__bounce-actions {
+    width: 100%;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .organizer__bounce-added {
+    margin-right: auto;
+  }
 }
 
 .organizer__version-line {
@@ -5119,6 +5345,58 @@
   text-transform: uppercase;
 }
 
+.organizer__readiness {
+  display: grid;
+  grid-template-columns: minmax(140px, auto) minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+  margin-top: 12px;
+  padding: 9px 10px;
+  border: 1px solid rgb(255 255 255 / 0.07);
+  border-radius: var(--radius-sm);
+  background: rgb(8 10 15 / 0.3);
+}
+
+.organizer__readiness-copy {
+  display: grid;
+  gap: 2px;
+}
+
+.organizer__readiness-copy span {
+  color: var(--muted);
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.organizer__readiness-copy strong {
+  color: var(--paper);
+  font-size: 0.72rem;
+}
+
+.organizer__readiness-meter {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(8px, 1fr));
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.organizer__readiness-meter li {
+  height: 8px;
+  border: 1px solid rgb(255 255 255 / 0.1);
+  border-radius: 999px;
+  background: rgb(255 255 255 / 0.06);
+}
+
+.organizer__readiness-meter li.is-complete {
+  border-color: rgb(var(--signal-rgb) / 0.7);
+  background: var(--signal);
+  box-shadow: 0 0 10px rgb(var(--signal-rgb) / 0.24);
+}
+
 .organizer__finish-line-list {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(205px, 1fr));
@@ -5204,15 +5482,28 @@
   line-height: 1.45;
 }
 
-/* Quick tasks are intentionally opt-in. Release readiness stays factual above;
-   this is the producer's own plan, not Recall prescribing a mix or master. */
+/* Quick tasks are intentionally opt-in: a personal planning lane alongside the
+   release record, not Recall prescribing a mix or master. */
 .organizer__quick-plan {
+  grid-column: 2;
+  grid-row: 1 / span 4;
+  min-width: 0;
+  position: sticky;
+  top: 14px;
+  align-self: start;
   display: grid;
   gap: 10px;
   padding: 13px 14px 14px;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: rgb(255 255 255 / 0.018);
+}
+
+.organizer__release-workspace > .organizer__mastering-overview,
+.organizer__release-workspace > .organizer__tracklist-head,
+.organizer__release-workspace > .organizer__analyzing--tracklist,
+.organizer__release-workspace > .organizer__tracklist {
+  grid-column: 1;
 }
 
 .organizer__quick-plan-head {
@@ -5286,7 +5577,7 @@
 
 .organizer__quick-task-form {
   display: grid;
-  grid-template-columns: minmax(180px, 1fr) 115px 130px auto;
+  grid-template-columns: minmax(0, 1fr);
   gap: 7px;
 }
 
@@ -5329,6 +5620,144 @@
   margin: -3px 0 0;
   color: var(--signal-soft);
   font-size: 0.67rem;
+}
+
+.organizer__mix-profile {
+  container-type: inline-size;
+  margin-top: 2px;
+  padding: 15px 16px 16px;
+  border: 1px solid rgb(var(--signal-rgb) / 0.2);
+  border-radius: 9px;
+  background: linear-gradient(120deg, rgb(var(--signal-rgb) / 0.055), transparent 45%), rgb(7 10 16 / 0.54);
+}
+
+.organizer__mix-profile-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 14px;
+  margin-bottom: 13px;
+}
+
+.organizer__mix-profile-head small {
+  color: var(--faint-aa);
+  font-size: 0.7rem;
+}
+
+.organizer__mix-profile-grid {
+  display: grid;
+  gap: 8px;
+}
+
+.organizer__mix-profile-labels,
+.organizer__mix-profile-row {
+  display: grid;
+  grid-template-columns: 74px repeat(3, minmax(0, 1fr));
+  gap: 13px;
+  align-items: center;
+}
+
+.organizer__mix-profile-labels {
+  color: var(--faint-aa);
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  letter-spacing: 0.045em;
+  text-transform: uppercase;
+}
+
+.organizer__mix-profile-labels em {
+  display: block;
+  margin-top: 3px;
+  color: var(--faint);
+  font-size: 0.61rem;
+  font-style: normal;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.organizer__mix-profile-version {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--paper);
+  font-family: var(--font-mono);
+  font-size: 0.84rem;
+  font-weight: 700;
+}
+
+.organizer__mix-profile-version i {
+  color: var(--signal-soft);
+  font-size: 0.6rem;
+  font-style: normal;
+  text-transform: uppercase;
+}
+
+.organizer__mix-profile-meter {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.organizer__mix-profile-rail {
+  display: block;
+  height: 8px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgb(255 255 255 / 0.09);
+}
+
+.organizer__mix-profile-rail i {
+  display: block;
+  min-width: 2px;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--signal);
+}
+
+.organizer__mix-profile-meter b {
+  color: var(--paper);
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+@container (max-width: 620px) {
+  .organizer__mix-profile-labels {
+    display: none;
+  }
+
+  .organizer__mix-profile-row {
+    grid-template-columns: 54px minmax(0, 1fr);
+    gap: 8px 10px;
+    padding: 10px 0;
+    border-top: 1px solid rgb(255 255 255 / 0.07);
+  }
+
+  .organizer__mix-profile-labels + .organizer__mix-profile-row {
+    border-top: 0;
+    padding-top: 2px;
+  }
+
+  .organizer__mix-profile-version {
+    grid-row: 1 / span 3;
+    align-self: start;
+  }
+
+  .organizer__mix-profile-meter {
+    grid-template-columns: 78px minmax(0, 1fr) auto;
+  }
+
+  .organizer__mix-profile-meter::before {
+    content: attr(data-metric);
+    color: var(--faint-aa);
+    font-family: var(--font-mono);
+    font-size: 0.61rem;
+    letter-spacing: 0.035em;
+    text-transform: uppercase;
+  }
 }
 
 .organizer__mastering-overview {
@@ -5484,6 +5913,11 @@
 
   .organizer__finish-line-list {
     grid-template-columns: 1fr;
+  }
+
+  .organizer__readiness {
+    grid-template-columns: 1fr;
+    gap: 8px;
   }
 
   .organizer__quick-task-form {
@@ -5802,6 +6236,25 @@
   text-transform: uppercase;
 }
 
+@media (max-width: 1120px) {
+  .organizer__release-workspace {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .organizer__release-workspace > .organizer__quick-plan,
+  .organizer__release-workspace > .organizer__mastering-overview,
+  .organizer__release-workspace > .organizer__tracklist-head,
+  .organizer__release-workspace > .organizer__analyzing--tracklist,
+  .organizer__release-workspace > .organizer__tracklist {
+    grid-column: 1;
+    grid-row: auto;
+  }
+
+  .organizer__quick-plan {
+    position: static;
+  }
+}
+
 @media (max-width: 860px) {
   .organizer {
     grid-template-columns: 1fr;
@@ -5853,6 +6306,32 @@
 @media (max-width: 560px) {
   .organizer__album-head {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .organizer__mix-profile-head {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 3px;
+  }
+
+  .organizer__mix-profile-labels,
+  .organizer__mix-profile-row {
+    grid-template-columns: 52px repeat(3, minmax(0, 1fr));
+    gap: 7px;
+  }
+
+  .organizer__mix-profile-labels em {
+    display: none;
+  }
+
+  .organizer__mix-profile-meter {
+    display: block;
+  }
+
+  .organizer__mix-profile-meter b {
+    display: block;
+    margin-top: 3px;
+    font-size: 0.64rem;
   }
 
   .organizer__cover {
@@ -6125,11 +6604,11 @@
   animation: recall-live-pulse var(--motion-live) ease-in-out infinite;
 }
 
-/* Matches the 860px breakpoint above, where .recall-sidebar first switches to
+/* Matches the app-shell breakpoint above, where .recall-sidebar first switches to
    a row: without wrapping, .recall-sidebar__nav's overflow-x:auto makes its
    flex auto-min-width resolve to 0 (spec behavior for non-visible overflow),
    so nav collapses to nothing between 561-860px instead of just scrolling. */
-@media (max-width: 860px) {
+@media (max-width: 1120px) {
   .recall-sidebar {
     flex-wrap: wrap;
     gap: 8px;
@@ -6782,6 +7261,72 @@
   flex-wrap: wrap;
 }
 
+/* Last-resort screen for a React render failure. It is intentionally quiet and
+   action-led: beta testers need a recovery path and usable evidence, not a
+   framework stack trace presented as an application screen. */
+.app-error-boundary {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: var(--ink);
+}
+
+.app-error-boundary__card {
+  width: min(560px, 100%);
+  padding: 28px;
+  border: 1px solid rgb(220 90 106 / 0.42);
+  border-radius: var(--radius);
+  background: var(--panel);
+  box-shadow: var(--shadow);
+}
+
+.app-error-boundary__eyebrow {
+  margin: 0 0 8px;
+  color: var(--danger);
+  font-size: 0.68rem;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.app-error-boundary__card h1 {
+  margin: 0;
+  color: var(--paper-strong);
+  font-family: var(--font-display);
+  font-size: clamp(1.35rem, 3vw, 1.8rem);
+}
+
+.app-error-boundary__card > p:not(.app-error-boundary__eyebrow) {
+  margin: 12px 0 0;
+  color: var(--muted);
+  font-size: 0.9rem;
+  line-height: 1.55;
+}
+
+.app-error-boundary__detail {
+  padding: 10px 12px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-sm);
+  background: rgb(9 12 20 / 0.66);
+  color: var(--paper) !important;
+  font-family: var(--font-mono);
+  font-size: 0.76rem !important;
+  overflow-wrap: anywhere;
+}
+
+.app-error-boundary__actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 20px;
+}
+
+.app-error-boundary__hint {
+  color: var(--faint-aa) !important;
+  font-size: 0.76rem !important;
+}
+
 /* Take/Ableton drift warning. Uses --session warm (the producer's own mark) to
    read as "your work is at stake", not as a system error. */
 .project-manager__mismatch {
@@ -6821,3 +7366,88 @@
    set is a normal condition, so neither a warning color nor extra height is
    honest here. The state is carried by the label ("Ableton · unsaved set") and
    the guidance lives in the title tooltip. */
+
+/* ── Settings → What's running ─────────────────────────────────────────────
+   Three versions that have to agree, read top to bottom: the build, the script
+   it carries, the script Ableton loaded. Monospace values so a digit that moved
+   is visible at a glance rather than needing to be read.
+
+   No motion of any kind here (DESIGN.md §6): every value on this panel is a
+   fact that already settled, and the mismatch row must read as a state, not as
+   something happening now. */
+.settings-versions {
+  display: grid;
+  gap: 12px;
+}
+
+.settings-versions__rows {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+}
+
+.settings-versions__row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  min-width: 0;
+}
+
+.settings-versions__row dt {
+  color: var(--muted);
+  font-size: 0.74rem;
+  flex-shrink: 0;
+}
+
+.settings-versions__row dd {
+  margin: 0;
+  min-width: 0;
+  color: var(--paper);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.74rem;
+  text-align: right;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* --faint-aa, never --faint: this sits well under 19px and --faint fails AA. */
+.settings-versions__unknown {
+  color: var(--faint-aa);
+  font-style: italic;
+}
+
+/* The one row that disagrees. Weight and a rule carry it, not hue — the number
+   being different is the signal; colour would only repeat what the digits say. */
+.settings-versions__row.is-mismatch dd {
+  color: var(--paper-strong);
+  font-weight: 600;
+}
+
+.settings-versions__verdict {
+  border-top: 1px solid var(--line-soft);
+  padding-top: 10px;
+}
+
+.settings-versions__verdict strong {
+  display: block;
+  color: var(--paper-strong);
+  font-size: 0.78rem;
+}
+
+.settings-versions__verdict p {
+  margin: 3px 0 0;
+  color: var(--faint-aa);
+  font-size: 0.72rem;
+  line-height: 1.45;
+}
+
+/* Only the state that needs a human gets the accent, and only on the rule. */
+.settings-versions__verdict--action {
+  border-top-color: var(--signal);
+}
+
+.settings-versions__verdict--action strong {
+  color: var(--signal);
+}

@@ -140,6 +140,18 @@ function App() {
     return () => unlisten?.();
   }, []);
 
+  useEffect(() => {
+    if (!isTauri()) return;
+    let unlisten: (() => void) | undefined;
+    void listen("recall://open-planner", () => {
+      setEnteredStudio(true);
+      setSurface("planner");
+    }).then((dispose) => {
+      unlisten = dispose;
+    });
+    return () => unlisten?.();
+  }, []);
+
   const sendTodayStudioPlan = useCallback(async (): Promise<boolean> => {
     try {
       const [tasks, releases] = await Promise.all([
@@ -276,6 +288,9 @@ function App() {
   }, []);
 
   useEffect(() => {
+    // The browser preview is useful for visual QA, but it has no Tauri bridge.
+    // Do not turn that expected absence into an error every second.
+    if (!isTauri()) return;
     let mounted = true;
 
     async function pollConnection() {
@@ -300,6 +315,12 @@ function App() {
   }, [pollInterval]);
 
   useEffect(() => {
+    // Mark the local browser preview ready with its empty in-memory state rather
+    // than continuously attempting unavailable native storage calls.
+    if (!isTauri()) {
+      setLibraryReady(true);
+      return;
+    }
     let mounted = true;
 
     async function refreshSavedSessions() {
@@ -583,6 +604,9 @@ function App() {
           session={currentSession}
           project={currentTimelineProject}
           producerName={producerName}
+          onOpenProjects={() => setSurface("projects")}
+          onStartCapture={(projectId) => void handleOpenProject(projectId)}
+          onOpenTimeline={handleOpenTimeline}
         />
       }
       organizer={
@@ -608,6 +632,7 @@ function App() {
       dailyPlanReminder={dailyPlanReminder}
       onDailyPlanReminderChange={handleDailyPlanReminderChange}
       onSendTestReminder={sendTodayStudioPlan}
+      connection={connection}
       onClose={() => setSettingsOpen(false)}
     />
     <ReportDialog

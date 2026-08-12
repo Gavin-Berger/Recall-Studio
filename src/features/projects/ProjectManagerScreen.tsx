@@ -911,7 +911,7 @@ function TakeRow({
                 </button>
               )}
               <div className="row-menu__sep" />
-              <div className="row-menu__label">Move to</div>
+              <div className="row-menu__label">Move entire take to</div>
               <button
                 type="button"
                 className="row-menu__item"

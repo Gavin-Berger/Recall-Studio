@@ -150,6 +150,79 @@ impl BridgeMetrics {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // queue_depth is the one signed gauge here, and `snapshot` narrows it to u64
+    // for the UI. The `.max(0)` is load-bearing: a bare `as u64` on -1 renders as
+    // 18_446_744_073_709_551_615, so a gauge that dips below zero (a dequeue
+    // observed before its enqueue under Relaxed ordering) would show the
+    // diagnostics panel a quintillion-deep queue instead of an empty one.
+    #[test]
+    fn queue_depth_never_reports_a_negative_gauge_as_a_huge_number() {
+        let metrics = BridgeMetrics::new();
+        metrics.on_dequeue();
+
+        assert_eq!(metrics.snapshot().queue_depth, 0);
+    }
+
+    #[test]
+    fn queue_depth_tracks_enqueue_minus_dequeue() {
+        let metrics = BridgeMetrics::new();
+        metrics.on_enqueue();
+        metrics.on_enqueue();
+        metrics.on_enqueue();
+        metrics.on_dequeue();
+
+        let snapshot = metrics.snapshot();
+        assert_eq!(snapshot.queue_depth, 2);
+        // events_queued is monotonic and must NOT be decremented by a dequeue —
+        // it answers "how many did we ever take in", not "how many are waiting".
+        assert_eq!(snapshot.events_queued, 3);
+    }
+
+    // 0 is the "never happened" sentinel for last_event_ms, and the snapshot has to
+    // translate it to None rather than handing the UI a 1970 timestamp.
+    #[test]
+    fn last_event_ms_is_none_until_something_is_emitted() {
+        let metrics = BridgeMetrics::new();
+        assert_eq!(metrics.snapshot().last_event_ms, None);
+
+        metrics.incr_emitted();
+
+        let snapshot = metrics.snapshot();
+        assert_eq!(snapshot.events_emitted, 1);
+        assert!(snapshot.last_event_ms.is_some_and(|ms| ms > 0));
+    }
+
+    // Protected loss is counted separately from total drops on purpose: shedding
+    // Coalescible telemetry is the design working, losing a Critical event is the
+    // design failing, and one counter cannot say both (see the field's comment).
+    #[test]
+    fn protected_drops_are_counted_separately_from_total_drops() {
+        let metrics = BridgeMetrics::new();
+        metrics.incr_dropped();
+        metrics.incr_dropped();
+        metrics.incr_protected_dropped();
+
+        let snapshot = metrics.snapshot();
+        assert_eq!(snapshot.dropped_packets, 2);
+        assert_eq!(snapshot.protected_dropped, 1);
+    }
+
+    #[test]
+    fn the_most_recent_error_is_the_one_reported() {
+        let metrics = BridgeMetrics::new();
+        assert_eq!(metrics.snapshot().last_error, None);
+
+        metrics.set_last_error("first");
+        metrics.set_last_error("second");
+
+        assert_eq!(metrics.snapshot().last_error.as_deref(), Some("second"));
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct BridgeMetricsSnapshot {
     pub packets_received: u64,

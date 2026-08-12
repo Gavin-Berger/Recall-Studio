@@ -271,6 +271,17 @@ describe("splitBySurvival / cutTracks", () => {
 });
 
 describe("buildSittings", () => {
+  it("recognizes settled mixer moves across channels as a mix pass", () => {
+    const sitting = buildSittings([
+      activity({ atMs: 0, trackName: "Lead", trackId: "101", deviceName: "Mixer" }),
+      activity({ atMs: 1000, trackName: "Bass", trackId: "102", deviceName: "Mixer" }),
+      activity({ atMs: 2000, trackName: "Lead", trackId: "101", deviceName: "Mixer" }),
+    ])[0];
+
+    expect(sitting.kind).toBe("mix");
+    expect(sitting.label).toBe("looks like a mix pass");
+  });
+
   it("reads a same-named track in a later sitting as newly brought in when its track_id differs", () => {
     // Sitting 1 brings in a track named "Serum 2" (track_id "111"). Long gap.
     // Sitting 2 brings in a DIFFERENT track that Ableton also auto-named

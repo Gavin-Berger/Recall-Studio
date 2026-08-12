@@ -38,7 +38,14 @@ export const LIVE_SAFETY_POLL_MS = 15_000;
 export const LIVE_REFRESH_EVENT_TYPES = new Set([
   "parameter_changed",
   "clip_notes_changed",
+  "sample_added",
+  "audio_clip_added",
   "midi_clip_created",
+  "audio_clip_recorded",
+  "midi_clip_recorded",
+  "volume_changed",
+  "pan_changed",
+  "send_changed",
   "clip_deleted",
   "device_parameter_changed",
   "automation_created",
@@ -71,7 +78,7 @@ export const BRIDGE_LOG_LIMIT = 20;
 // changing inside a clip.
 export type Activity = {
   id: string;
-  kind: "move" | "note" | "noteEdit";
+  kind: "move" | "note" | "noteEdit" | "clip";
   trackId: string;
   atMs: number;
   // move
@@ -110,6 +117,15 @@ export type Activity = {
   // anything reassembled here — it was written where Live's own note naming was
   // in hand.
   summary?: string | null;
+  // clip/sample addition
+  assetName?: string | null;
+  eventType?:
+    | "sample_added"
+    | "audio_clip_added"
+    | "midi_clip_created"
+    | "audio_clip_recorded"
+    | "midi_clip_recorded"
+    | "clip_created";
 };
 
 // A run of consecutive same-parameter moves collapsed into one story row.
@@ -153,4 +169,5 @@ export type Lookups = {
   paramTrack: Map<string, string>;
   deviceTrack: Map<string, string>;
   nameTrack: Map<string, string>;
+  abletonTrack: Map<string, string>;
 };

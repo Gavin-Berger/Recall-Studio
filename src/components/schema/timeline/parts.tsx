@@ -8,28 +8,41 @@ import { formatMoveValue } from "./format";
 
 export function ScanEmptyState({
   existingSet,
+  scannedTake,
   loading,
   onScan,
+  onStartCapture,
 }: {
   existingSet: boolean;
+  scannedTake: boolean;
   loading: boolean;
   onScan: () => void;
+  onStartCapture?: () => void;
 }) {
   return (
     <div className="tl-scan">
       <div className="tl-scan__ic">
         <ScanIcon />
       </div>
-      <h3>{existingSet ? "Catching up on this set" : "Waiting for your first move"}</h3>
+      <h3>{scannedTake ? "This version is ready to capture" : existingSet ? "Catching up on this set" : "Waiting for your first move"}</h3>
       <p>
-        {existingSet
+        {scannedTake
+          ? "Recall found this Ableton version on disk, but it cannot reconstruct work made before capture began. Start its live take now; every new sample drop, MIDI edit, and parameter move will land here."
+          : existingSet
           ? "This set was built before Recall was watching, so it's baselining every track and device already in it. Give it a few seconds on a big set, then refresh."
           : "Make a move in Ableton — your first tweak lays out the tracks and starts the map."}
       </p>
+      {scannedTake && onStartCapture ? (
+        <button type="button" className="tl-btn tl-btn--primary" onClick={onStartCapture} disabled={loading}>
+          <ScanIcon />
+          Start capturing this version
+        </button>
+      ) : (
       <button type="button" className="tl-btn tl-btn--primary" onClick={onScan} disabled={loading}>
         <ScanIcon />
         {loading ? "Scanning…" : existingSet ? "Refresh map" : "Refresh"}
       </button>
+      )}
       <div className="tl-scan__ghost">
         <span />
         <span />

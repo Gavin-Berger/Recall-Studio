@@ -75,6 +75,13 @@ HEARTBEAT_INTERVAL_SEC = 2.0
 # actually rides live near the top of the list.
 MAX_PARAMS_PER_DEVICE = 128
 
+# Mixer controls are a compact, high-value exception to the focused-device
+# listener rule below. A large set can have hundreds of plugin parameters per
+# track, but every mixer channel has just volume, pan, and at most one send per
+# Return track. Cap sends defensively anyway: losing a 17th send is preferable
+# to an unusual Live build registering an unbounded listener collection.
+MAX_MIXER_SENDS_PER_TRACK = 16
+
 # Ceiling on clips watched per track, and on notes read out of any one clip.
 #
 # Notes are the one thing in this script that can be genuinely large: a bounced
@@ -223,7 +230,23 @@ NOTE_NAMES = ("C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B")
 #
 # 0.4.0 sends project_path (issue #10, unblocking #11 and #6) and stops reporting
 # automation playback as producer moves (issue #9).
-SCRIPT_VERSION = "0.4.0"
+#
+# 0.5.0 sends group_track_id and color on every track. Both were already read by
+# schema_projection.rs and had simply never been sent, so group nesting could not
+# be rebuilt at all. Bumped for the reason 0.3.0 documents above, and for a second
+# one specific to this pipeline: install.rs::needs_repair compares the INSTALLED
+# version string against the SHIPPED one to decide whether to reinstall. Content
+# is never compared. Leaving the number alone would mean a rebuilt app silently
+# declining to deploy its own new script — the exact stale-copy failure the
+# version chip exists to prevent.
+# 0.5.1 stamps a note edit with the clip's OWN track instead of whatever track
+# happened to be selected. detail_clip and selected_track are independent in Live,
+# so editing a clip while a different track was selected filed the edit under the
+# wrong track — 237 note edits from a melody clip landed on a Serum track that
+# never held it.
+# 0.5.2 adds settled all-channel volume, pan, and send gestures. It keeps arm
+# private until a new Session clip proves that the armed channel was recorded.
+SCRIPT_VERSION = "0.5.2"
 
 
 class Recall(ControlSurface):
@@ -236,6 +259,11 @@ class Recall(ControlSurface):
         self._stop = None
         self._parameter_listeners = []
         self._device_listeners = []
+        # Mixer listeners survive selected-track changes: selection scopes
+        # plugin parameters, but mixing is project-wide.
+        self._mixer_parameter_listeners = []
+        self._arm_listeners = []
+        self._armed_track_ids = set()
         self._observed_device = None
         self._observed_track = None
         # paramId -> last value seen, so each move can report what it moved FROM.
@@ -309,6 +337,7 @@ class Recall(ControlSurface):
                 },
             )
             self._listen_to_selection()
+            self._attach_mixer_listeners()
             self._send_snapshot()
 
         logger.info(
@@ -524,6 +553,38 @@ class Recall(ControlSurface):
         if hasattr(track, "has_midi_input"):
             payload["has_midi_input"] = bool(track.has_midi_input)
 
+        # Which group this track sits INSIDE. is_foldable above says "this track
+        # IS a group"; without this the app could see that a group exists but
+        # never which tracks belong to it, so group nesting could not be rebuilt.
+        # The projection already reads it (schema_projection.rs reads
+        # "group_track_id", falling back to "group_track") and stores it as
+        # group_ableton_id — this line is the only reason that field was ever
+        # empty.
+        #
+        # try/except, not hasattr: the attribute EXISTS on every Track, but
+        # reading it on a return or main track can raise rather than return None
+        # — the same trap _safe_list documents. _safe_id guards the _live_ptr
+        # read too, and must be the same id space as "id" above for the
+        # projection to match parent to child.
+        try:
+            group_track = track.group_track
+        except Exception:  # noqa: BLE001 - the property refused, same as _safe_list
+            group_track = None
+        if group_track is not None:
+            group_id = self._safe_id(group_track)
+            if group_id:
+                payload["group_track_id"] = group_id
+
+        # Live's per-track colour. Producer-authored organisation (colouring by
+        # section or instrument), not styling — read_color in the projection
+        # already accepts the raw int Live hands back and was receiving nothing.
+        try:
+            color = track.color
+        except Exception:  # noqa: BLE001
+            color = None
+        if color is not None:
+            payload["color"] = int(color)
+
         return payload
 
     def _send_snapshot(self):
@@ -574,12 +635,177 @@ class Recall(ControlSurface):
                 "track_names": [track.name for track in self.song.tracks],
             },
         )
+        # The set of mixer channels (and sends) changed. Rebuild only this small
+        # listener family; plugin listeners remain scoped to the focused track.
+        self._clear_mixer_listeners()
+        self._attach_mixer_listeners()
         # Re-snapshot so a track added mid-session reaches the app. This is the
         # bug that crashed Live last night when the M4L bridge tried it: there,
         # every structural change meant a full LiveAPI traversal. Here it is a
         # plain read of objects Live already holds, triggered by a callback
         # rather than by polling.
         self._send_snapshot()
+
+    # ── mixer decisions ────────────────────────────────────────────────────
+
+    def _mixer_tracks(self):
+        """Every track that owns a mixer channel, once and in Live's order."""
+        tracks = []
+        seen = set()
+        candidates = list(self.song.tracks) + list(self.song.return_tracks)
+        if self.song.master_track is not None:
+            candidates.append(self.song.master_track)
+
+        for track in candidates:
+            key = self._safe_id(track)
+            # A pointer is the normal identity. The object id fallback keeps a
+            # weird/partially-created track from being registered twice.
+            key = key or "object-{}".format(id(track))
+            if key in seen:
+                continue
+            seen.add(key)
+            tracks.append(track)
+        return tracks
+
+    def _attach_mixer_listeners(self):
+        """Observe settled volume, pan, and send gestures on every channel.
+
+        This is intentionally NOT a device walk. The mixer has a fixed tiny
+        surface per track, so an all-channel mix listener is both what a
+        producer expects and substantially safer than observing every device.
+        Mute/solo are deliberately absent: they are listening/navigation state,
+        not a durable creative decision in the song's record.
+        """
+        return_names = [
+            self._safe_name(track) or "Return {}".format(index + 1)
+            for index, track in enumerate(self.song.return_tracks)
+        ]
+
+        for track in self._mixer_tracks():
+            try:
+                mixer = track.mixer_device
+            except Exception as error:  # noqa: BLE001 - track disappeared mid-scan
+                logger.info("Recall Studio: mixer unavailable on {}: {}".format(
+                    self._safe_name(track), error
+                ))
+                continue
+
+            self._watch_mixer_parameter(track, mixer, "volume", "volume_changed", "Volume")
+            self._watch_mixer_parameter(track, mixer, "panning", "pan_changed", "Pan")
+
+            for index, parameter in enumerate(
+                self._safe_list(mixer, "sends")[:MAX_MIXER_SENDS_PER_TRACK]
+            ):
+                destination = (
+                    return_names[index]
+                    if index < len(return_names)
+                    else "Return {}".format(index + 1)
+                )
+                self._watch_value_parameter(
+                    track,
+                    parameter,
+                    "send_changed",
+                    "Mixer",
+                    "Send → {}".format(destination),
+                )
+
+            self._watch_track_arm(track)
+
+    def _watch_mixer_parameter(self, track, mixer, attribute, event_type, label):
+        try:
+            parameter = getattr(mixer, attribute)
+        except Exception:  # noqa: BLE001 - e.g. a special track without pan
+            return
+        self._watch_value_parameter(track, parameter, event_type, "Mixer", label)
+
+    def _watch_value_parameter(self, track, parameter, event_type, device_name, parameter_name):
+        if parameter is None:
+            return
+        try:
+            self._last_values[id(parameter)] = parameter.value
+            listener = self._make_value_listener(
+                track, parameter, event_type, device_name, parameter_name
+            )
+            parameter.add_value_listener(listener)
+            self._mixer_parameter_listeners.append((parameter, listener))
+        except Exception as error:  # noqa: BLE001 - individual control only
+            logger.info(
+                "Recall Studio: could not watch {} on {}: {}".format(
+                    parameter_name, self._safe_name(track), error
+                )
+            )
+
+    def _track_listener_key(self, track):
+        return self._safe_id(track) or "object-{}".format(id(track))
+
+    def _watch_track_arm(self, track):
+        """Keep arm as private context; it earns a visible note only on record."""
+        key = self._track_listener_key(track)
+        try:
+            if bool(track.arm):
+                self._armed_track_ids.add(key)
+            listener = self._make_arm_listener(track)
+            track.add_arm_listener(listener)
+            self._arm_listeners.append((track, listener))
+        except Exception:
+            # Returns and Main cannot be armed. That is expected, and it should
+            # not make their volume/pan listeners any less useful.
+            self._armed_track_ids.discard(key)
+
+    def _make_arm_listener(self, track):
+        def _on_arm():
+            key = self._track_listener_key(track)
+            try:
+                armed = bool(track.arm)
+            except Exception:  # noqa: BLE001 - track was deleted
+                self._armed_track_ids.discard(key)
+                return
+            if armed:
+                self._armed_track_ids.add(key)
+            else:
+                self._armed_track_ids.discard(key)
+
+        return _on_arm
+
+    def _is_armed_session_recording(self, track):
+        """True only for a new Session clip created while its track is armed.
+
+        An arm button by itself says intent, not that audio/MIDI was captured.
+        `session_record` is the additional proof Live offers for the slot path;
+        this deliberately does not guess about dragged-in clips or Arrangement
+        recording that this listener cannot verify.
+        """
+        if self._track_listener_key(track) not in self._armed_track_ids:
+            return False
+        try:
+            return bool(self.song.session_record)
+        except Exception:  # noqa: BLE001 - older Live build lacks the property
+            return False
+
+    def _clear_mixer_listeners(self):
+        # Finish a fader gesture before removing its listener. The producer's
+        # last move must not disappear just because a track was created or Live
+        # refreshed the set state.
+        self._flush_settled_gestures(force=True)
+
+        for parameter, listener in self._mixer_parameter_listeners:
+            try:
+                if parameter.value_has_listener(listener):
+                    parameter.remove_value_listener(listener)
+            except Exception:  # noqa: BLE001 - channel may already be gone
+                pass
+            self._last_values.pop(id(parameter), None)
+
+        for track, listener in self._arm_listeners:
+            try:
+                if track.arm_has_listener(listener):
+                    track.remove_arm_listener(listener)
+            except Exception:  # noqa: BLE001 - returns/Main have no arm API
+                pass
+
+        self._mixer_parameter_listeners = []
+        self._arm_listeners = []
+        self._armed_track_ids = set()
 
     def _on_selection_changed(self):
         """Selection changed: re-point the devices listener, then re-attach params."""
@@ -624,6 +850,10 @@ class Recall(ControlSurface):
         # A device was added, removed, or reordered on the track we are watching.
         self._clear_parameter_listeners()
         self._attach_to_focused_device(self.song.view.selected_track)
+        # Live may replace its provisional "14-MIDI" label with the instrument
+        # name when a device is dropped. Refresh the structural snapshot here so
+        # the timeline keeps the track's current Ableton label and device chain.
+        self._send_snapshot()
 
     def _clear_devices_listener(self):
         track = self._observed_track
@@ -765,8 +995,15 @@ class Recall(ControlSurface):
             self._slot_names[id(slot)] = name
 
             print_ = self._clip_prints.get(id(clip))
+            # Arm is context, not an event on its own. A new slot clip while
+            # Session Record is on is the concrete evidence that the producer
+            # actually recorded into this armed channel.
+            recorded = self._is_armed_session_recording(track)
+            event_type = (
+                "midi_clip_recorded" if is_midi else "audio_clip_recorded"
+            ) if recorded else ("midi_clip_created" if is_midi else "audio_clip_added")
             self._emit(
-                "midi_clip_created" if is_midi else "audio_clip_added",
+                event_type,
                 {
                     "track_name": self._safe_name(track),
                     "track_id": self._safe_id(track),
@@ -822,12 +1059,60 @@ class Recall(ControlSurface):
         if clip is None:
             return
 
-        watched = self._watch_clip(self.song.view.selected_track, clip, None)
+        # The clip's OWN track, not the selected one. `detail_clip` and
+        # `selected_track` are independent in Live: the piano roll can show a clip
+        # from one track while the mixer selection sits on another. Binding the
+        # selection here stamped every note edit with whatever track happened to be
+        # selected, which is how a melody clip's 237 note edits piled onto a Serum
+        # track that never held it. Falls back to the selection when the parent
+        # cannot be resolved, so this is never worse than the behaviour it replaces.
+        owner = self._clip_track(clip) or self.song.view.selected_track
+        watched = self._watch_clip(owner, clip, None)
         logger.info(
             "Recall Studio: detail clip '{}' midi={} watched={}".format(
                 self._safe_name(clip), getattr(clip, "is_midi_clip", None), watched
             )
         )
+
+    def _clip_track(self, clip):
+        """The track a clip actually belongs to, or None if it can't be resolved.
+
+        Live nests a clip differently depending on the view it lives in:
+          - Session:     Clip -> ClipSlot -> Track
+          - Arrangement: Clip -> Track
+        So walking `canonical_parent` a couple of levels covers both without
+        needing to know which view the producer is working in.
+
+        Identity is checked by `_live_ptr` against the real track list rather than
+        by duck-typing the parent. A ClipSlot and a Track both answer plenty of
+        attributes, and guessing wrong here re-introduces exactly the
+        misattribution this exists to stop. Matching the pointer against
+        `song.tracks` can only ever return a genuine track.
+
+        Everything is wrapped: this runs on Live's thread during a notes callback,
+        and an exception escaping here would take note capture down with it.
+        """
+        try:
+            track_ids = {}
+            for track in self.song.tracks:
+                track_id = self._safe_id(track)
+                if track_id:
+                    track_ids[track_id] = track
+
+            node = getattr(clip, "canonical_parent", None)
+            # Two hops covers Session (slot -> track); one covers Arrangement. The
+            # third is slack, not expectation — the loop stops at the first match.
+            for _ in range(3):
+                if node is None:
+                    return None
+                match = track_ids.get(self._safe_id(node))
+                if match is not None:
+                    return match
+                node = getattr(node, "canonical_parent", None)
+        except Exception as error:  # noqa: BLE001 - LOM parent chain refused
+            logger.info("Recall Studio: could not resolve clip's track: {}".format(error))
+
+        return None
 
     def _safe_list(self, obj, name):
         """Read a list-valued LOM property that may REFUSE to be read.
@@ -1388,8 +1673,21 @@ class Recall(ControlSurface):
         return round(((value - parameter.min) / span) * 100.0, 2)
 
     def _make_parameter_listener(self, track, device, parameter):
+        return self._make_value_listener(
+            track,
+            parameter,
+            "parameter_changed",
+            self._safe_name(device),
+            self._safe_name(parameter),
+        )
+
+    def _make_value_listener(
+        self, track, parameter, event_type, device_name, parameter_name
+    ):
         # Closure per parameter: Live's listener callbacks take no arguments, so
-        # identity has to be captured here rather than looked up on fire.
+        # identity has to be captured here rather than looked up on fire. Mixer
+        # and device controls share the same settle path, but carry different
+        # event names so the app can preserve the producer's intent.
         def _on_value():
             # Automation driving the value is not a decision the producer made
             # now — it is one they made earlier, already captured when they drew
@@ -1422,8 +1720,10 @@ class Recall(ControlSurface):
                 # was.
                 gesture = {
                     "track": track,
-                    "device": device,
                     "parameter": parameter,
+                    "event_type": event_type,
+                    "device_name": device_name,
+                    "parameter_name": parameter_name,
                     "start": self._last_values.get(key, current),
                     "min": current,
                     "max": current,
@@ -1506,7 +1806,6 @@ class Recall(ControlSurface):
     def _emit_settled(self, key, gesture):
         parameter = gesture["parameter"]
         track = gesture["track"]
-        device = gesture["device"]
         start = gesture["start"]
         landed = gesture["last"]
 
@@ -1518,16 +1817,15 @@ class Recall(ControlSurface):
         if start == landed:
             return
 
-        try:
-            name = parameter.name
-            device_name = device.name
-            track_name = track.name
-            track_id = str(track._live_ptr)
-        except Exception:  # noqa: BLE001 - device or track deleted mid-gesture
+        track_name = self._safe_name(track)
+        track_id = self._safe_id(track)
+        device_name = gesture["device_name"]
+        parameter_name = gesture["parameter_name"]
+        if not (track_name or track_id) or not parameter_name:
             return
 
         self._emit(
-            "parameter_changed",
+            gesture["event_type"],
             {
                 # Track identity, without which the app cannot attribute a move
                 # to a lane — the timeline read "37 moves, 0 tracks touched"
@@ -1535,7 +1833,7 @@ class Recall(ControlSurface):
                 "track_name": track_name,
                 "track_id": track_id,
                 "device_name": device_name,
-                "parameter_name": name,
+                "parameter_name": parameter_name,
                 "parameter_value": landed,
                 "previous_parameter_value": start,
                 "parameter_value_percent": self._percent(parameter, landed),
@@ -1564,6 +1862,7 @@ class Recall(ControlSurface):
                     parameter.remove_value_listener(listener)
             except Exception:  # noqa: BLE001 - device may already be gone
                 pass
+            self._last_values.pop(id(parameter), None)
         for device, listener in self._device_listeners:
             try:
                 if device.is_active_has_listener(listener):
@@ -1574,10 +1873,6 @@ class Recall(ControlSurface):
         self._parameter_listeners = []
         self._device_listeners = []
         self._observed_device = None
-        # Drop remembered values with the listeners. Keeping them would let a
-        # stale before-value attach to a different device that happens to reuse
-        # the same object id.
-        self._last_values = {}
 
     def refresh_state(self):
         """Live calls this when the open SET changes, among other times.
@@ -1591,10 +1886,12 @@ class Recall(ControlSurface):
         super().refresh_state()
 
         with self.component_guard():
+            self._clear_mixer_listeners()
             self._clear_parameter_listeners()
             self._clear_devices_listener()
             self._clear_clip_listeners()
             self._on_selection_changed()
+            self._attach_mixer_listeners()
             self._send_snapshot()
 
     # ── teardown ───────────────────────────────────────────────────────────
@@ -1603,6 +1900,7 @@ class Recall(ControlSurface):
         # Live calls this on script unload and on quit. Leaking listeners here is
         # how a remote script starts crashing Live on set changes, so it has to
         # be exhaustive even in a spike.
+        self._clear_mixer_listeners()
         self._clear_parameter_listeners()
         self._clear_devices_listener()
         self._clear_clip_listeners()

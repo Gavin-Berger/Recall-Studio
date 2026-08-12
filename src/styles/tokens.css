@@ -5,7 +5,7 @@
   --paper: #d6dae4;
   --paper-strong: #f3f5fa;
   --muted: #8b91a0;
-  --faint: #666d7c;
+  --faint: #868d9c;
   /* AA-safe replacement for --faint on text under 19px (DESIGN.md Â§9). */
   --faint-aa: #868d9c;
   --panel: #161922;

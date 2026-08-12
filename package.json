@@ -20,8 +20,10 @@
     "@tauri-apps/plugin-dialog": "^2.7.1",
     "@tauri-apps/plugin-notification": "^2.3.3",
     "@tauri-apps/plugin-opener": "^2",
+    "konva": "^10.3.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
+    "react-konva": "^19.2.5",
     "three": "^0.184.0"
   },
   "devDependencies": {

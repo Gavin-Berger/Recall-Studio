@@ -3,7 +3,7 @@ use crate::protocol::RecallEvent;
 use crate::schema_projection::{
     build_parameter_changes, parse_note_edit, parse_session_tree, ChangeEvent, CreativeMoment,
     CreativeMomentTarget, DeviceObj, DeviceRole, NoteEdit, ParameterChange, ParameterObj,
-    ParsedParam, ParsedTrack, ProjectSchema, TrackObj, TrackType,
+    ParsedParam, ParsedTrack, ProjectSchema, TimelineClipEvent, TrackObj, TrackType,
 };
 use crate::session::{
     ProjectFolderMetadata, SavedProject, SavedSession, SavedSessionEvent, SavedSessionMetadata,
@@ -534,9 +534,16 @@ impl StorageState {
     pub fn list_saved_sessions(&self) -> Result<Vec<SavedSessionMetadata>, String> {
         let connection = self.open_connection()?;
 
+        // "Moments" must mean work the producer did, not every packet that
+        // arrived. The exclusion list lives in event_catalog so this query and
+        // `is_creative` can never drift into two different answers — see
+        // NON_CREATIVE_EVENT_TYPES for why noise is the enumerated side.
+        let non_creative = crate::event_catalog::non_creative_sql_list();
+
         let mut statement = connection
             .prepare(
-                "
+                &format!(
+                    "
                 SELECT
                     sessions.id,
                     sessions.project_id,
@@ -564,7 +571,7 @@ impl StorageState {
                         sessions.created_at_ms
                     ) AS last_updated_at_ms,
                     COUNT(events.id) AS event_count,
-                    SUM(CASE WHEN events.id IS NOT NULL AND events.event_type != 'heartbeat' THEN 1 ELSE 0 END) AS creative_event_count,
+                    SUM(CASE WHEN events.id IS NOT NULL AND events.event_type NOT IN ({non_creative}) THEN 1 ELSE 0 END) AS creative_event_count,
                     SUM(CASE WHEN events.id IS NOT NULL AND events.event_type = 'heartbeat' THEN 1 ELSE 0 END) AS heartbeat_count
                 FROM sessions
                 LEFT JOIN events ON events.session_id = sessions.id
@@ -575,7 +582,8 @@ impl StorageState {
                          sessions.display_name,
                          sessions.started_at_ms, sessions.ended_at_ms, sessions.created_at_ms
                 ORDER BY last_updated_at_ms DESC
-                ",
+                "
+                ),
             )
             .map_err(|error| format!("Failed to prepare saved sessions query: {}", error))?;
 
@@ -2490,7 +2498,7 @@ impl StorageState {
 
         let mut statement = connection
             .prepare(
-                "SELECT id, timestamp_ms, track_name, payload
+                "SELECT id, timestamp_ms, track_name, track_id, payload
                  FROM events
                  WHERE session_id = ?1 AND event_type = 'clip_notes_changed'
                  ORDER BY timestamp_ms ASC, id ASC",
@@ -2504,22 +2512,62 @@ impl StorageState {
                     row.get::<_, i64>(1)? as u64,
                     row.get::<_, Option<String>>(2)?,
                     row.get::<_, Option<String>>(3)?,
+                    row.get::<_, Option<String>>(4)?,
                 ))
             })
             .map_err(|error| format!("Failed to read note edits: {}", error))?;
 
         let mut edits = Vec::new();
         for row in rows {
-            let (id, timestamp_ms, track_name, payload) =
+            let (id, timestamp_ms, track_name, track_id, payload) =
                 row.map_err(|error| format!("Failed to read note edit row: {}", error))?;
             // Unparseable rows are skipped, not fatal — one malformed payload
             // must not cost the producer the rest of the session's edits.
-            if let Some(edit) = parse_note_edit(id, timestamp_ms, track_name, payload.as_deref()) {
+            if let Some(edit) = parse_note_edit(
+                id,
+                timestamp_ms,
+                track_name,
+                track_id,
+                payload.as_deref(),
+            ) {
                 edits.push(edit);
             }
         }
 
         Ok(edits)
+    }
+
+    pub fn get_timeline_clip_events(
+        &self,
+        session_id: &str,
+    ) -> Result<Vec<TimelineClipEvent>, String> {
+        let connection = self.open_connection()?;
+        let mut statement = connection
+            .prepare(
+                "SELECT id, event_type, timestamp_ms, track_name, track_id, clip_name, sample_name
+                 FROM events
+                 WHERE session_id = ?1
+                   AND event_type IN ('sample_added', 'audio_clip_added', 'midi_clip_created', 'audio_clip_recorded', 'midi_clip_recorded', 'clip_created')
+                 ORDER BY timestamp_ms ASC, id ASC",
+            )
+            .map_err(|error| format!("Failed to prepare timeline clip events query: {}", error))?;
+
+        let rows = statement
+            .query_map(params![session_id], |row| {
+                Ok(TimelineClipEvent {
+                    id: format!("clip-event-{}", row.get::<_, i64>(0)?),
+                    event_type: row.get(1)?,
+                    changed_at_ms: row.get::<_, i64>(2)? as u64,
+                    track_name: row.get(3)?,
+                    track_id: row.get(4)?,
+                    clip_name: row.get(5)?,
+                    sample_name: row.get(6)?,
+                })
+            })
+            .map_err(|error| format!("Failed to read timeline clip events: {}", error))?;
+
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|error| format!("Failed to collect timeline clip events: {}", error))
     }
 
     // ── Creative moments (user-authored) ─────────────────────────────────────
@@ -3113,7 +3161,7 @@ fn collect_change_events(
                     previous_parameter_display_value, parameter_is_quantized
              FROM events
              WHERE session_id = ?1
-               AND event_type IN ('parameter_changed', 'device_parameter_changed', 'automation_created')
+               AND event_type IN ('parameter_changed', 'device_parameter_changed', 'automation_created', 'volume_changed', 'pan_changed', 'send_changed')
              ORDER BY timestamp_ms ASC, id ASC",
         )
         .map_err(|error| format!("Failed to prepare change events query: {}", error))?;
@@ -4892,6 +4940,37 @@ mod tests {
         assert_eq!(changes[1].after_value, Some(0.5));
         assert_eq!(changes[1].before_value_percent, Some(20.0));
         assert_eq!(changes[1].after_value_percent, Some(50.0));
+
+        cleanup(&path);
+    }
+
+    #[test]
+    fn materialize_keeps_mixer_moves_without_a_snapshot_mixer_device() {
+        let (storage, path) = temp_storage();
+        let session_id = storage
+            .resume_or_create_active_session()
+            .unwrap()
+            .session_id
+            .unwrap();
+
+        let mut volume = param_change(&session_id, 1_000, "Lead", "Mixer", "Volume", 0.72);
+        volume.event_type = "volume_changed".into();
+        volume.track_id = Some("101".into());
+        volume.previous_parameter_value = Some(0.5);
+        volume.previous_parameter_value_percent = Some(50.0);
+
+        storage.save_events_batch(&[volume]).unwrap();
+        storage.materialize_session_schema(&session_id).unwrap();
+
+        let changes = storage.get_parameter_changes(&session_id).unwrap();
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].device_name.as_deref(), Some("Mixer"));
+        assert_eq!(changes[0].parameter_name.as_deref(), Some("Volume"));
+        assert_eq!(changes[0].before_value, Some(0.5));
+        assert_eq!(changes[0].after_value, Some(0.72));
+        // The mixer is not part of a deep device snapshot, but the move is
+        // still useful timeline work and must not be dropped for that reason.
+        assert!(changes[0].parameter_id.is_none());
 
         cleanup(&path);
     }

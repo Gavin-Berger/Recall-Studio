@@ -181,6 +181,13 @@ export function describeActivity(item: Activity): string {
   if (item.kind === "noteEdit") {
     return `${clipLabel(item.clipName)}: ${describeNoteEdit(item)}`;
   }
+  if (item.kind === "clip") {
+    const thing = item.assetName ?? item.clipName ?? "clip";
+    if (item.eventType === "sample_added") return `Sample added: ${thing}`;
+    if (item.eventType === "audio_clip_recorded") return `Recorded audio: ${thing}`;
+    if (item.eventType === "midi_clip_recorded") return `Recorded MIDI: ${thing}`;
+    return `Clip added: ${thing}`;
+  }
   const where = [item.deviceName, item.paramName].filter(Boolean).join(" · ");
   return `${where}: ${formatMoveValue(item.before, item.beforePercent, item.unit, item.beforeDisplay)} → ${formatMoveValue(
     item.after,

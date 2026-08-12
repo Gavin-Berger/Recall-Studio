@@ -1,5 +1,9 @@
 import { useEffect, useRef, useState } from "react";
+import { getVersion } from "@tauri-apps/api/app";
+import { invoke } from "@tauri-apps/api/core";
 import type { DailyPlanReminderSettings } from "../types";
+import type { ConnectionStatus } from "../types/recall";
+import { versionRows, versionVerdict, type VersionFacts } from "../features/setup/versionStatus";
 
 export type StudioTheme = "blue" | "mono";
 
@@ -10,7 +14,15 @@ type SettingsDialogProps = {
   dailyPlanReminder: DailyPlanReminderSettings;
   onDailyPlanReminderChange: (settings: DailyPlanReminderSettings) => Promise<boolean>;
   onSendTestReminder: () => Promise<boolean>;
+  connection: ConnectionStatus;
   onClose: () => void;
+};
+
+/** Mirrors install.rs::InstallDetection — the same shape BridgeSetup reads. */
+type InstallDetection = {
+  candidates: { path: string; exists: boolean }[];
+  recommended: string | null;
+  script_version: string | null;
 };
 
 const shortcuts = [
@@ -31,18 +43,64 @@ export function SettingsDialog({
   dailyPlanReminder,
   onDailyPlanReminderChange,
   onSendTestReminder,
+  connection,
   onClose,
 }: SettingsDialogProps) {
   const closeRef = useRef<HTMLButtonElement>(null);
   const [reminderMessage, setReminderMessage] = useState<string | null>(null);
   const [testingReminder, setTestingReminder] = useState(false);
+  const [appVersion, setAppVersion] = useState<string | null>(null);
+  const [detection, setDetection] = useState<InstallDetection | null>(null);
 
   useEffect(() => {
     if (!open) return;
     closeRef.current?.focus();
   }, [open]);
 
+  // Read the build's own version and where the script is installed, each time the
+  // dialog opens rather than once at mount: the whole point of this panel is to
+  // be checked right after an install, and a value cached from app start would be
+  // the one thing guaranteed to be stale. `cancelled` guards a dialog closed
+  // before either read lands.
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+
+    getVersion()
+      .then((version) => {
+        if (!cancelled) setAppVersion(version);
+      })
+      .catch(() => {
+        // A version we cannot read renders as "unknown", which is honest. It must
+        // never take the rest of the panel down with it.
+        if (!cancelled) setAppVersion(null);
+      });
+
+    invoke<InstallDetection>("detect_bridge_install_targets")
+      .then((result) => {
+        if (!cancelled) setDetection(result);
+      })
+      .catch(() => {
+        if (!cancelled) setDetection(null);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [open]);
+
   if (!open) return null;
+
+  const versionFacts: VersionFacts = {
+    appVersion,
+    shippedScriptVersion: detection?.script_version ?? null,
+    runningScriptVersion: connection.bridge_version,
+    connected: connection.connected,
+    installPath:
+      detection?.recommended ??
+      detection?.candidates.find((candidate) => candidate.exists)?.path ??
+      null,
+  };
 
   async function handleReminderToggle(enabled: boolean) {
     const applied = await onDailyPlanReminderChange({ ...dailyPlanReminder, enabled });
@@ -135,6 +193,23 @@ export function SettingsDialog({
             </div>
           </section>
 
+          {/* Second, not last. This is the panel a producer opens Settings to
+              CHECK — "did the build I just made actually reach Ableton" — and the
+              dialog scrolls (max-height 80vh). Sitting at the bottom meant the one
+              section with a job to do was the only one you had to hunt for. */}
+          <section aria-labelledby="versions-title">
+            <div className="settings-dialog__section-head">
+              <div>
+                <h3 id="versions-title">What's running</h3>
+                <p>
+                  Three things have to agree before a change reaches your timeline: Recall, the
+                  script it ships, and the script Ableton actually loaded.
+                </p>
+              </div>
+            </div>
+            <VersionPanel facts={versionFacts} />
+          </section>
+
           <section aria-labelledby="notifications-title">
             <div className="settings-dialog__section-head">
               <div>
@@ -204,8 +279,46 @@ export function SettingsDialog({
               ))}
             </ul>
           </section>
+
         </div>
       </section>
+    </div>
+  );
+}
+
+/**
+ * The version rows plus the one-line verdict.
+ *
+ * The verdict comes last in the markup on purpose: the rows are the evidence, and
+ * a producer who already knows what they are looking at can read the numbers and
+ * skip the sentence entirely.
+ */
+function VersionPanel({ facts }: { facts: VersionFacts }) {
+  const verdict = versionVerdict(facts);
+  const rows = versionRows(facts);
+
+  return (
+    <div className="settings-versions">
+      <dl className="settings-versions__rows">
+        {rows.map((row) => (
+          <div
+            key={row.label}
+            className={`settings-versions__row ${row.mismatch ? "is-mismatch" : ""}`}
+          >
+            <dt>{row.label}</dt>
+            <dd title={row.value ?? undefined}>
+              {row.value ?? <span className="settings-versions__unknown">unknown</span>}
+            </dd>
+          </div>
+        ))}
+      </dl>
+      <div
+        className={`settings-versions__verdict settings-versions__verdict--${verdict.tone}`}
+        role="status"
+      >
+        <strong>{verdict.title}</strong>
+        <p>{verdict.detail}</p>
+      </div>
     </div>
   );
 }

@@ -570,7 +570,7 @@ pub fn install_bridge(app: AppHandle, target_root: String) -> Result<InstallResu
     // install over — the producer's script is already in place; the only cost is
     // that the next app update will need them to press Install again.
     if let Err(error) = remember_library_root(&app, root) {
-        eprintln!("Recall Studio: could not remember install location: {error}");
+        log::warn!("Recall Studio: could not remember install location: {error}");
     }
 
     Ok(InstallResult {

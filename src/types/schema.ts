@@ -116,6 +116,7 @@ export const NOTE_KIND_LABEL: Record<NoteChangeKind, string> = {
 export type NoteEdit = {
   id: string;
   track_name: string | null;
+  track_id: string | null;
   clip_name: string | null;
   // Live's clip pointer — the only reliable way to tell two clips apart, since
   // clip names are often blank.
@@ -135,6 +136,22 @@ export type NoteEdit = {
   velocity_mean: number | null;
   length_beats: number | null;
   summary: string | null;
+  changed_at_ms: number;
+};
+
+export type TimelineClipEvent = {
+  id: string;
+  event_type:
+    | "sample_added"
+    | "audio_clip_added"
+    | "midi_clip_created"
+    | "audio_clip_recorded"
+    | "midi_clip_recorded"
+    | "clip_created";
+  track_name: string | null;
+  track_id: string | null;
+  clip_name: string | null;
+  sample_name: string | null;
   changed_at_ms: number;
 };
 

@@ -159,6 +159,9 @@ pub struct ProjectSchema {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ParameterChange {
     pub id: String,
+    /// The raw capture event that produced this row. The timeline uses it to
+    /// distinguish a drawn automation decision from an ordinary parameter move.
+    pub event_type: String,
     pub parameter_id: Option<String>,
     pub track_name: Option<String>,
     // Live's stable per-track pointer. Two changes can share track_name (Ableton
@@ -181,6 +184,11 @@ pub struct ParameterChange {
     pub after_display_value: Option<String>,
     pub is_quantized: Option<bool>,
     pub reason: Option<String>,
+    /// The exact Arrangement ruler span that Live reported while automation was
+    /// written. Empty for ordinary parameter moves and older captures.
+    pub automation_start_ms: Option<u64>,
+    pub automation_start_position: Option<String>,
+    pub automation_end_position: Option<String>,
     pub changed_at_ms: u64,
 }
 
@@ -471,6 +479,7 @@ fn derive_track_type(track: &Value, is_return: bool, devices: &[ParsedDevice]) -
 #[derive(Debug, Clone)]
 pub struct ChangeEvent {
     pub event_id: i64,
+    pub event_type: String,
     pub timestamp_ms: u64,
     pub track_name: Option<String>,
     pub track_id: Option<String>,
@@ -483,6 +492,9 @@ pub struct ChangeEvent {
     pub display_value: Option<String>,
     pub previous_display_value: Option<String>,
     pub is_quantized: Option<bool>,
+    pub automation_start_ms: Option<u64>,
+    pub automation_start_position: Option<String>,
+    pub automation_end_position: Option<String>,
 }
 
 /// The string a change's track is grouped by: Live's stable track_id when the
@@ -554,6 +566,7 @@ pub fn build_parameter_changes(
 
         rows.push(ParameterChange {
             id: format!("pc::{}", change.event_id),
+            event_type: change.event_type.clone(),
             parameter_id: parameter_lookup.get(&key).cloned(),
             track_name: change.track_name.clone(),
             track_id: change.track_id.clone(),
@@ -568,6 +581,9 @@ pub fn build_parameter_changes(
             after_display_value: after_display_value.clone(),
             is_quantized: change.is_quantized,
             reason: None,
+            automation_start_ms: change.automation_start_ms,
+            automation_start_position: change.automation_start_position.clone(),
+            automation_end_position: change.automation_end_position.clone(),
             changed_at_ms: change.timestamp_ms,
         });
 
@@ -766,6 +782,7 @@ mod tests {
         let changes = vec![
             ChangeEvent {
                 event_id: 1,
+                event_type: "parameter_changed".into(),
                 timestamp_ms: 100,
                 track_name: Some("Bass 1".into()),
                 track_id: None,
@@ -778,9 +795,13 @@ mod tests {
                 display_value: None,
                 previous_display_value: None,
                 is_quantized: None,
+                automation_start_ms: None,
+                automation_start_position: None,
+                automation_end_position: None,
             },
             ChangeEvent {
                 event_id: 2,
+                event_type: "parameter_changed".into(),
                 timestamp_ms: 200,
                 track_name: Some("Bass 1".into()),
                 track_id: None,
@@ -793,6 +814,9 @@ mod tests {
                 display_value: None,
                 previous_display_value: None,
                 is_quantized: None,
+                automation_start_ms: None,
+                automation_start_position: None,
+                automation_end_position: None,
             },
         ];
 
@@ -809,6 +833,7 @@ mod tests {
         assert_eq!(rows[0].before_value, None);
         assert_eq!(rows[0].after_value, Some(0.20));
         assert_eq!(rows[0].parameter_id.as_deref(), Some("param-id-1"));
+        assert_eq!(rows[0].event_type, "parameter_changed");
 
         // Second change: before is the previous after.
         assert_eq!(rows[1].before_value, Some(0.20));
@@ -820,6 +845,7 @@ mod tests {
         let changes = vec![
             ChangeEvent {
                 event_id: 1,
+                event_type: "parameter_changed".into(),
                 timestamp_ms: 100,
                 track_name: Some("T".into()),
                 track_id: None,
@@ -832,9 +858,13 @@ mod tests {
                 display_value: None,
                 previous_display_value: None,
                 is_quantized: None,
+                automation_start_ms: None,
+                automation_start_position: None,
+                automation_end_position: None,
             },
             ChangeEvent {
                 event_id: 2,
+                event_type: "parameter_changed".into(),
                 timestamp_ms: 150,
                 track_name: Some("T".into()),
                 track_id: None,
@@ -847,6 +877,9 @@ mod tests {
                 display_value: None,
                 previous_display_value: None,
                 is_quantized: None,
+                automation_start_ms: None,
+                automation_start_position: None,
+                automation_end_position: None,
             },
         ];
         let rows = build_parameter_changes(changes, &HashMap::new());
@@ -859,6 +892,7 @@ mod tests {
     fn explicit_previous_values_and_percents_win_on_first_change() {
         let changes = vec![ChangeEvent {
             event_id: 1,
+            event_type: "parameter_changed".into(),
             timestamp_ms: 100,
             track_name: Some("Bass 1".into()),
             track_id: None,
@@ -871,6 +905,9 @@ mod tests {
             display_value: None,
             previous_display_value: None,
             is_quantized: None,
+            automation_start_ms: None,
+            automation_start_position: None,
+            automation_end_position: None,
         }];
 
         let rows = build_parameter_changes(changes, &HashMap::new());
@@ -891,6 +928,7 @@ mod tests {
         let changes = vec![
             ChangeEvent {
                 event_id: 1,
+                event_type: "parameter_changed".into(),
                 timestamp_ms: 100,
                 track_name: Some("Serum 2".into()),
                 track_id: Some("111".into()),
@@ -903,9 +941,13 @@ mod tests {
                 display_value: None,
                 previous_display_value: None,
                 is_quantized: None,
+                automation_start_ms: None,
+                automation_start_position: None,
+                automation_end_position: None,
             },
             ChangeEvent {
                 event_id: 2,
+                event_type: "parameter_changed".into(),
                 timestamp_ms: 200,
                 track_name: Some("Serum 2".into()),
                 track_id: Some("222".into()),
@@ -918,6 +960,9 @@ mod tests {
                 display_value: None,
                 previous_display_value: None,
                 is_quantized: None,
+                automation_start_ms: None,
+                automation_start_position: None,
+                automation_end_position: None,
             },
         ];
 

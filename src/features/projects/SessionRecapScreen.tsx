@@ -174,7 +174,7 @@ function buildRecap(session: SavedSession | null) {
   const tracks = new Set(events.map((event) => event.track).filter(Boolean));
   const devices = new Set(events.map((event) => event.device).filter(Boolean));
   const moveEvents = events.filter((event) =>
-    ["parameter_changed", "automation_created", "send_changed", "volume_changed", "pan_changed"].includes(event.type),
+    ["parameter_changed", "automation_created", "automation_edited", "send_changed", "volume_changed", "pan_changed"].includes(event.type),
   );
   const clipEvents = events.filter((event) =>
     event.type.includes("clip") || event.type.includes("sample"),

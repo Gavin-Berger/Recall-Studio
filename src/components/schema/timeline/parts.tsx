@@ -97,6 +97,19 @@ export function ActivitySpark({
 // Left column of a move row: "Device · Parameter", so the eye can lock onto
 // what was touched separately from the value.
 export function moveWhatNode(item: Activity) {
+  if (item.automation) {
+    const start = item.automationStartPosition;
+    const end = item.automationEndPosition;
+    const span = start && end ? (start === end ? start : `${start} → ${end}`) : null;
+    return (
+      <span className="tl-ci__what tl-ci__what--automation">
+        <span><b>Automation written</b>
+        <span className="tl-ci__det"> · {[item.deviceName, item.paramName].filter(Boolean).join(" · ") || "parameter"}</span>
+        </span>
+        {span && <span className="tl-ci__where">{span}</span>}
+      </span>
+    );
+  }
   return (
     <span className="tl-ci__what">
       <b>{item.deviceName ?? "Device"}</b>

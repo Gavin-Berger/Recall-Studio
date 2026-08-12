@@ -188,7 +188,14 @@ export function describeActivity(item: Activity): string {
     if (item.eventType === "midi_clip_recorded") return `Recorded MIDI: ${thing}`;
     return `Clip added: ${thing}`;
   }
-  const where = [item.deviceName, item.paramName].filter(Boolean).join(" · ");
+  const span = item.automationStartPosition && item.automationEndPosition
+    ? item.automationStartPosition === item.automationEndPosition
+      ? item.automationStartPosition
+      : `${item.automationStartPosition} → ${item.automationEndPosition}`
+    : null;
+  const where = item.automation
+    ? ["Automation written", item.deviceName, item.paramName, span].filter(Boolean).join(" · ")
+    : [item.deviceName, item.paramName].filter(Boolean).join(" · ");
   return `${where}: ${formatMoveValue(item.before, item.beforePercent, item.unit, item.beforeDisplay)} → ${formatMoveValue(
     item.after,
     item.afterPercent,

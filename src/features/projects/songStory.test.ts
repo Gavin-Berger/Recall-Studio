@@ -20,6 +20,7 @@ import {
 function change(over: Partial<ParameterChange>): ParameterChange {
   return {
     id: Math.random().toString(36),
+    event_type: "parameter_changed",
     parameter_id: null,
     track_name: null,
     track_id: null,
@@ -34,6 +35,9 @@ function change(over: Partial<ParameterChange>): ParameterChange {
     after_display_value: null,
     is_quantized: null,
     reason: null,
+    automation_start_ms: null,
+    automation_start_position: null,
+    automation_end_position: null,
     changed_at_ms: 0,
     ...over,
   };

@@ -68,6 +68,9 @@ export type ProjectSchema = {
 
 export type ParameterChange = {
   id: string;
+  // The capture intent that created this row. Automation gets a distinct
+  // timeline treatment instead of reading as an ordinary knob move.
+  event_type: string;
   parameter_id: string | null;
   track_name: string | null;
   // Live's stable per-track pointer. Two changes can share track_name (Ableton
@@ -89,6 +92,11 @@ export type ParameterChange = {
   after_display_value: string | null;
   is_quantized: boolean | null;
   reason: string | null;
+  // Present only for an automation write captured against Live's musical ruler.
+  // These are source-reported positions, never derived from wall-clock time.
+  automation_start_ms: number | null;
+  automation_start_position: string | null;
+  automation_end_position: string | null;
   changed_at_ms: number;
 };
 

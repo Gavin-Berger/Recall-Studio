@@ -806,11 +806,21 @@ mod tests {
         "live_set_snapshot",
         "midi_clip_created",
         "midi_clip_recorded",
+        "automation_created",
+        "automation_edited",
         "parameter_changed",
         "pan_changed",
         "send_changed",
+        "scene_launched",
         "tempo_changed",
+        "track_created",
+        "track_deleted",
         "track_list_changed",
+        "track_name_changed",
+        "tracks_grouped",
+        "track_ungrouped",
+        "clip_launched",
+        "return_track_added",
         "volume_changed",
     ];
 
@@ -905,6 +915,7 @@ mod tests {
             "track_created",
             "device_added",
             "automation_created",
+            "automation_edited",
         ] {
             assert!(is_creative(work), "{work} should count as a moment");
         }

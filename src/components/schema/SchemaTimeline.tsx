@@ -351,6 +351,7 @@ export function SchemaTimeline({
     for (const change of timelineChanges) {
       const trackId =
         (change.parameter_id ? lookups.paramTrack.get(change.parameter_id) : undefined) ??
+        (change.track_id ? lookups.abletonTrack.get(change.track_id) : undefined) ??
         (change.track_name ? lookups.nameTrack.get(change.track_name.toLowerCase()) : undefined);
       if (!trackId) continue;
       out.push({
@@ -368,6 +369,11 @@ export function SchemaTimeline({
         beforeDisplay: change.before_display_value,
         afterDisplay: change.after_display_value,
         quantized: change.is_quantized,
+        automation:
+          change.event_type === "automation_created" ||
+          change.event_type === "automation_edited",
+        automationStartPosition: change.automation_start_position,
+        automationEndPosition: change.automation_end_position,
       });
     }
     for (const edit of noteEdits) {
@@ -544,7 +550,8 @@ export function SchemaTimeline({
         (item.kind === "move"
           ? last.lead.kind === "move" &&
             last.lead.deviceName === item.deviceName &&
-            last.lead.paramName === item.paramName
+            last.lead.paramName === item.paramName &&
+            last.lead.automation === item.automation
           : // Consecutive edits to the SAME clip are one stretch of writing.
             // Each settled edit is already coalesced at the bridge, but a
             // producer building a part still produces a run of them, and eight
@@ -592,6 +599,7 @@ export function SchemaTimeline({
   const sessionBlocks = useMemo<SessionBlock[]>(() => {
     const resolveTrackId = (change: ParameterChange): string | null =>
       (change.parameter_id ? lookups.paramTrack.get(change.parameter_id) : undefined) ??
+      (change.track_id ? lookups.abletonTrack.get(change.track_id) : undefined) ??
       (change.track_name ? lookups.nameTrack.get(change.track_name.toLowerCase()) : undefined) ??
       null;
 
@@ -1508,7 +1516,9 @@ export function SchemaTimeline({
                               }
                             : {})}
                         >
-                          <span className="tl-ci__ic tl-ci__ic--move" />
+                          <span className={`tl-ci__ic ${lead.automation ? "tl-ci__ic--automation" : "tl-ci__ic--move"}`}>
+                            {lead.automation ? "⌁" : null}
+                          </span>
                           <span className="tl-ci__body">
                             {moveWhatNode(lead)}
                             {moveValueNode(oldest, lead, count)}

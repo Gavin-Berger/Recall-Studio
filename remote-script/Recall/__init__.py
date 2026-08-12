@@ -81,6 +81,7 @@ MAX_PARAMS_PER_DEVICE = 128
 # Return track. Cap sends defensively anyway: losing a 17th send is preferable
 # to an unusual Live build registering an unbounded listener collection.
 MAX_MIXER_SENDS_PER_TRACK = 16
+MAX_SCENES = 128
 
 # Ceiling on clips watched per track, and on notes read out of any one clip.
 #
@@ -133,7 +134,91 @@ SET_PATH_ATTRIBUTE_HINTS = (
 #   0 = none        no automation on this parameter
 #   1 = playing     automation exists and is DRIVING the value right now
 #   2 = overridden  automation exists but the producer grabbed the control
+#   3 = recording    the producer is writing automation now
+AUTOMATION_STATE_NONE = 0
 AUTOMATION_STATE_PLAYING = 1
+AUTOMATION_STATE_OVERRIDDEN = 2
+AUTOMATION_STATE_RECORDING = 3
+
+
+def _automation_event_type(previous_state, current_state):
+    """The durable automation decision represented by a state transition.
+
+    The value listener cannot tell a hand move from automation playback. The
+    state transition can: an automation lane first appearing is a creation;
+    entering write mode on an existing lane is an edit. Every other transition
+    is playback or cleanup and must stay quiet.
+    """
+    if previous_state is None or current_state is None:
+        return None
+    if previous_state == AUTOMATION_STATE_NONE and current_state != AUTOMATION_STATE_NONE:
+        return "automation_created"
+    if current_state == AUTOMATION_STATE_RECORDING and previous_state != AUTOMATION_STATE_RECORDING:
+        return "automation_edited"
+    return None
+
+
+def _automation_position_label(beats_song_time):
+    """Render Live's own bars/beats position without deriving it from seconds.
+
+    Song.get_current_beats_song_time() returns the musical Arrangement position.
+    Its values are already bar-aware (including meter changes), so we must not
+    calculate a bar number from current_song_time ourselves.
+    """
+    if beats_song_time is None:
+        return None
+
+    bars = getattr(beats_song_time, "bars", None)
+    beats = getattr(beats_song_time, "beats", None)
+    if bars is None or beats is None:
+        return None
+
+    label = "Bar {} · Beat {}".format(bars, beats)
+    subdivision = getattr(beats_song_time, "sub_division", None)
+    if subdivision is not None:
+        label += " · 1/16 {}".format(subdivision)
+    return label
+
+
+def _track_structure_events(previous, current):
+    """The concrete track edits between two lightweight song snapshots.
+
+    `Song.tracks` tells us that structure changed but not what changed. Comparing
+    ids, names, and group ownership turns that coarse callback into useful
+    producer-facing events without polling Live or traversing device chains.
+    """
+    events = []
+
+    for key, track in sorted(current.items(), key=lambda item: item[1]["index"]):
+        if key not in previous:
+            event_type = "return_track_added" if track["track_type"] == "return" else "track_created"
+            events.append((event_type, dict(track)))
+
+    for key, track in sorted(previous.items(), key=lambda item: item[1]["index"]):
+        if key not in current and track["track_type"] != "master":
+            events.append(("track_deleted", dict(track)))
+
+    for key in sorted(set(previous).intersection(current)):
+        before = previous[key]
+        after = current[key]
+        if before["track_name"] != after["track_name"]:
+            payload = dict(after)
+            payload["previous_track_name"] = before["track_name"]
+            events.append(("track_name_changed", payload))
+        if before["group_track_id"] != after["group_track_id"]:
+            payload = dict(after)
+            payload["previous_group_track_id"] = before["group_track_id"]
+            payload["previous_group_track_name"] = before["group_track_name"]
+            events.append(
+                ("tracks_grouped" if after["group_track_id"] else "track_ungrouped", payload)
+            )
+
+    return events
+
+
+def _became_active(previous, current):
+    """Whether a trigger/playback state crossed from idle to active."""
+    return not bool(previous) and bool(current)
 
 
 def _looks_like_set_path(value):
@@ -246,7 +331,15 @@ NOTE_NAMES = ("C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B")
 # never held it.
 # 0.5.2 adds settled all-channel volume, pan, and send gestures. It keeps arm
 # private until a new Session clip proves that the armed channel was recorded.
-SCRIPT_VERSION = "0.5.2"
+# 0.5.3 adds automation-state capture: lane creation and writes to an existing
+# lane, while playback remains deliberately silent.
+# 0.5.4 expands the coarse track-list callback into safe create/delete/rename
+# and grouping events from a tiny track-only snapshot.
+# 0.5.5 adds bounded Session View performance capture: every scene trigger and
+# clip launches on the selected track, without a full-set clip listener sweep.
+# 0.5.6 records the actual musical start/end of an automation write using
+# Live's bars/beats clock, so the timeline can answer what changed and where.
+SCRIPT_VERSION = "0.5.6"
 
 
 class Recall(ControlSurface):
@@ -259,6 +352,16 @@ class Recall(ControlSurface):
         self._stop = None
         self._parameter_listeners = []
         self._device_listeners = []
+        self._track_structure_listeners = []
+        self._track_structure = {}
+        self._return_tracks_listener_attached = False
+        # Parameter automation-state listeners mirror the value listener scope.
+        # They are separate because a lane's existence is a decision of its own.
+        self._automation_parameter_listeners = []
+        self._mixer_automation_listeners = []
+        self._automation_states = {}
+        self._automation_writes = {}
+        self._automation_recently_changed = {}
         # Mixer listeners survive selected-track changes: selection scopes
         # plugin parameters, but mixing is project-wide.
         self._mixer_parameter_listeners = []
@@ -274,12 +377,18 @@ class Recall(ControlSurface):
         # and when it arrived). Settled by update_display, not by the callback.
         self._gestures = {}
         self._moves_seen = 0
+        self._automation_edits_seen = 0
         # Clip-note capture. _clip_listeners and _slot_listeners are unregistered
         # on teardown; _clip_prints holds the last settled fingerprint per clip so
         # an edit can report what it changed FROM, the same way _last_values does
         # for parameters; _dirty_clips holds edits waiting to settle.
         self._clip_listeners = []
         self._slot_listeners = []
+        self._slot_playback_listeners = []
+        self._slot_playing_status = {}
+        self._scene_listeners = []
+        self._scene_triggered = {}
+        self._scenes_listener_attached = False
         self._clip_prints = {}
         self._dirty_clips = {}
         # Clips already carrying a notes listener, so the slot path and the
@@ -337,6 +446,9 @@ class Recall(ControlSurface):
                 },
             )
             self._listen_to_selection()
+            self._attach_track_structure_listeners()
+            self._track_structure = self._track_structure_snapshot()
+            self._attach_scene_listeners()
             self._attach_mixer_listeners()
             self._send_snapshot()
 
@@ -463,6 +575,16 @@ class Recall(ControlSurface):
         # the same outcome costs one callback and no traversal at all.
         self.song.add_tempo_listener(self._on_tempo_changed)
         self.song.add_tracks_listener(self._on_tracks_changed)
+        try:
+            self.song.add_return_tracks_listener(self._on_tracks_changed)
+            self._return_tracks_listener_attached = True
+        except Exception as error:  # noqa: BLE001 - not exposed on older Live
+            logger.info("Recall Studio: no return-tracks listener: {}".format(error))
+        try:
+            self.song.add_scenes_listener(self._on_scenes_changed)
+            self._scenes_listener_attached = True
+        except Exception as error:  # noqa: BLE001 - not exposed on older Live
+            logger.info("Recall Studio: no scenes listener: {}".format(error))
 
         # Opening a different clip in the piano roll is how note editing starts,
         # in both views. Guarded because a failure here must not stop the surface
@@ -626,8 +748,161 @@ class Recall(ControlSurface):
     def _on_tempo_changed(self):
         self._emit("tempo_changed", {"bpm": self.song.tempo})
 
+    # ── precise track structure ────────────────────────────────────────────
+
+    def _track_structure_snapshot(self):
+        """Small track-only snapshot used to explain `Song.tracks` changes."""
+        snapshot = {}
+        entries = []
+        for index, track in enumerate(self.song.tracks):
+            try:
+                track_type = "midi" if track.has_midi_input else "audio"
+            except Exception:  # noqa: BLE001 - incomplete track during mutation
+                track_type = "audio"
+            entries.append((track, index, track_type))
+        entries.extend(
+            (track, index, "return")
+            for index, track in enumerate(self.song.return_tracks)
+        )
+        if self.song.master_track is not None:
+            entries.append((self.song.master_track, 0, "master"))
+
+        for track, index, track_type in entries:
+            track_id = self._safe_id(track)
+            key = track_id or "object-{}".format(id(track))
+            try:
+                group_track = track.group_track
+            except Exception:  # noqa: BLE001 - returns/Main can reject this read
+                group_track = None
+            try:
+                is_group = bool(track.is_foldable)
+            except Exception:  # noqa: BLE001 - special tracks can reject it
+                is_group = False
+            snapshot[key] = {
+                "track_id": track_id,
+                "track_name": self._safe_name(track),
+                "track_type": track_type,
+                "track_index": index,
+                # `_track_structure_events` uses this short key for stable sort.
+                "index": index,
+                "group_track_id": self._safe_id(group_track) if group_track else None,
+                "group_track_name": self._safe_name(group_track) if group_track else None,
+                "is_group": is_group,
+            }
+        return snapshot
+
+    def _attach_track_structure_listeners(self):
+        # One name listener per channel is bounded, unlike a device/parameter
+        # walk, and name changes do not trigger Song.tracks on every Live build.
+        for track in self._mixer_tracks():
+            try:
+                listener = self._make_track_name_listener(track)
+                track.add_name_listener(listener)
+                self._track_structure_listeners.append((track, listener))
+            except Exception as error:  # noqa: BLE001 - special track API gap
+                logger.info(
+                    "Recall Studio: could not watch track name on {}: {}".format(
+                        self._safe_name(track), error
+                    )
+                )
+
+    def _clear_track_structure_listeners(self):
+        for track, listener in self._track_structure_listeners:
+            try:
+                if track.name_has_listener(listener):
+                    track.remove_name_listener(listener)
+            except Exception:  # noqa: BLE001 - deleted tracks are already gone
+                pass
+        self._track_structure_listeners = []
+
+    def _make_track_name_listener(self, track):
+        key = self._track_listener_key(track)
+
+        def _on_name():
+            previous = self._track_structure.get(key)
+            current_name = self._safe_name(track)
+            if previous is None or previous["track_name"] == current_name:
+                return
+            previous_name = previous["track_name"]
+            previous["track_name"] = current_name
+            self._emit(
+                "track_name_changed",
+                {
+                    "track_id": previous["track_id"],
+                    "track_name": current_name,
+                    "previous_track_name": previous_name,
+                    "track_type": previous["track_type"],
+                    "track_index": previous["track_index"],
+                },
+            )
+            # The derived tree is the source of truth for current names, so a
+            # one-off snapshot keeps the lane label in step with the event.
+            self._send_snapshot()
+
+        return _on_name
+
+    # ── Session View performance ───────────────────────────────────────────
+
+    def _attach_scene_listeners(self):
+        # Scenes are shallow objects; observing their trigger state is bounded
+        # and does not touch any clip/note/device data.
+        for index, scene in enumerate(self._safe_list(self.song, "scenes")[:MAX_SCENES]):
+            key = self._safe_id(scene) or "object-{}".format(id(scene))
+            try:
+                self._scene_triggered[key] = bool(scene.is_triggered)
+                listener = self._make_scene_listener(scene, index, key)
+                scene.add_is_triggered_listener(listener)
+                self._scene_listeners.append((scene, listener))
+            except Exception as error:  # noqa: BLE001 - API missing per Live build
+                self._scene_triggered.pop(key, None)
+                logger.info(
+                    "Recall Studio: could not watch scene {}: {}".format(index + 1, error)
+                )
+
+    def _clear_scene_listeners(self):
+        for scene, listener in self._scene_listeners:
+            try:
+                if scene.is_triggered_has_listener(listener):
+                    scene.remove_is_triggered_listener(listener)
+            except Exception:  # noqa: BLE001 - deleted scene may be invalid
+                pass
+        self._scene_listeners = []
+        self._scene_triggered = {}
+
+    def _make_scene_listener(self, scene, index, key):
+        def _on_triggered():
+            try:
+                triggered = bool(scene.is_triggered)
+            except Exception:  # noqa: BLE001 - scene was deleted
+                return
+            previous = self._scene_triggered.get(key, False)
+            self._scene_triggered[key] = triggered
+            if not _became_active(previous, triggered):
+                return
+            self._emit(
+                "scene_launched",
+                {
+                    "scene_id": self._safe_id(scene),
+                    "scene_name": self._safe_name(scene),
+                    "scene_index": index,
+                },
+            )
+
+        return _on_triggered
+
+    def _on_scenes_changed(self):
+        self._clear_scene_listeners()
+        self._attach_scene_listeners()
+
 
     def _on_tracks_changed(self):
+        current_structure = self._track_structure_snapshot()
+        for event_type, payload in _track_structure_events(
+            self._track_structure, current_structure
+        ):
+            payload.pop("index", None)
+            self._emit(event_type, payload)
+        self._track_structure = current_structure
         self._emit(
             "track_list_changed",
             {
@@ -639,6 +914,8 @@ class Recall(ControlSurface):
         # listener family; plugin listeners remain scoped to the focused track.
         self._clear_mixer_listeners()
         self._attach_mixer_listeners()
+        self._clear_track_structure_listeners()
+        self._attach_track_structure_listeners()
         # Re-snapshot so a track added mid-session reaches the app. This is the
         # bug that crashed Live last night when the M4L bridge tried it: there,
         # every structural change meant a full LiveAPI traversal. Here it is a
@@ -721,19 +998,213 @@ class Recall(ControlSurface):
     def _watch_value_parameter(self, track, parameter, event_type, device_name, parameter_name):
         if parameter is None:
             return
+        key = id(parameter)
         try:
-            self._last_values[id(parameter)] = parameter.value
+            self._last_values[key] = parameter.value
             listener = self._make_value_listener(
                 track, parameter, event_type, device_name, parameter_name
             )
             parameter.add_value_listener(listener)
             self._mixer_parameter_listeners.append((parameter, listener))
+            self._watch_automation_state(
+                track,
+                parameter,
+                device_name,
+                parameter_name,
+                self._mixer_automation_listeners,
+            )
         except Exception as error:  # noqa: BLE001 - individual control only
+            # Do not retain a seed for a listener that never attached: Live can
+            # reuse object ids after a channel disappears.
+            self._last_values.pop(key, None)
             logger.info(
                 "Recall Studio: could not watch {} on {}: {}".format(
                     parameter_name, self._safe_name(track), error
                 )
             )
+
+    def _read_automation_state(self, parameter):
+        try:
+            state = getattr(parameter, "automation_state", None)
+            return int(state) if state is not None else None
+        except Exception:  # noqa: BLE001 - parameter was removed
+            return None
+
+    def _watch_automation_state(
+        self, track, parameter, device_name, parameter_name, listener_store
+    ):
+        """Watch automation state without widening parameter traversal scope."""
+        # A build that cannot identify the playing enum cannot safely distinguish
+        # automation playback from manual input, so it must not claim it sees
+        # drawn lanes either.
+        if self._automation_playing_state is None:
+            return
+        if not parameter_name:
+            return
+
+        state = self._read_automation_state(parameter)
+        if state is None:
+            return
+
+        key = id(parameter)
+        try:
+            listener = self._make_automation_listener(
+                track, parameter, device_name, parameter_name
+            )
+            parameter.add_automation_state_listener(listener)
+            listener_store.append((parameter, listener))
+            # Baseline only. Existing automation must never appear as newly
+            # drawn just because the producer selected that track.
+            self._automation_states[key] = state
+        except Exception as error:  # noqa: BLE001 - API unavailable per device
+            logger.info(
+                "Recall Studio: could not watch automation on {}: {}".format(
+                    parameter_name, error
+                )
+            )
+
+    def _automation_position(self):
+        """The exact Arrangement position Live reports for the current write."""
+        try:
+            return _automation_position_label(self.song.get_current_beats_song_time())
+        except Exception:  # noqa: BLE001 - older Live builds may omit this API
+            return None
+
+    def _automation_recording_enabled(self):
+        """Whether Live is actually armed to write automation now.
+
+        `automation_state == none` or `overridden` tells us the parameter is not
+        being driven by playback. Pair that with Live's record state and a
+        running transport before calling the movement a written span.
+        """
+        try:
+            return bool(self.song.is_playing) and (
+                bool(self.song.record_mode)
+                or bool(self.song.session_automation_record)
+            )
+        except Exception:  # noqa: BLE001 - a partial/older LOM object
+            return False
+
+    def _start_automation_write(
+        self, track, parameter, device_name, parameter_name, previous_state
+    ):
+        """Open a write span; it remains silent until a value actually moves."""
+        try:
+            current = parameter.value
+        except Exception:  # noqa: BLE001 - parameter died with its device
+            return
+
+        key = id(parameter)
+        self._automation_writes[key] = {
+            "track": track,
+            "parameter": parameter,
+            "device_name": device_name,
+            "parameter_name": parameter_name,
+            # Live reports no automation before a new lane, otherwise this is
+            # an edit to an existing lane. This is the only classification here.
+            "event_type": _automation_event_type(previous_state, AUTOMATION_STATE_RECORDING)
+            or "automation_edited",
+            "start_value": self._last_values.get(key, current),
+            "start_display_value": self._display(
+                parameter, self._last_values.get(key, current)
+            ),
+            "start_percent": self._percent(
+                parameter, self._last_values.get(key, current)
+            ),
+            "start_ms": int(time.time() * 1000),
+            "start_position": self._automation_position(),
+            "last_value_at": None,
+        }
+
+    def _record_automation_value(self, track, parameter, device_name, parameter_name):
+        """Sample a real automation-write value and its exact Live ruler point."""
+        key = id(parameter)
+        try:
+            current = parameter.value
+        except Exception:  # noqa: BLE001 - parameter died with its device
+            return
+
+        write = self._automation_writes.get(key)
+        if write is None:
+            # Most Live versions represent a written, pre-existing lane as
+            # "overridden", not a separate recording enum. This branch is only
+            # reached after _automation_recording_enabled proved the transport
+            # and automation record state, and after a value callback arrived.
+            self._start_automation_write(
+                track,
+                parameter,
+                device_name,
+                parameter_name,
+                self._automation_states.get(key),
+            )
+            write = self._automation_writes.get(key)
+        if write is None:
+            return
+
+        write["last_value"] = current
+        write["last_display_value"] = self._display(parameter, current)
+        write["last_percent"] = self._percent(parameter, current)
+        write["last_position"] = self._automation_position()
+        write["last_value_at"] = time.time()
+        self._last_values[key] = current
+
+    def _finish_automation_write(self, parameter, current_state):
+        """Emit one exact write span after its final observed value."""
+        key = id(parameter)
+        write = self._automation_writes.pop(key, None)
+        if write is None or write["last_value_at"] is None:
+            return
+
+        landed = write["last_value"]
+        self._last_values[key] = landed
+        # A near-simultaneous value callback belongs to this completed write,
+        # not to a second generic parameter move.
+        self._automation_recently_changed[key] = time.time()
+        self._automation_edits_seen += 1
+
+        self._emit(
+            write["event_type"],
+            {
+                "track_name": self._safe_name(write["track"]),
+                "track_id": self._safe_id(write["track"]),
+                "device_name": write["device_name"],
+                "parameter_name": write["parameter_name"],
+                "parameter_value": landed,
+                "previous_parameter_value": write["start_value"],
+                "parameter_value_percent": write["last_percent"],
+                "previous_parameter_value_percent": write["start_percent"],
+                "parameter_display_value": write["last_display_value"],
+                "previous_parameter_display_value": write["start_display_value"],
+                "automation_state": current_state,
+                "automation_start_ms": write["start_ms"],
+                "automation_start_position": write["start_position"],
+                "automation_end_position": write["last_position"],
+            },
+        )
+
+    def _make_automation_listener(self, track, parameter, device_name, parameter_name):
+        def _on_automation_state():
+            key = id(parameter)
+            current_state = self._read_automation_state(parameter)
+            previous_state = self._automation_states.get(key)
+            if current_state is None:
+                return
+            self._automation_states[key] = current_state
+
+            if (
+                current_state == AUTOMATION_STATE_RECORDING
+                and previous_state != AUTOMATION_STATE_RECORDING
+            ):
+                self._start_automation_write(
+                    track, parameter, device_name, parameter_name, previous_state
+                )
+            elif (
+                previous_state == AUTOMATION_STATE_RECORDING
+                and current_state != AUTOMATION_STATE_RECORDING
+            ):
+                self._finish_automation_write(parameter, current_state)
+
+        return _on_automation_state
 
     def _track_listener_key(self, track):
         return self._safe_id(track) or "object-{}".format(id(track))
@@ -788,6 +1259,16 @@ class Recall(ControlSurface):
         # refreshed the set state.
         self._flush_settled_gestures(force=True)
 
+        for parameter, listener in self._mixer_automation_listeners:
+            try:
+                if parameter.automation_state_has_listener(listener):
+                    parameter.remove_automation_state_listener(listener)
+            except Exception:  # noqa: BLE001 - channel may already be gone
+                pass
+            self._automation_states.pop(id(parameter), None)
+            self._automation_writes.pop(id(parameter), None)
+            self._automation_recently_changed.pop(id(parameter), None)
+
         for parameter, listener in self._mixer_parameter_listeners:
             try:
                 if parameter.value_has_listener(listener):
@@ -804,6 +1285,7 @@ class Recall(ControlSurface):
                 pass
 
         self._mixer_parameter_listeners = []
+        self._mixer_automation_listeners = []
         self._arm_listeners = []
         self._armed_track_ids = set()
 
@@ -907,6 +1389,21 @@ class Recall(ControlSurface):
             except Exception:  # noqa: BLE001
                 continue
             self._slot_listeners.append((slot, listener))
+
+            # Session View launch is valuable performance context. This stays
+            # on the selected track with the existing clip-note scope; watching
+            # every slot in a large set would be a very different safety cost.
+            try:
+                self._slot_playing_status[id(slot)] = int(slot.playing_status)
+                playback_listener = self._make_slot_playback_listener(track, slot, index)
+                slot.add_playing_status_listener(playback_listener)
+                self._slot_playback_listeners.append((slot, playback_listener))
+            except Exception as error:  # noqa: BLE001 - API varies across Live builds
+                logger.info(
+                    "Recall Studio: could not watch clip launch on slot {}: {}".format(
+                        index + 1, error
+                    )
+                )
 
             if slot.has_clip:
                 watched += self._watch_clip(track, slot.clip, index)
@@ -1016,6 +1513,37 @@ class Recall(ControlSurface):
             )
 
         return _on_has_clip
+
+    def _make_slot_playback_listener(self, track, slot, index):
+        def _on_playing_status():
+            key = id(slot)
+            try:
+                status = int(slot.playing_status)
+            except Exception:  # noqa: BLE001 - slot disappeared
+                return
+            previous = self._slot_playing_status.get(key, 0)
+            self._slot_playing_status[key] = status
+            # Live reports stopped=0, triggered=1, playing=2. One event at the
+            # stopped → triggered/playing edge avoids two rows for one launch.
+            if not _became_active(previous, status):
+                return
+
+            try:
+                clip = slot.clip if slot.has_clip else None
+            except Exception:  # noqa: BLE001
+                clip = None
+            self._emit(
+                "clip_launched",
+                {
+                    "track_name": self._safe_name(track),
+                    "track_id": self._safe_id(track),
+                    "clip_slot_index": index,
+                    "clip_name": self._safe_name(clip) if clip else None,
+                    "clip_id": self._safe_id(clip) if clip else None,
+                },
+            )
+
+        return _on_playing_status
 
     def _make_notes_listener(self, track, clip, slot_index):
         def _on_notes():
@@ -1280,6 +1808,20 @@ class Recall(ControlSurface):
             return False
 
         return state == self._automation_playing_state
+
+    def _is_automation_being_written(self, parameter):
+        """True while a parameter is being written into an automation lane.
+
+        Live exposes a dedicated recording state in some versions. Other
+        versions report the producer's write as `overridden`, so we require the
+        running transport and Live's automation-record state before treating it
+        as a write. Playback remains state `playing` and never enters here.
+        """
+        state = self._read_automation_state(parameter)
+        return state == AUTOMATION_STATE_RECORDING or (
+            state in (AUTOMATION_STATE_NONE, AUTOMATION_STATE_OVERRIDDEN)
+            and self._automation_recording_enabled()
+        )
 
     @staticmethod
     def _resolve_automation_playing_state():
@@ -1560,8 +2102,17 @@ class Recall(ControlSurface):
             except Exception:  # noqa: BLE001
                 pass
 
+        for slot, listener in self._slot_playback_listeners:
+            try:
+                if slot.playing_status_has_listener(listener):
+                    slot.remove_playing_status_listener(listener)
+            except Exception:  # noqa: BLE001
+                pass
+
         self._clip_listeners = []
         self._slot_listeners = []
+        self._slot_playback_listeners = []
+        self._slot_playing_status = {}
         self._watched_clip_ids = set()
         # Dropped with the listeners so a stale fingerprint cannot attach to a
         # different clip that reuses the same object id.
@@ -1607,6 +2158,13 @@ class Recall(ControlSurface):
                 listener = self._make_parameter_listener(track, device, parameter)
                 parameter.add_value_listener(listener)
                 self._parameter_listeners.append((parameter, listener))
+                self._watch_automation_state(
+                    track,
+                    parameter,
+                    self._safe_name(device),
+                    self._safe_name(parameter),
+                    self._automation_parameter_listeners,
+                )
                 parameter_count += 1
 
             # Device on/off. Bypassing a plugin is a real production decision and
@@ -1693,21 +2251,30 @@ class Recall(ControlSurface):
             # now — it is one they made earlier, already captured when they drew
             # it. Checked before _moves_seen so the counter reported in
             # bridge_stopped stays a count of real moves.
-            if self._is_automation_playback(parameter):
+            key = id(parameter)
+            just_changed_automation = (
+                time.time() - self._automation_recently_changed.get(key, 0.0)
+            ) < GESTURE_SETTLE_SEC
+            if self._is_automation_being_written(parameter):
+                self._record_automation_value(
+                    track, parameter, device_name, parameter_name
+                )
+                return
+
+            if self._is_automation_playback(parameter) or just_changed_automation:
                 # Still track where automation left the value. Skipping this
                 # would leave _last_values holding a pre-playback reading, so
                 # the next time the producer grabs the control the move would
                 # report a "before" from before the automation ran — e.g.
                 # "0.2 -> 0.5" for a knob automation had already carried to 0.8.
                 try:
-                    self._last_values[id(parameter)] = parameter.value
+                    self._last_values[key] = parameter.value
                 except Exception:  # noqa: BLE001 - device gone mid-playback
                     pass
                 return
 
             self._moves_seen += 1
 
-            key = id(parameter)
             current = parameter.value
             now = time.time()
 
@@ -1789,6 +2356,7 @@ class Recall(ControlSurface):
         )
 
     def _flush_settled_gestures(self, force=False):
+        self._flush_settled_automation_writes(force)
         if not self._gestures:
             return
 
@@ -1802,6 +2370,25 @@ class Recall(ControlSurface):
 
             del self._gestures[key]
             self._emit_settled(key, gesture)
+
+    def _flush_settled_automation_writes(self, force=False):
+        if not self._automation_writes:
+            return
+
+        now = time.time()
+        for key in list(self._automation_writes.keys()):
+            write = self._automation_writes[key]
+            last_value_at = write["last_value_at"]
+            if last_value_at is None:
+                if force:
+                    self._automation_writes.pop(key, None)
+                continue
+            if not force and (now - last_value_at) < GESTURE_SETTLE_SEC:
+                continue
+            self._finish_automation_write(
+                write["parameter"],
+                self._read_automation_state(write["parameter"]),
+            )
 
     def _emit_settled(self, key, gesture):
         parameter = gesture["parameter"]
@@ -1856,6 +2443,16 @@ class Recall(ControlSurface):
         # remembering.
         self._flush_settled_gestures(force=True)
 
+        for parameter, listener in self._automation_parameter_listeners:
+            try:
+                if parameter.automation_state_has_listener(listener):
+                    parameter.remove_automation_state_listener(listener)
+            except Exception:  # noqa: BLE001 - device may already be gone
+                pass
+            self._automation_states.pop(id(parameter), None)
+            self._automation_writes.pop(id(parameter), None)
+            self._automation_recently_changed.pop(id(parameter), None)
+
         for parameter, listener in self._parameter_listeners:
             try:
                 if parameter.value_has_listener(listener):
@@ -1872,6 +2469,7 @@ class Recall(ControlSurface):
 
         self._parameter_listeners = []
         self._device_listeners = []
+        self._automation_parameter_listeners = []
         self._observed_device = None
 
     def refresh_state(self):
@@ -1886,11 +2484,17 @@ class Recall(ControlSurface):
         super().refresh_state()
 
         with self.component_guard():
+            self._clear_track_structure_listeners()
+            self._track_structure = {}
+            self._clear_scene_listeners()
             self._clear_mixer_listeners()
             self._clear_parameter_listeners()
             self._clear_devices_listener()
             self._clear_clip_listeners()
             self._on_selection_changed()
+            self._attach_track_structure_listeners()
+            self._track_structure = self._track_structure_snapshot()
+            self._attach_scene_listeners()
             self._attach_mixer_listeners()
             self._send_snapshot()
 
@@ -1900,6 +2504,8 @@ class Recall(ControlSurface):
         # Live calls this on script unload and on quit. Leaking listeners here is
         # how a remote script starts crashing Live on set changes, so it has to
         # be exhaustive even in a spike.
+        self._clear_track_structure_listeners()
+        self._clear_scene_listeners()
         self._clear_mixer_listeners()
         self._clear_parameter_listeners()
         self._clear_devices_listener()
@@ -1914,6 +2520,16 @@ class Recall(ControlSurface):
                 self.song.remove_tempo_listener(self._on_tempo_changed)
             if self.song.tracks_has_listener(self._on_tracks_changed):
                 self.song.remove_tracks_listener(self._on_tracks_changed)
+            if (
+                self._scenes_listener_attached
+                and self.song.scenes_has_listener(self._on_scenes_changed)
+            ):
+                self.song.remove_scenes_listener(self._on_scenes_changed)
+            if (
+                self._return_tracks_listener_attached
+                and self.song.return_tracks_has_listener(self._on_tracks_changed)
+            ):
+                self.song.remove_return_tracks_listener(self._on_tracks_changed)
             if self.song.view.detail_clip_has_listener(self._on_detail_clip_changed):
                 self.song.view.remove_detail_clip_listener(self._on_detail_clip_changed)
         except Exception:  # noqa: BLE001
@@ -1924,7 +2540,11 @@ class Recall(ControlSurface):
         self._flush_settled_gestures(force=True)
         self._emit(
             "bridge_stopped",
-            {"moves_seen": self._moves_seen, "note_edits_seen": self._note_edits_seen},
+            {
+                "moves_seen": self._moves_seen,
+                "note_edits_seen": self._note_edits_seen,
+                "automation_edits_seen": self._automation_edits_seen,
+            },
         )
 
         # Give the sender a moment to flush bridge_stopped before tearing it

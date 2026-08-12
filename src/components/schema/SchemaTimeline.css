@@ -1210,6 +1210,20 @@
   font-weight: 600;
 }
 
+.tl-ci__what--automation {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  white-space: normal;
+}
+
+.tl-ci__where {
+  color: var(--signal-soft);
+  font-family: var(--font-mono);
+  font-size: 0.67rem;
+  line-height: 1.25;
+}
+
 .tl-ci__det {
   color: var(--muted);
 }
@@ -1878,6 +1892,12 @@
 .tl-activity-log {
   margin-top: 20px;
   border-top: 1px solid var(--line);
+}
+
+.tl-ci__ic--automation {
+  color: var(--signal-soft);
+  font-size: 17px;
+  line-height: 1;
 }
 
 .tl-activity-log__head {

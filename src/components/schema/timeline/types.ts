@@ -49,6 +49,7 @@ export const LIVE_REFRESH_EVENT_TYPES = new Set([
   "clip_deleted",
   "device_parameter_changed",
   "automation_created",
+  "automation_edited",
   "selected_track_focus_snapshot",
   "live_set_snapshot",
   "device_added",
@@ -94,6 +95,11 @@ export type Activity = {
   // number/percent when present.
   beforeDisplay?: string | null;
   afterDisplay?: string | null;
+  // Deliberate automation-lane changes get their own timeline treatment.
+  automation?: boolean;
+  // The source-reported Arrangement ruler span for a recorded automation write.
+  automationStartPosition?: string | null;
+  automationEndPosition?: string | null;
   // Whether this parameter is categorical (a mode selector) rather than a
   // continuous value — drives pill-vs-number rendering and suppresses the
   // up/down direction caret (a mode flip has no direction).

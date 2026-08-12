@@ -2343,12 +2343,13 @@ impl StorageState {
             let mut statement = transaction
                 .prepare_cached(
                     "INSERT INTO parameter_changes
-                     (id, session_id, parameter_id, track_name, track_id, device_name, parameter_name,
+                     (id, session_id, event_type, parameter_id, track_name, track_id, device_name, parameter_name,
                       before_value, after_value, before_value_percent, after_value_percent,
                       unit, before_display_value, after_display_value, is_quantized,
-                      reason, changed_at_ms, source_event_id)
+                      reason, automation_start_ms, automation_start_position, automation_end_position,
+                      changed_at_ms, source_event_id)
                      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15,
-                             ?16, ?17, ?18)",
+                             ?16, ?17, ?18, ?19, ?20, ?21, ?22)",
                 )
                 .map_err(|error| {
                     format!("Failed to prepare parameter_changes insert: {}", error)
@@ -2364,6 +2365,7 @@ impl StorageState {
                     .execute(params![
                         change.id,
                         session_id,
+                        change.event_type,
                         change.parameter_id,
                         change.track_name,
                         change.track_id,
@@ -2378,6 +2380,9 @@ impl StorageState {
                         change.after_display_value,
                         change.is_quantized.map(|quantized| quantized as i64),
                         change.reason,
+                        change.automation_start_ms.map(|value| value as i64),
+                        change.automation_start_position,
+                        change.automation_end_position,
                         change.changed_at_ms as i64,
                         source_event_id
                     ])
@@ -2452,10 +2457,11 @@ impl StorageState {
 
         let mut statement = connection
             .prepare(
-                "SELECT id, parameter_id, track_name, track_id, device_name, parameter_name,
+                "SELECT id, event_type, parameter_id, track_name, track_id, device_name, parameter_name,
                         before_value, after_value, before_value_percent, after_value_percent,
                         unit, before_display_value, after_display_value, is_quantized,
-                        reason, changed_at_ms
+                        reason, automation_start_ms, automation_start_position, automation_end_position,
+                        changed_at_ms
                  FROM parameter_changes WHERE session_id = ?1
                  ORDER BY changed_at_ms ASC, id ASC",
             )
@@ -2465,21 +2471,27 @@ impl StorageState {
             .query_map(params![session_id], |row| {
                 Ok(ParameterChange {
                     id: row.get(0)?,
-                    parameter_id: row.get(1)?,
-                    track_name: row.get(2)?,
-                    track_id: row.get(3)?,
-                    device_name: row.get(4)?,
-                    parameter_name: row.get(5)?,
-                    before_value: row.get(6)?,
-                    after_value: row.get(7)?,
-                    before_value_percent: row.get(8)?,
-                    after_value_percent: row.get(9)?,
-                    unit: row.get(10)?,
-                    before_display_value: row.get(11)?,
-                    after_display_value: row.get(12)?,
-                    is_quantized: row.get::<_, Option<i64>>(13)?.map(|value| value != 0),
-                    reason: row.get(14)?,
-                    changed_at_ms: row.get::<_, i64>(15)? as u64,
+                    event_type: row.get(1)?,
+                    parameter_id: row.get(2)?,
+                    track_name: row.get(3)?,
+                    track_id: row.get(4)?,
+                    device_name: row.get(5)?,
+                    parameter_name: row.get(6)?,
+                    before_value: row.get(7)?,
+                    after_value: row.get(8)?,
+                    before_value_percent: row.get(9)?,
+                    after_value_percent: row.get(10)?,
+                    unit: row.get(11)?,
+                    before_display_value: row.get(12)?,
+                    after_display_value: row.get(13)?,
+                    is_quantized: row.get::<_, Option<i64>>(14)?.map(|value| value != 0),
+                    reason: row.get(15)?,
+                    automation_start_ms: row
+                        .get::<_, Option<i64>>(16)?
+                        .and_then(|value| u64::try_from(value).ok()),
+                    automation_start_position: row.get(17)?,
+                    automation_end_position: row.get(18)?,
+                    changed_at_ms: row.get::<_, i64>(19)? as u64,
                 })
             })
             .map_err(|error| format!("Failed to read parameter_changes: {}", error))?;
@@ -3155,39 +3167,73 @@ fn collect_change_events(
 ) -> Result<Vec<ChangeEvent>, String> {
     let mut statement = connection
         .prepare(
-            "SELECT id, timestamp_ms, track_name, track_id, device_name, parameter_name,
+            "SELECT id, event_type, timestamp_ms, track_name, track_id, device_name, parameter_name,
                     parameter_value, previous_parameter_value, parameter_value_percent,
                     previous_parameter_value_percent, parameter_display_value,
-                    previous_parameter_display_value, parameter_is_quantized
+                    previous_parameter_display_value, parameter_is_quantized, payload
              FROM events
              WHERE session_id = ?1
-               AND event_type IN ('parameter_changed', 'device_parameter_changed', 'automation_created', 'volume_changed', 'pan_changed', 'send_changed')
+               AND event_type IN ('parameter_changed', 'device_parameter_changed', 'automation_created', 'automation_edited', 'volume_changed', 'pan_changed', 'send_changed')
              ORDER BY timestamp_ms ASC, id ASC",
         )
         .map_err(|error| format!("Failed to prepare change events query: {}", error))?;
 
     let rows = statement
         .query_map(params![session_id], |row| {
+            let payload: Option<String> = row.get(14)?;
+            let (
+                automation_start_ms,
+                automation_start_position,
+                automation_end_position,
+            ) = automation_span_from_payload(payload.as_deref());
             Ok(ChangeEvent {
                 event_id: row.get::<_, i64>(0)?,
-                timestamp_ms: row.get::<_, i64>(1)? as u64,
-                track_name: row.get(2)?,
-                track_id: row.get(3)?,
-                device_name: row.get(4)?,
-                parameter_name: row.get(5)?,
-                value: row.get(6)?,
-                previous_value: row.get(7)?,
-                value_percent: row.get(8)?,
-                previous_value_percent: row.get(9)?,
-                display_value: row.get(10)?,
-                previous_display_value: row.get(11)?,
-                is_quantized: row.get::<_, Option<i64>>(12)?.map(|value| value != 0),
+                event_type: row.get(1)?,
+                timestamp_ms: row.get::<_, i64>(2)? as u64,
+                track_name: row.get(3)?,
+                track_id: row.get(4)?,
+                device_name: row.get(5)?,
+                parameter_name: row.get(6)?,
+                value: row.get(7)?,
+                previous_value: row.get(8)?,
+                value_percent: row.get(9)?,
+                previous_value_percent: row.get(10)?,
+                display_value: row.get(11)?,
+                previous_display_value: row.get(12)?,
+                is_quantized: row.get::<_, Option<i64>>(13)?.map(|value| value != 0),
+                automation_start_ms,
+                automation_start_position,
+                automation_end_position,
             })
         })
         .map_err(|error| format!("Failed to read change events: {}", error))?;
 
     rows.collect::<Result<Vec<_>, _>>()
         .map_err(|error| format!("Failed to collect change events: {}", error))
+}
+
+/// Automation's bars/beats labels are source data, not a projection guess. The
+/// event payload holds them because the events table is the immutable record;
+/// this parser carries them into the normalized parameter-change row.
+fn automation_span_from_payload(payload: Option<&str>) -> (Option<u64>, Option<String>, Option<String>) {
+    let Some(payload) = payload else {
+        return (None, None, None);
+    };
+    let Ok(payload) = serde_json::from_str::<Value>(payload) else {
+        return (None, None, None);
+    };
+
+    (
+        payload.get("automation_start_ms").and_then(Value::as_u64),
+        payload
+            .get("automation_start_position")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        payload
+            .get("automation_end_position")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+    )
 }
 
 /// A flat parameter row from the DB, assembled into a nested tree afterwards.
@@ -3517,6 +3563,7 @@ pub fn initialize_database(db_path: &Path) -> rusqlite::Result<()> {
         CREATE TABLE IF NOT EXISTS parameter_changes (
             id TEXT PRIMARY KEY,
             session_id TEXT NOT NULL,
+            event_type TEXT NOT NULL DEFAULT 'parameter_changed',
             parameter_id TEXT,             -- null if no matching tree param (legacy)
             track_name TEXT,
             track_id TEXT,                 -- Live's stable track pointer; disambiguates same-named tracks
@@ -3531,6 +3578,9 @@ pub fn initialize_database(db_path: &Path) -> rusqlite::Result<()> {
             after_display_value TEXT,
             is_quantized INTEGER,
             reason TEXT,
+            automation_start_ms INTEGER,
+            automation_start_position TEXT,
+            automation_end_position TEXT,
             changed_at_ms INTEGER NOT NULL,
             source_event_id INTEGER,
             FOREIGN KEY(session_id) REFERENCES sessions(id)
@@ -3828,6 +3878,10 @@ fn migrate_parameter_change_columns(connection: &Connection) -> rusqlite::Result
         ("after_display_value", "TEXT"),
         ("is_quantized", "INTEGER"),
         ("track_id", "TEXT"),
+        ("event_type", "TEXT NOT NULL DEFAULT 'parameter_changed'"),
+        ("automation_start_ms", "INTEGER"),
+        ("automation_start_position", "TEXT"),
+        ("automation_end_position", "TEXT"),
     ];
 
     for (name, sql_type) in COLUMNS {
@@ -4971,6 +5025,49 @@ mod tests {
         // The mixer is not part of a deep device snapshot, but the move is
         // still useful timeline work and must not be dropped for that reason.
         assert!(changes[0].parameter_id.is_none());
+
+        cleanup(&path);
+    }
+
+    #[test]
+    fn materialize_preserves_automation_source_type() {
+        let (storage, path) = temp_storage();
+        let session_id = storage
+            .resume_or_create_active_session()
+            .unwrap()
+            .session_id
+            .unwrap();
+
+        let mut automation = param_change(&session_id, 1_000, "Lead", "Auto Filter", "Cutoff", 0.72);
+        automation.event_type = "automation_created".into();
+        automation.track_id = Some("101".into());
+        automation.previous_parameter_value = Some(0.5);
+        automation.payload = Some(
+            serde_json::json!({
+                "automation_start_ms": 875,
+                "automation_start_position": "Bar 41 · Beat 1",
+                "automation_end_position": "Bar 49 · Beat 1",
+            })
+            .to_string(),
+        );
+
+        storage.save_events_batch(&[automation]).unwrap();
+        storage.materialize_session_schema(&session_id).unwrap();
+
+        let changes = storage.get_parameter_changes(&session_id).unwrap();
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].event_type, "automation_created");
+        assert_eq!(changes[0].before_value, Some(0.5));
+        assert_eq!(changes[0].after_value, Some(0.72));
+        assert_eq!(changes[0].automation_start_ms, Some(875));
+        assert_eq!(
+            changes[0].automation_start_position.as_deref(),
+            Some("Bar 41 · Beat 1")
+        );
+        assert_eq!(
+            changes[0].automation_end_position.as_deref(),
+            Some("Bar 49 · Beat 1")
+        );
 
         cleanup(&path);
     }

@@ -192,6 +192,7 @@ export function ProjectBriefingScreen({
     for (const change of changes) {
       const trackId =
         (change.parameter_id ? lookups.paramTrack.get(change.parameter_id) : undefined) ??
+        (change.track_id ? lookups.abletonTrack.get(change.track_id) : undefined) ??
         (change.track_name ? lookups.nameTrack.get(change.track_name.toLowerCase()) : undefined);
       if (!trackId) continue;
       const current = stats.get(trackId) ?? { count: 0, lastMs: 0 };

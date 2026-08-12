@@ -496,6 +496,9 @@ const LOGGED_EVENT_TYPES: &[&str] = &[
     "track_created",
     "track_deleted",
     "track_name_changed",
+    "tracks_grouped",
+    "track_ungrouped",
+    "return_track_added",
     // Devices
     "device_added",
     "device_removed",
@@ -503,6 +506,7 @@ const LOGGED_EVENT_TYPES: &[&str] = &[
     // Parameters & automation
     "parameter_changed",
     "automation_created",
+    "automation_edited",
     // Settled mix decisions
     "volume_changed",
     "pan_changed",
@@ -515,6 +519,9 @@ const LOGGED_EVENT_TYPES: &[&str] = &[
     "midi_clip_recorded",
     "clip_created",
     "clip_notes_changed",
+    "clip_launched",
+    // Session View performance
+    "scene_launched",
     // Deep snapshots that feed the schema projection
     "live_set_snapshot",
     "session_snapshot",

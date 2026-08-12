@@ -28,6 +28,7 @@ import {
 function makeChange(overrides: Partial<ParameterChange> = {}): ParameterChange {
   return {
     id: "pc1",
+    event_type: "parameter_changed",
     parameter_id: null,
     track_name: "Bass",
     track_id: null,
@@ -42,6 +43,9 @@ function makeChange(overrides: Partial<ParameterChange> = {}): ParameterChange {
     after_display_value: null,
     is_quantized: false,
     reason: null,
+    automation_start_ms: null,
+    automation_start_position: null,
+    automation_end_position: null,
     changed_at_ms: 5_000,
     ...overrides,
   };
@@ -295,6 +299,28 @@ describe("buildShareData / buildShareDocument", () => {
     expect(markdown).toContain("## Full timeline");
     expect(markdown).toContain("**Verse hats**: 16 notes (+4)");
     expect(markdown.indexOf("Bass")).toBeLessThan(markdown.indexOf("Hi Hats"));
+  });
+});
+
+describe("automation activity descriptions", () => {
+  it("keeps Live's exact ruler span alongside what was written", () => {
+    const activity: Activity = {
+      id: "auto-1",
+      kind: "move",
+      trackId: "lead",
+      atMs: 9_000,
+      deviceName: "Mixer",
+      paramName: "Volume",
+      beforeDisplay: "8.0 dB",
+      afterDisplay: "31.0 dB",
+      automation: true,
+      automationStartPosition: "Bar 41 · Beat 1",
+      automationEndPosition: "Bar 49 · Beat 1",
+    };
+
+    expect(describeActivity(activity)).toBe(
+      "Automation written · Mixer · Volume · Bar 41 · Beat 1 → Bar 49 · Beat 1: 8.0 dB → 31.0 dB",
+    );
   });
 });
 

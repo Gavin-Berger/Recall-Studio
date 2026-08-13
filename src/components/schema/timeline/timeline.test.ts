@@ -300,10 +300,11 @@ describe("buildShareData / buildShareDocument", () => {
     expect(markdown).toContain("**Verse hats**: 16 notes (+4)");
     expect(markdown.indexOf("Bass")).toBeLessThan(markdown.indexOf("Hi Hats"));
   });
+
 });
 
 describe("automation activity descriptions", () => {
-  it("keeps Live's exact ruler span alongside what was written", () => {
+  it("describes a multi-bar live write as a transport observation, not an envelope span", () => {
     const activity: Activity = {
       id: "auto-1",
       kind: "move",
@@ -319,7 +320,27 @@ describe("automation activity descriptions", () => {
     };
 
     expect(describeActivity(activity)).toBe(
-      "Automation written · Mixer · Volume · Bar 41 · Beat 1 → Bar 49 · Beat 1: 8.0 dB → 31.0 dB",
+      "Automation write · Mixer · Volume · Observed while playhead moved Bar 41 · Beat 1 → Bar 49 · Beat 1: 8.0 dB → 31.0 dB",
+    );
+  });
+
+  it("does not mistake two sixteenth callbacks for an automation segment", () => {
+    const activity: Activity = {
+      id: "auto-point",
+      kind: "move",
+      trackId: "lead",
+      atMs: 9_000,
+      deviceName: "Saturator",
+      paramName: "Drive",
+      beforeDisplay: "0.0 dB",
+      afterDisplay: "8.0 dB",
+      automation: true,
+      automationStartPosition: "Bar 61 · Beat 1 · 1/16 1",
+      automationEndPosition: "Bar 61 · Beat 1 · 1/16 2",
+    };
+
+    expect(describeActivity(activity)).toBe(
+      "Automation write · Saturator · Drive · Observed at Bar 61 · Beat 1: 0.0 dB → 8.0 dB",
     );
   });
 });

@@ -25,6 +25,18 @@ export type VersionFacts = {
   connected: boolean;
   /** Where auto-repair installs the script, or null if we have no library yet. */
   installPath: string | null;
+  /**
+   * Another Recall process holds the capture port, so THIS one receives nothing.
+   *
+   * Outranks every other verdict below. Closing Recall hides it to the tray
+   * rather than quitting, so instances pile up — four at once during one
+   * session — and only the first owns the socket. The others read the same
+   * database, so their timelines show captures another process is writing while
+   * they themselves are deaf. Without this, the panel says "Ableton isn't
+   * talking to Recall" and sends the producer to inspect a bridge that is
+   * working perfectly.
+   */
+  capturePortConflict: boolean;
 };
 
 export type VersionVerdict = {
@@ -53,6 +65,19 @@ export type VersionRow = {
  * answer alone.
  */
 export function versionVerdict(facts: VersionFacts): VersionVerdict {
+  // Checked before anything else, and deliberately before the connection state:
+  // a second instance IS disconnected, so every check below would fire and every
+  // one of them would name the wrong cause. Reinstalling the script or
+  // restarting Live cannot fix a socket another process is holding.
+  if (facts.capturePortConflict) {
+    return {
+      tone: "action",
+      title: "Another Recall has the capture port",
+      detail:
+        "A second Recall is already running and receiving from Ableton. This window shows the same history but records nothing itself. Quit the other one from the system tray — closing its window only hides it.",
+    };
+  }
+
   const state = resolveSetupState({
     installed: Boolean(facts.installPath),
     connected: facts.connected,

@@ -1,6 +1,6 @@
 use serde::Serialize;
 use std::sync::{
-    atomic::{AtomicI64, AtomicU64, Ordering},
+    atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering},
     Arc, Mutex,
 };
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -60,6 +60,22 @@ pub struct BridgeMetrics {
     // never reach the Ok path — which is why they previously incremented no
     // counter whatsoever, not even packets_received.
     pub oversized_packets: AtomicU64,
+
+    // The capture port was already taken when this instance tried to bind it —
+    // meaning ANOTHER Recall is running and holding it.
+    //
+    // Closing Recall hides it to the tray rather than quitting, so instances
+    // accumulate: four were running at once during one session. Exactly one can
+    // own the socket. The others look completely healthy — window up, database
+    // readable, timeline showing captures the OTHER process is writing — while
+    // receiving nothing themselves. The producer sees "Ableton isn't talking to
+    // Recall" and goes hunting the bridge, which is the wrong place entirely.
+    //
+    // A distinct flag rather than parsing `last_error`: "someone else has the
+    // port" has a specific, actionable remedy ("quit the other one") that no
+    // other bind failure shares, and matching on error prose would break the
+    // moment the wording changed.
+    pub capture_port_conflict: AtomicBool,
 }
 
 impl BridgeMetrics {
@@ -98,6 +114,14 @@ impl BridgeMetrics {
 
     pub fn incr_oversized(&self) {
         self.oversized_packets.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Record that the capture port was already in use, i.e. another Recall owns
+    /// it. Sticky for the life of the process: the listener thread binds once at
+    /// startup and does not retry, so this stays true until the app is restarted
+    /// — which is exactly when the producer would want to be told.
+    pub fn note_capture_port_conflict(&self) {
+        self.capture_port_conflict.store(true, Ordering::Relaxed);
     }
 
     pub fn on_enqueue(&self) {
@@ -146,6 +170,7 @@ impl BridgeMetrics {
             session_discarded: self.session_discarded.load(Ordering::Relaxed),
             panics_recovered: self.panics_recovered.load(Ordering::Relaxed),
             oversized_packets: self.oversized_packets.load(Ordering::Relaxed),
+            capture_port_conflict: self.capture_port_conflict.load(Ordering::Relaxed),
         }
     }
 }
@@ -211,6 +236,31 @@ mod tests {
         assert_eq!(snapshot.protected_dropped, 1);
     }
 
+    // The trap this exists for: a second Recall looks completely healthy while
+    // receiving nothing, because the first one owns the socket. Default false so
+    // a normal instance never claims a conflict it doesn't have.
+    #[test]
+    fn a_capture_port_conflict_is_off_until_the_bind_actually_fails() {
+        let metrics = BridgeMetrics::new();
+        assert!(!metrics.snapshot().capture_port_conflict);
+
+        metrics.note_capture_port_conflict();
+
+        assert!(metrics.snapshot().capture_port_conflict);
+    }
+
+    // Sticky: the listener binds once at startup and never retries, so the
+    // conflict remains true for the life of the process. Later unrelated errors
+    // must not clear it — the instance is still deaf.
+    #[test]
+    fn a_capture_port_conflict_survives_later_errors() {
+        let metrics = BridgeMetrics::new();
+        metrics.note_capture_port_conflict();
+        metrics.set_last_error("something else went wrong");
+
+        assert!(metrics.snapshot().capture_port_conflict);
+    }
+
     #[test]
     fn the_most_recent_error_is_the_one_reported() {
         let metrics = BridgeMetrics::new();
@@ -239,4 +289,6 @@ pub struct BridgeMetricsSnapshot {
     pub session_discarded: u64,
     pub panics_recovered: u64,
     pub oversized_packets: u64,
+    /// Another Recall process holds the capture port; this one receives nothing.
+    pub capture_port_conflict: bool,
 }

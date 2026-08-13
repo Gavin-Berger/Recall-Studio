@@ -4,7 +4,7 @@
 // the global SchemaTimeline.css imported by the parent.
 
 import type { Activity } from "./types";
-import { formatMoveValue } from "./format";
+import { describeAutomationWriteObservation, formatMoveValue } from "./format";
 
 export function ScanEmptyState({
   existingSet,
@@ -98,15 +98,16 @@ export function ActivitySpark({
 // what was touched separately from the value.
 export function moveWhatNode(item: Activity) {
   if (item.automation) {
-    const start = item.automationStartPosition;
-    const end = item.automationEndPosition;
-    const span = start && end ? (start === end ? start : `${start} → ${end}`) : null;
+    const location = describeAutomationWriteObservation(
+      item.automationStartPosition,
+      item.automationEndPosition,
+    );
     return (
       <span className="tl-ci__what tl-ci__what--automation">
-        <span><b>Automation written</b>
+        <span><b>Automation write</b>
         <span className="tl-ci__det"> · {[item.deviceName, item.paramName].filter(Boolean).join(" · ") || "parameter"}</span>
         </span>
-        {span && <span className="tl-ci__where">{span}</span>}
+        {location && <span className="tl-ci__where">{location}</span>}
       </span>
     );
   }

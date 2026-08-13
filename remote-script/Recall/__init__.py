@@ -159,7 +159,7 @@ def _automation_event_type(previous_state, current_state):
 
 
 def _automation_position_label(beats_song_time):
-    """Render Live's own bars/beats position without deriving it from seconds.
+    """Render Live's own bar/beat position without deriving it from seconds.
 
     Song.get_current_beats_song_time() returns the musical Arrangement position.
     Its values are already bar-aware (including meter changes), so we must not
@@ -173,11 +173,11 @@ def _automation_position_label(beats_song_time):
     if bars is None or beats is None:
         return None
 
-    label = "Bar {} · Beat {}".format(bars, beats)
-    subdivision = getattr(beats_song_time, "sub_division", None)
-    if subdivision is not None:
-        label += " · 1/16 {}".format(subdivision)
-    return label
+    # A control-surface callback can be only a few milliseconds apart while a
+    # producer drags across a long envelope. Sixteenth-level callback timing is
+    # not an envelope endpoint, so it would falsely turn two callbacks into a
+    # tiny automation segment. Keep this to the musical point Live can prove.
+    return "Bar {} · Beat {}".format(bars, beats)
 
 
 def _track_structure_events(previous, current):
@@ -339,7 +339,9 @@ NOTE_NAMES = ("C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B")
 # clip launches on the selected track, without a full-set clip listener sweep.
 # 0.5.6 records the actual musical start/end of an automation write using
 # Live's bars/beats clock, so the timeline can answer what changed and where.
-SCRIPT_VERSION = "0.5.6"
+# 0.5.7 treats a short control callback burst as an automation point, not an
+# invented tiny segment between two sixteenth notes.
+SCRIPT_VERSION = "0.5.7"
 
 
 class Recall(ControlSurface):
@@ -1075,7 +1077,8 @@ class Recall(ControlSurface):
 
         `automation_state == none` or `overridden` tells us the parameter is not
         being driven by playback. Pair that with Live's record state and a
-        running transport before calling the movement a written span.
+        running transport before calling the movement a recorded automation
+        action.
         """
         try:
             return bool(self.song.is_playing) and (
@@ -1088,7 +1091,7 @@ class Recall(ControlSurface):
     def _start_automation_write(
         self, track, parameter, device_name, parameter_name, previous_state
     ):
-        """Open a write span; it remains silent until a value actually moves."""
+        """Open a write action; it remains silent until a value actually moves."""
         try:
             current = parameter.value
         except Exception:  # noqa: BLE001 - parameter died with its device
@@ -1149,7 +1152,12 @@ class Recall(ControlSurface):
         self._last_values[key] = current
 
     def _finish_automation_write(self, parameter, current_state):
-        """Emit one exact write span after its final observed value."""
+        """Emit one recorded write action after its final observed value.
+
+        Start/end positions are transport observations during the control action.
+        They locate the producer's write; they are not envelope breakpoints and
+        must never be presented as a saved automation segment.
+        """
         key = id(parameter)
         write = self._automation_writes.pop(key, None)
         if write is None or write["last_value_at"] is None:

@@ -10,6 +10,12 @@ import type {
 import type { Lookups } from "./types";
 import { formatWhen } from "./format";
 
+export type TimelineBounds = {
+  start: number;
+  span: number;
+  sessionStart?: number;
+};
+
 export function buildLookups(schema: ProjectSchema | null): Lookups {
   const paramTrack = new Map<string, string>();
   const deviceTrack = new Map<string, string>();
@@ -50,7 +56,7 @@ export function noteTrackId(moment: CreativeMoment, lookups: Lookups): string | 
   return null;
 }
 
-export function pct(atMs: number, bounds: { start: number; span: number }): number {
+export function pct(atMs: number, bounds: TimelineBounds): number {
   if (bounds.span <= 0) return 50;
   const value = ((atMs - bounds.start) / bounds.span) * 100;
   return Math.min(100, Math.max(0, value));
@@ -86,11 +92,7 @@ export function cumulativeMovePaths(
   return { line, area };
 }
 
-export function buildTicks(bounds: {
-  start: number;
-  span: number;
-  sessionStart: number;
-}): Array<{ pct: number; label: string }> {
+export function buildTicks(bounds: TimelineBounds): Array<{ pct: number; label: string }> {
   const steps = 4;
   const out: Array<{ pct: number; label: string }> = [];
   for (let i = 0; i <= steps; i += 1) {
@@ -99,7 +101,7 @@ export function buildTicks(bounds: {
     const atMs = bounds.start + (bounds.span * i) / steps;
     out.push({
       pct: (i / steps) * 100,
-      label: formatWhen(atMs, bounds.sessionStart, bounds.span),
+      label: formatWhen(atMs, bounds.sessionStart ?? bounds.start, bounds.span),
     });
   }
   return out;

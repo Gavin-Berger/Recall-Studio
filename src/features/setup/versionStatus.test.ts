@@ -14,6 +14,7 @@ const HEALTHY: VersionFacts = {
   runningScriptVersion: "0.5.0",
   connected: true,
   installPath: "M:\\Ableton Library\\User Library\\Remote Scripts\\Recall",
+  capturePortConflict: false,
 };
 
 describe("versionVerdict", () => {
@@ -62,6 +63,28 @@ describe("versionVerdict", () => {
     const verdict = versionVerdict({ ...HEALTHY, runningScriptVersion: null });
     expect(verdict.tone).toBe("ready");
     expect(verdict.detail).toContain("can't confirm");
+  });
+
+  // A second instance is disconnected BY DEFINITION, so every other verdict
+  // would fire and every one of them would name the wrong cause. Reinstalling
+  // the script or restarting Live cannot free a socket another process holds.
+  it("names the port conflict ahead of every other verdict", () => {
+    const verdict = versionVerdict({
+      ...HEALTHY,
+      connected: false,
+      runningScriptVersion: null,
+      capturePortConflict: true,
+    });
+    expect(verdict.tone).toBe("action");
+    expect(verdict.title).toContain("capture port");
+    expect(verdict.detail).toContain("system tray");
+  });
+
+  // Even a fully healthy-looking instance must say so if it is the deaf one.
+  it("reports the conflict even when everything else looks fine", () => {
+    expect(versionVerdict({ ...HEALTHY, capturePortConflict: true }).title).toContain(
+      "capture port",
+    );
   });
 });
 

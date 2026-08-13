@@ -138,6 +138,31 @@ export function formatMoveValue(
     : formatValue(value, unit);
 }
 
+// The control surface observes the producer writing at the current transport
+// position. It cannot read Arrangement envelope breakpoints, so these labels
+// deliberately describe the observed action — never an invented envelope
+// segment. A saved-set index may grow a separate, exact envelope vocabulary.
+export function describeAutomationWriteObservation(
+  startPosition: string | null | undefined,
+  endPosition: string | null | undefined,
+): string | null {
+  // 0.5.6 briefly stored the callback's 1/16 position. That granularity says
+  // nothing about the final envelope shape; bar + beat is the useful, factual
+  // location for a live-write observation.
+  const point = (position: string | null | undefined) => position?.replace(/ · 1\/16 \d+$/, "") ?? null;
+  const start = point(startPosition);
+  const end = point(endPosition);
+
+  if (start && end) {
+    return start === end
+      ? `Observed at ${start}`
+      : `Observed while playhead moved ${start} → ${end}`;
+  }
+  if (start) return `Observed at ${start}`;
+  if (end) return `Observed at ${end}`;
+  return null;
+}
+
 // One-line phrase for a MIDI note edit. The bridge's own summary wins — it was
 // written with Live's note naming in hand — and this only reassembles a line
 // when an older payload didn't carry one.
@@ -188,13 +213,12 @@ export function describeActivity(item: Activity): string {
     if (item.eventType === "midi_clip_recorded") return `Recorded MIDI: ${thing}`;
     return `Clip added: ${thing}`;
   }
-  const span = item.automationStartPosition && item.automationEndPosition
-    ? item.automationStartPosition === item.automationEndPosition
-      ? item.automationStartPosition
-      : `${item.automationStartPosition} → ${item.automationEndPosition}`
-    : null;
+  const location = describeAutomationWriteObservation(
+    item.automationStartPosition,
+    item.automationEndPosition,
+  );
   const where = item.automation
-    ? ["Automation written", item.deviceName, item.paramName, span].filter(Boolean).join(" · ")
+    ? ["Automation write", item.deviceName, item.paramName, location].filter(Boolean).join(" · ")
     : [item.deviceName, item.paramName].filter(Boolean).join(" · ");
   return `${where}: ${formatMoveValue(item.before, item.beforePercent, item.unit, item.beforeDisplay)} → ${formatMoveValue(
     item.after,

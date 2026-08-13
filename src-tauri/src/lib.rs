@@ -920,6 +920,7 @@ fn load_session_events(
 
 #[tauri::command]
 fn start_new_session(state: State<'_, AppState>) -> Result<SessionStatus, String> {
+    ensure_capture_owner(&state.metrics)?;
     let previous_status = {
         let mut session = state.session.lock().expect("Session state lock failed");
         session.stop()
@@ -1496,6 +1497,81 @@ fn ensure_project_exists(
     Ok(())
 }
 
+/// Is another Recall already holding the capture port?
+///
+/// A probe bind on the same address the TCP listener will take, released
+/// immediately. Cheap, and it answers the question before any state is built.
+///
+/// There is a theoretical race — the port could be taken between this probe and
+/// the real bind — but only another Recall competes for it, and this runs before
+/// the window exists. Losing that race degrades to the existing behaviour: the
+/// listener records a port conflict and the Settings panel reports it.
+fn capture_port_in_use() -> bool {
+    match std::net::TcpListener::bind(udp_listener::TCP_LISTEN_ADDR) {
+        Ok(listener) => {
+            drop(listener);
+            false
+        }
+        Err(error) => error.kind() == std::io::ErrorKind::AddrInUse,
+    }
+}
+
+/// Ask before starting a second Recall, and quit if the answer is no.
+///
+/// Deliberately an ASK rather than a hard single-instance block. A second window
+/// is genuinely useful for reading history while the first one records, so
+/// refusing to launch would remove something real. What must not happen is the
+/// producer running a second copy WITHOUT KNOWING — closing Recall hides it to
+/// the tray rather than quitting, so instances accumulate silently (four at once
+/// during one session), and only the first receives anything from Ableton. The
+/// rest look healthy and record nothing.
+///
+/// Returns true when the app should carry on.
+fn confirm_second_instance(app: &tauri::AppHandle) -> bool {
+    use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
+
+    if !capture_port_in_use() {
+        return true;
+    }
+
+    log::warn!("Capture port already in use — another Recall is running.");
+
+    app.dialog()
+        .message(
+            "Recall is already running and recording from Ableton.\n\n\
+             Opening another window is fine for looking back at history, but its \
+             Resume, Record, and New Take controls are unavailable: only the \
+             first Recall owns the capture session.\n\n\
+             To record here instead, quit the other Recall from the system tray \
+             first. Closing its window only hides it.",
+        )
+        .title("Recall is already running")
+        .kind(MessageDialogKind::Warning)
+        .buttons(MessageDialogButtons::OkCancelCustom(
+            "Open anyway".to_string(),
+            "Quit".to_string(),
+        ))
+        .blocking_show()
+}
+
+/// A secondary window can read shared history, but it must never change the
+/// active take. Its in-memory SessionState is not the one receiving Ableton
+/// events, so letting it resume or start a take would split capture ownership:
+/// the UI would point at one row while the bridge continues writing to another.
+///
+/// The listener sets this flag once its bind loses the port race. It is sticky
+/// for the process lifetime, which is exactly right — a listener that failed at
+/// startup does not retry and cannot become the owner later.
+fn ensure_capture_owner(metrics: &BridgeMetrics) -> Result<(), String> {
+    if metrics.snapshot().capture_port_conflict {
+        return Err(
+            "This Recall window is viewing history only because another Recall is already receiving from Ableton. Quit the other Recall from the system tray, then reopen this window before resuming or starting a take."
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
 /// Whether an `.als` path is inside a connected project folder. Paths arriving
 /// from Live are Windows paths, so comparison is intentionally case-insensitive
 /// and separator-normalized. No filesystem access is needed: the file may be on
@@ -1555,7 +1631,25 @@ fn ensure_open_file_matches_project(
 
 #[cfg(test)]
 mod project_capture_guard_tests {
-    use super::open_file_belongs_to_project;
+    use super::{ensure_capture_owner, open_file_belongs_to_project};
+    use crate::metrics::BridgeMetrics;
+
+    #[test]
+    fn a_window_that_lost_the_capture_port_cannot_change_the_active_take() {
+        let metrics = BridgeMetrics::new();
+        metrics.note_capture_port_conflict();
+
+        let error = ensure_capture_owner(&metrics).expect_err("secondary windows must be read-only");
+
+        assert!(error.contains("viewing history only"));
+    }
+
+    #[test]
+    fn the_capture_owner_can_start_or_resume_a_take() {
+        let metrics = BridgeMetrics::new();
+
+        assert!(ensure_capture_owner(&metrics).is_ok());
+    }
 
     #[test]
     fn open_file_guard_accepts_a_version_inside_its_project_folder() {
@@ -1686,6 +1780,7 @@ fn start_capture_for_project(
     state: State<'_, AppState>,
     project_id: Option<String>,
 ) -> Result<SessionStatus, String> {
+    ensure_capture_owner(&state.metrics)?;
     ensure_project_exists(&state, project_id.as_deref())?;
     ensure_open_file_matches_project(&state, project_id.as_deref())?;
 
@@ -1718,6 +1813,7 @@ fn open_take_for_open_file(
     state: State<'_, AppState>,
     project_id: Option<String>,
 ) -> Result<SessionStatus, String> {
+    ensure_capture_owner(&state.metrics)?;
     ensure_project_exists(&state, project_id.as_deref())?;
     ensure_open_file_matches_project(&state, project_id.as_deref())?;
 
@@ -1728,6 +1824,60 @@ fn open_take_for_open_file(
             .expect("Connection state lock failed");
         connection.open_als_path.clone()
     };
+
+    // If this is already the live take for the set Ableton has open, keep it.
+    // In particular, an older build could create an unfiled take at an idle
+    // boundary even though it knew the `.als` path. Stopping that take here and
+    // reopening an older take for the same file would make the current sitting
+    // disappear from the project's view. Claim the live take instead.
+    let (current_status, current_anchor) = {
+        let status = state
+            .session
+            .lock()
+            .expect("Session state lock failed")
+            .status();
+        let anchor = state
+            .connection
+            .lock()
+            .expect("Connection state lock failed")
+            .session_als_path
+            .clone();
+        (status, anchor)
+    };
+    if let (Some(project_id), Some(current_session_id), Some(_)) = (
+        project_id.as_deref(),
+        current_status.session_id.as_deref(),
+        open_als.as_deref(),
+    ) {
+        if current_status.active && current_anchor == open_als {
+            let current_take = state
+                .storage
+                .lock()
+                .expect("Storage state lock failed")
+                .load_session(current_session_id);
+            if let Ok(current_take) = current_take {
+                if current_take.project_id.is_none() {
+                    state
+                        .storage
+                        .lock()
+                        .expect("Storage state lock failed")
+                        .assign_session_to_project(current_session_id, Some(project_id))?;
+                    println!(
+                        "COMMAND open_take_for_open_file -> claimed active take {} for project {}",
+                        current_session_id, project_id
+                    );
+                    return Ok(current_status);
+                }
+                if current_take.project_id.as_deref() == Some(project_id) {
+                    println!(
+                        "COMMAND open_take_for_open_file -> kept active take {} for project {}",
+                        current_session_id, project_id
+                    );
+                    return Ok(current_status);
+                }
+            }
+        }
+    }
 
     // Stop whatever take was active so events stop tagging to it, then persist it.
     let previous_status = {
@@ -1785,6 +1935,7 @@ fn new_take_for_project(
     state: State<'_, AppState>,
     project_id: Option<String>,
 ) -> Result<SessionStatus, String> {
+    ensure_capture_owner(&state.metrics)?;
     ensure_project_exists(&state, project_id.as_deref())?;
     ensure_open_file_matches_project(&state, project_id.as_deref())?;
     let status = create_capture_for_project(&state, project_id.as_deref())?;
@@ -2046,6 +2197,15 @@ pub fn run() {
                 "Starting Recall Studio backend... (PID {})",
                 std::process::id()
             );
+
+            // Before anything else is built: if another Recall already owns
+            // capture, say so and let the producer decide. Exiting here rather
+            // than later leaves no half-initialised tray icon or window behind.
+            if !confirm_second_instance(app.handle()) {
+                log::info!("Second instance declined by the user — exiting.");
+                app.handle().exit(0);
+                return Ok(());
+            }
 
             let open_item = MenuItem::with_id(app, "open", "Open Recall", true, None::<&str>)?;
             let quit_item = MenuItem::with_id(app, "quit", "Quit Recall", true, None::<&str>)?;

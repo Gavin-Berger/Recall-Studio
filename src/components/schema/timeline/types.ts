@@ -97,7 +97,9 @@ export type Activity = {
   afterDisplay?: string | null;
   // Deliberate automation-lane changes get their own timeline treatment.
   automation?: boolean;
-  // The source-reported Arrangement ruler span for a recorded automation write.
+  // Transport positions observed during a live automation write. They locate
+  // the producer's action; they are not Arrangement-envelope breakpoints or a
+  // claim that the lane spans the interval.
   automationStartPosition?: string | null;
   automationEndPosition?: string | null;
   // Whether this parameter is categorical (a mode selector) rather than a

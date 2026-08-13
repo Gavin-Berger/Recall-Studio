@@ -1,6 +1,8 @@
 import { Fragment, lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { save } from "@tauri-apps/plugin-dialog";
+import { AnimatePresence, LazyMotion, domAnimation, useReducedMotion } from "motion/react";
+import * as m from "motion/react-m";
 import "./SchemaTimeline.css";
 import {
   createCreativeMoment,
@@ -23,6 +25,7 @@ import {
   type ProjectSchema,
   type SavedProject,
   type SavedSessionMetadata,
+  type TrackObj,
   type TimelineClipEvent,
 } from "../../types";
 import { abletonSetName, alsSetName } from "../../features/sessionFormat";
@@ -65,6 +68,7 @@ import {
   type ActivityGroup,
   type ExportFormat,
   type LiveRecallEvent,
+  type Lookups,
   type SessionBlock,
   type ShareProjectStory,
   type ShareTimelineSource,
@@ -72,6 +76,75 @@ import {
 } from "./timeline";
 
 const ArrangementCanvas = lazy(() => import("./timeline/ArrangementCanvas"));
+
+type ProjectionSweep = {
+  captureCount: number;
+  timelineMoveCount: number;
+  added: number;
+  removed: number;
+};
+
+function changeSignature(change: ParameterChange): string {
+  // Materialization may assign a different derived-row id, so compare only the
+  // immutable capture facts rather than the projection's implementation detail.
+  return [
+    change.event_type,
+    change.changed_at_ms,
+    change.track_id ?? change.track_name ?? "",
+    change.device_name ?? "",
+    change.parameter_name ?? "",
+    change.after_value ?? "",
+    change.after_value_percent ?? "",
+  ].join("\u001f");
+}
+
+function projectionDifference(
+  before: ParameterChange[],
+  after: ParameterChange[],
+): Pick<ProjectionSweep, "added" | "removed"> {
+  const tally = (rows: ParameterChange[]) => {
+    const counts = new Map<string, number>();
+    for (const row of rows) {
+      const key = changeSignature(row);
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+    return counts;
+  };
+  const beforeCounts = tally(before);
+  const afterCounts = tally(after);
+  let added = 0;
+  let removed = 0;
+  for (const [key, count] of afterCounts) added += Math.max(0, count - (beforeCounts.get(key) ?? 0));
+  for (const [key, count] of beforeCounts) removed += Math.max(0, count - (afterCounts.get(key) ?? 0));
+  return { added, removed };
+}
+
+// A snapshot is a description of the set *now*. Timeline rows can outlive it:
+// a track may have been renamed, deleted, or simply omitted from a later
+// snapshot. Keep that work visible on a stable historic lane instead of
+// throwing the row away because the current schema cannot resolve it.
+function historicTrackId(trackId: string | null | undefined, trackName: string | null | undefined): string {
+  const stableId = trackId?.trim();
+  if (stableId) return `history:${stableId}`;
+  const name = trackName?.trim();
+  return name ? `history:name:${name.toLowerCase()}` : "history:unknown";
+}
+
+function resolveTimelineTrackId(
+  lookups: Lookups,
+  {
+    parameterId,
+    trackId,
+    trackName,
+  }: { parameterId?: string | null; trackId?: string | null; trackName?: string | null },
+): string {
+  return (
+    (parameterId ? lookups.paramTrack.get(parameterId) : undefined) ??
+    (trackId ? lookups.abletonTrack.get(trackId) : undefined) ??
+    (trackName ? lookups.nameTrack.get(trackName.toLowerCase()) : undefined) ??
+    historicTrackId(trackId, trackName)
+  );
+}
 
 export function SchemaTimeline({
   sessionId,
@@ -98,6 +171,10 @@ export function SchemaTimeline({
   const [status, setStatus] = useState<LoadStatus>("idle");
   const [error, setError] = useState<string | null>(null);
   const [selectedTrackId, setSelectedTrackId] = useState<string | null>(null);
+  // The overview always shows the complete chronology. The detailed map below
+  // is deliberately one sitting at a time so a six-hour or overnight gap never
+  // turns into a field of empty track lanes.
+  const [selectedSittingId, setSelectedSittingId] = useState<string | null>(null);
   // Large Live sets routinely have dozens of quiet tracks. Start with the
   // musical story â€” the tracks that hold recorded work â€” while keeping the
   // full arrangement one click away.
@@ -119,6 +196,8 @@ export function SchemaTimeline({
   // single-take dump. The current take keeps using the live state below so its
   // last moves appear immediately while recording.
   const [projectHistorySources, setProjectHistorySources] = useState<ShareTimelineSource[] | null>(null);
+  const [projectionSweep, setProjectionSweep] = useState<ProjectionSweep | null>(null);
+  const reduceMotion = useReducedMotion();
   const activityLogEndRef = useRef<HTMLDivElement>(null);
 
   const load = useCallback(
@@ -149,6 +228,74 @@ export function SchemaTimeline({
     [sessionId],
   );
 
+  // Rebuild every captured take in the project, then compare the old and new
+  // *derived* timelines. This catches a projector regression or a stale
+  // materialization without pretending that a UI rebuild can discover packets
+  // Ableton never delivered to Recall in the first place.
+  const handleProjectRebuild = useCallback(async () => {
+    if (!sessionId) return;
+    setStatus("loading");
+    setError(null);
+    try {
+      const capturesById = new Map(
+        (project?.captures ?? []).map((capture) => [capture.id, capture]),
+      );
+      const captureIds = [...new Set([...capturesById.keys(), sessionId])];
+      const before = await Promise.all(captureIds.map((id) => getParameterChanges(id)));
+      await Promise.all(captureIds.map((id) => materializeSessionSchema(id)));
+      const after = await Promise.all(captureIds.map((id) => getParameterChanges(id)));
+      const beforeRows = before.flat();
+      const afterRows = after.flat();
+      const difference = projectionDifference(beforeRows, afterRows);
+
+      const currentIndex = captureIds.indexOf(sessionId);
+      const [nextSchema, nextNoteEdits, nextClipEvents, nextMoments] = await Promise.all([
+        getProjectSchema(sessionId),
+        getNoteEdits(sessionId),
+        getTimelineClipEvents(sessionId),
+        listCreativeMoments(sessionId),
+      ]);
+      setSchema(nextSchema);
+      setChanges(after[currentIndex] ?? []);
+      setNoteEdits(nextNoteEdits);
+      setClipEvents(nextClipEvents);
+      setMoments(nextMoments);
+
+      if (project) {
+        const historicSources = await Promise.all(
+          captureIds
+            .filter((id) => id !== sessionId)
+            .map(async (id, index) => {
+              const capture = capturesById.get(id) ?? null;
+              const [captureNoteEdits, captureMoments] = await Promise.all([
+                getNoteEdits(id),
+                listCreativeMoments(id),
+              ]);
+              return {
+                id,
+                label: formatTakeTitle(capture, null),
+                startedAtMs: capture?.started_at_ms ?? index,
+                changes: after[captureIds.indexOf(id)] ?? [],
+                noteEdits: captureNoteEdits,
+                moments: captureMoments,
+              } satisfies ShareTimelineSource;
+            }),
+        );
+        setProjectHistorySources(historicSources);
+      }
+
+      setProjectionSweep({
+        captureCount: captureIds.length,
+        timelineMoveCount: afterRows.length,
+        ...difference,
+      });
+      setStatus("ready");
+    } catch (rebuildError) {
+      setError(String(rebuildError));
+      setStatus("error");
+    }
+  }, [project, sessionId]);
+
   useEffect(() => {
     setSchema(null);
     setChanges([]);
@@ -156,6 +303,8 @@ export function SchemaTimeline({
     setClipEvents([]);
     setMoments([]);
     setSelectedTrackId(null);
+    setSelectedSittingId(null);
+    setProjectionSweep(null);
     setShowQuietTracks(false);
     void load(true);
   }, [sessionId, load]);
@@ -349,11 +498,11 @@ export function SchemaTimeline({
   const activities = useMemo<Activity[]>(() => {
     const out: Activity[] = [];
     for (const change of timelineChanges) {
-      const trackId =
-        (change.parameter_id ? lookups.paramTrack.get(change.parameter_id) : undefined) ??
-        (change.track_id ? lookups.abletonTrack.get(change.track_id) : undefined) ??
-        (change.track_name ? lookups.nameTrack.get(change.track_name.toLowerCase()) : undefined);
-      if (!trackId) continue;
+      const trackId = resolveTimelineTrackId(lookups, {
+        parameterId: change.parameter_id,
+        trackId: change.track_id,
+        trackName: change.track_name,
+      });
       out.push({
         id: change.id,
         kind: "move",
@@ -381,10 +530,10 @@ export function SchemaTimeline({
       // clip, and clips are not in the parameter/device lookups. A clip on a
       // track the schema hasn't seen yet is dropped rather than floated on a
       // lane it doesn't belong to.
-      const trackId =
-        (edit.track_id ? lookups.abletonTrack.get(edit.track_id) : undefined) ??
-        (edit.track_name ? lookups.nameTrack.get(edit.track_name.toLowerCase()) : undefined);
-      if (!trackId) continue;
+      const trackId = resolveTimelineTrackId(lookups, {
+        trackId: edit.track_id,
+        trackName: edit.track_name,
+      });
       out.push({
         id: edit.id,
         kind: "noteEdit",
@@ -405,10 +554,10 @@ export function SchemaTimeline({
       });
     }
     for (const event of clipEvents) {
-      const trackId =
-        (event.track_id ? lookups.abletonTrack.get(event.track_id) : undefined) ??
-        (event.track_name ? lookups.nameTrack.get(event.track_name.toLowerCase()) : undefined);
-      if (!trackId) continue;
+      const trackId = resolveTimelineTrackId(lookups, {
+        trackId: event.track_id,
+        trackName: event.track_name,
+      });
       out.push({
         id: event.id,
         kind: "clip",
@@ -420,7 +569,13 @@ export function SchemaTimeline({
       });
     }
     for (const moment of moments) {
-      const trackId = noteTrackId(moment, lookups);
+      const directTrackId = noteTrackId(moment, lookups);
+      const trackId =
+        directTrackId && tracks.some((track) => track.id === directTrackId)
+          ? directTrackId
+          : directTrackId
+            ? historicTrackId(directTrackId, null)
+            : null;
       if (!trackId) continue;
       out.push({
         id: moment.id,
@@ -432,23 +587,75 @@ export function SchemaTimeline({
       });
     }
     return out;
-  }, [timelineChanges, noteEdits, clipEvents, moments, lookups]);
+  }, [timelineChanges, noteEdits, clipEvents, moments, lookups, tracks]);
 
   // Buses sink to the bottom, Main last of all — the order Ableton's own mixer
   // uses, so it reads as a fixture rather than as a track that happened to sort
   // there. Regular tracks keep their existing number order above them.
+  // Activity is the durable record. Snapshot tracks are the present-day map.
+  // Add lightweight historic lanes for activity that belongs to a past map so
+  // fifty earlier moves never disappear just because the set later changed.
+  const historicTracks = useMemo<TrackObj[]>(() => {
+    const currentIds = new Set(tracks.map((track) => track.id));
+    const labels = new Map<string, string>();
+    const remember = (laneId: string, label: string | null | undefined) => {
+      if (currentIds.has(laneId) || !laneId.startsWith("history:")) return;
+      const cleanLabel = label?.trim();
+      if (!labels.has(laneId) || cleanLabel) {
+        labels.set(laneId, cleanLabel || "Track from an earlier snapshot");
+      }
+    };
+
+    for (const change of timelineChanges) {
+      remember(
+        resolveTimelineTrackId(lookups, {
+          parameterId: change.parameter_id,
+          trackId: change.track_id,
+          trackName: change.track_name,
+        }),
+        change.track_name,
+      );
+    }
+    for (const edit of noteEdits) {
+      remember(resolveTimelineTrackId(lookups, { trackId: edit.track_id, trackName: edit.track_name }), edit.track_name);
+    }
+    for (const event of clipEvents) {
+      remember(resolveTimelineTrackId(lookups, { trackId: event.track_id, trackName: event.track_name }), event.track_name);
+    }
+    for (const moment of moments) {
+      const directTrackId = noteTrackId(moment, lookups);
+      if (directTrackId && !currentIds.has(directTrackId)) {
+        remember(historicTrackId(directTrackId, null), null);
+      }
+    }
+
+    const firstNumber = Math.max(0, ...tracks.map((track) => track.number)) + 1;
+    return [...labels.entries()].map(([id, name], index) => ({
+      id,
+      ableton_id: null,
+      name,
+      number: firstNumber + index,
+      type: "audio",
+      color: null,
+      group_id: null,
+      chain_index: firstNumber + index,
+      devices: [],
+    }));
+  }, [timelineChanges, noteEdits, clipEvents, moments, lookups, tracks]);
+
+  const timelineTracks = useMemo(() => [...tracks, ...historicTracks], [tracks, historicTracks]);
+
   const lanes = useMemo(() => {
     const rank = (type: string) => (type === "master" ? 2 : type === "return" ? 1 : 0);
-    return [...tracks]
+    return [...timelineTracks]
       .sort((a, b) => rank(a.type) - rank(b.type))
       .map((track) => ({ track, items: activities.filter((a) => a.trackId === track.id) }));
-  }, [tracks, activities]);
+  }, [timelineTracks, activities]);
 
   const activeLaneCount = useMemo(
     () => lanes.filter((lane) => lane.items.length > 0).length,
     [lanes],
   );
-  const quietLaneCount = lanes.length - activeLaneCount;
   const visibleLanes = useMemo(
     () => (showQuietTracks || activeLaneCount === 0 ? lanes : lanes.filter((lane) => lane.items.length > 0)),
     [lanes, showQuietTracks, activeLaneCount],
@@ -513,20 +720,8 @@ export function SchemaTimeline({
   // full width so a finished take's curve reaches the end.
   const xEnd = bounds.recording ? pct(Date.now(), bounds) : 100;
 
-  // Default the dock to the first track once a scan lands.
-  useEffect(() => {
-    if (tracks.length === 0) {
-      if (selectedTrackId !== null) setSelectedTrackId(null);
-      return;
-    }
-    if (!selectedTrackId || !tracks.some((track) => track.id === selectedTrackId)) {
-      // When the focused view opens, land on a track with a real story rather
-      // than the first quiet channel in the Live set.
-      setSelectedTrackId(lanes.find((lane) => lane.items.length > 0)?.track.id ?? tracks[0].id);
-    }
-  }, [tracks, lanes, selectedTrackId]);
-
-  const selectedTrack = tracks.find((track) => track.id === selectedTrackId) ?? null;
+  const selectedTrack = timelineTracks.find((track) => track.id === selectedTrackId) ?? null;
+  const selectedTrackIsHistoric = selectedTrack?.id.startsWith("history:") ?? false;
   const trackActivity = useMemo(
     () => activities.filter((a) => a.trackId === selectedTrackId).sort((a, b) => b.atMs - a.atMs),
     [activities, selectedTrackId],
@@ -695,6 +890,88 @@ export function SchemaTimeline({
     );
   }, [timelineChanges, tracks]);
 
+  // Open the densest sitting first. A producer lands on the most useful detail
+  // without losing the rest of the project: every sitting remains one click
+  // away in the real-time overview directly above the map.
+  const defaultTimelineSitting = useMemo(
+    () =>
+      [...timelineSittings].sort(
+        (a, b) =>
+          b.moveCount + b.noteEditCount - (a.moveCount + a.noteEditCount) ||
+          b.activeMs - a.activeMs ||
+          b.endMs - a.endMs,
+      )[0] ?? null,
+    [timelineSittings],
+  );
+  const selectedTimelineSitting =
+    timelineSittings.find((sitting) => sitting.id === selectedSittingId) ?? defaultTimelineSitting;
+
+  useEffect(() => {
+    if (selectedTimelineSitting && selectedTimelineSitting.id !== selectedSittingId) {
+      setSelectedSittingId(selectedTimelineSitting.id);
+    }
+  }, [selectedSittingId, selectedTimelineSitting]);
+
+  // The detail canvas only draws activity from the selected sitting. That is a
+  // real time window — movement starts at its first captured action and stops
+  // at its last one — not an equal-width partition of the whole project.
+  const sittingActivities = useMemo(
+    () =>
+      selectedTimelineSitting
+        ? activities.filter(
+            (activity) =>
+              activity.atMs >= selectedTimelineSitting.startMs &&
+              activity.atMs <= selectedTimelineSitting.endMs,
+          )
+        : activities,
+    [activities, selectedTimelineSitting],
+  );
+  const sittingLanes = useMemo(() => {
+    const rank = (type: string) => (type === "master" ? 2 : type === "return" ? 1 : 0);
+    return [...timelineTracks]
+      .sort((a, b) => rank(a.type) - rank(b.type))
+      .map((track) => ({ track, items: sittingActivities.filter((activity) => activity.trackId === track.id) }));
+  }, [timelineTracks, sittingActivities]);
+  const sittingActiveLaneCount = useMemo(
+    () => sittingLanes.filter((lane) => lane.items.length > 0).length,
+    [sittingLanes],
+  );
+  const sittingQuietLaneCount = sittingLanes.length - sittingActiveLaneCount;
+  const visibleSittingLanes = useMemo(
+    () =>
+      showQuietTracks || sittingActiveLaneCount === 0
+        ? sittingLanes
+        : sittingLanes.filter((lane) => lane.items.length > 0),
+    [showQuietTracks, sittingLanes, sittingActiveLaneCount],
+  );
+  const sittingBounds = useMemo(() => {
+    if (!selectedTimelineSitting) return bounds;
+    const startMs = selectedTimelineSitting.startMs;
+    const endMs = selectedTimelineSitting.endMs;
+    const durationMs = Math.max(0, endMs - startMs);
+    // A lone captured change deserves a readable minute-wide timeline, but its
+    // timestamp remains centred on the exact point where it happened.
+    const padMs = durationMs === 0 ? 30_000 : Math.max(durationMs * 0.05, 1_500);
+    const start = startMs - padMs;
+    const end = endMs + padMs;
+    return { start, end, span: end - start, recording: bounds.recording, sessionStart: startMs };
+  }, [bounds, selectedTimelineSitting]);
+  const selectedSittingIsLive =
+    bounds.recording &&
+    selectedTimelineSitting?.id === timelineSittings[timelineSittings.length - 1]?.id;
+
+  // Keep the selected track meaningful for the sitting being inspected instead
+  // of leaving the detail dock pointed at a quiet lane from another day.
+  useEffect(() => {
+    if (visibleSittingLanes.length === 0) {
+      if (selectedTrackId !== null) setSelectedTrackId(null);
+      return;
+    }
+    if (!selectedTrackId || !visibleSittingLanes.some((lane) => lane.track.id === selectedTrackId)) {
+      setSelectedTrackId(visibleSittingLanes[0].track.id);
+    }
+  }, [visibleSittingLanes, selectedTrackId]);
+
   const activityLogSittings = useMemo(
     () =>
       timelineSittings.map((sitting) => ({
@@ -833,6 +1110,20 @@ export function SchemaTimeline({
   const takeTitle = formatTakeTitle(session, schema?.name ?? null);
   const rawTakeId = session?.name ?? session?.id ?? sessionId;
   const projectContext = session?.display_name ?? session?.project_name ?? null;
+  const projectTitle =
+    project?.display_name?.trim() ||
+    projectContext?.trim() ||
+    schema?.name?.trim() ||
+    "Untitled project";
+  const captureWhenLabel = session?.started_at_ms
+    ? new Date(session.started_at_ms).toLocaleString(undefined, {
+        month: "short",
+        day: "numeric",
+        year: "numeric",
+        hour: "numeric",
+        minute: "2-digit",
+      })
+    : null;
   // Header duration: hands-on time only. No recorded moves yet → no number at
   // all, rather than a wall-clock timer that keeps climbing while the set idles.
   const durationLabel = activeMs > 0 ? `${formatDuration(activeMs)} active` : null;
@@ -1031,24 +1322,32 @@ export function SchemaTimeline({
   }
 
   return (
-    <div className="tl">
-      <header className="tl-bar">
+    <LazyMotion features={domAnimation} strict>
+    <m.div
+      className="tl tl--memory"
+      initial={reduceMotion ? false : { opacity: 0, y: 10 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: reduceMotion ? 0 : 0.45 }}
+    >
+      <m.header
+        className="tl-bar"
+        initial={reduceMotion ? false : { opacity: 0, y: -8 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: reduceMotion ? 0 : 0.35 }}
+      >
+        <div className="tl-bar__mark" aria-hidden="true">
+          <span>R</span>
+          <i className={bounds.recording ? "is-live" : ""} />
+        </div>
         <div className="tl-bar__title">
           <span className={`tl-eye ${bounds.recording ? "is-rec" : ""}`}>
             {bounds.recording && <span className="tl-eye__dot" />}
             {bounds.recording ? "Recording now" : "Looking back"}
           </span>
-          <strong title={rawTakeId ?? undefined}>{takeTitle}</strong>
+          <strong title={rawTakeId ?? undefined}>{projectTitle}</strong>
           <span className="tl-bar__sub">
             {[
-              projectContext,
-              session?.started_at_ms
-                ? new Date(session.started_at_ms).toLocaleDateString(undefined, {
-                    month: "short",
-                    day: "numeric",
-                    year: "numeric",
-                  })
-                : null,
+              captureWhenLabel ? `Opened ${captureWhenLabel}` : null,
               durationLabel,
             ]
               .filter(Boolean)
@@ -1117,17 +1416,30 @@ export function SchemaTimeline({
           <button
             type="button"
             className="tl-btn tl-btn--primary"
-            onClick={() => void load(true)}
+            onClick={() => void handleProjectRebuild()}
             disabled={status === "loading"}
-            title="Rebuild this map from the moves already captured in the database"
+            title="Rebuild every captured take in this project and compare the resulting timeline rows"
           >
             <ScanIcon />
             {status === "loading" ? "Rebuilding…" : "Rebuild timeline"}
           </button>
         </div>
-      </header>
+      </m.header>
 
       {error && <div className="tl-error">{error}</div>}
+
+      {projectionSweep && (
+        <div className={`tl-audit ${projectionSweep.removed > 0 ? "has-warning" : ""}`}>
+          <b>Projection sweep</b>
+          <span>
+            {projectionSweep.captureCount} take{projectionSweep.captureCount === 1 ? "" : "s"} checked · {projectionSweep.timelineMoveCount} timeline move{projectionSweep.timelineMoveCount === 1 ? "" : "s"}
+            {projectionSweep.added > 0 && ` · ${projectionSweep.added} recovered`}
+            {projectionSweep.removed > 0 && ` · ${projectionSweep.removed} changed`}
+            {projectionSweep.added === 0 && projectionSweep.removed === 0 && " · unchanged after rebuild"}
+          </span>
+          <small>Checks the database projection; it cannot prove an event that Ableton never sent.</small>
+        </div>
+      )}
 
       {!hasMap ? (
         <ScanEmptyState
@@ -1154,7 +1466,25 @@ export function SchemaTimeline({
             </section>
           )}
 
-          <div className="tl-pulse">
+          <m.section
+            className="tl-memory-stage"
+            aria-label="Visual memory of the Ableton set"
+            initial={reduceMotion ? false : { opacity: 0, scale: 0.992 }}
+            animate={{ opacity: 1, scale: 1 }}
+            transition={{ duration: reduceMotion ? 0 : 0.5, delay: reduceMotion ? 0 : 0.08 }}
+          >
+          <m.div
+            className="tl-pulse"
+            initial={reduceMotion ? false : { opacity: 0 }}
+            animate={{ opacity: 1 }}
+            transition={{ duration: reduceMotion ? 0 : 0.4, delay: reduceMotion ? 0 : 0.16 }}
+          >
+            <div className="tl-pulse__transport" aria-hidden="true">
+              <span className={bounds.recording ? "is-live" : ""} />
+              <i />
+              <i />
+              <i />
+            </div>
             <div className="tl-pulse__stats">
               {isProjectTimeline && (
                 <span className="tl-stat tl-stat--scope">
@@ -1168,7 +1498,7 @@ export function SchemaTimeline({
               )}
               <span className="tl-stat">
                 <b>{pulse.moveCount}</b>
-                <span>move{pulse.moveCount === 1 ? "" : "s"}</span>
+                <span>gesture{pulse.moveCount === 1 ? "" : "s"}</span>
               </span>
               {pulse.decisionCount > 0 && (
                 <span className="tl-stat">
@@ -1178,7 +1508,7 @@ export function SchemaTimeline({
               )}
               <span className="tl-stat">
                 <b>{activeLaneCount}</b>
-                <span>track{activeLaneCount === 1 ? "" : "s"} with activity</span>
+                <span>active lane{activeLaneCount === 1 ? "" : "s"}</span>
               </span>
               {pulse.keeperCount > 0 && (
                 <span className="tl-stat tl-stat--keep">
@@ -1207,39 +1537,184 @@ export function SchemaTimeline({
               <span className="tl-pulse__pip" />
               {pulse.momentum.label}
             </span>
-          </div>
+          </m.div>
 
-          {lanes.length > 0 && (
+          {timelineSittings.length > 1 && (
+            <m.section
+              className="tl-journey"
+              aria-label="Project arrangement memory"
+              initial={reduceMotion ? false : { opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: reduceMotion ? 0 : 0.45, delay: reduceMotion ? 0 : 0.2 }}
+            >
+              <div className="tl-journey__head">
+                <div>
+                  <span className="tl-journey__eyebrow">Project arrangement</span>
+                  <strong>One song · {timelineSittings.length} recorded work passes</strong>
+                </div>
+                <span className="tl-journey__clock">
+                  {new Date(timelineSittings[0].startMs).toLocaleDateString(undefined, { month: "short", day: "numeric" })} {formatClock(timelineSittings[0].startMs)}
+                  {" → "}
+                  {new Date(timelineSittings[timelineSittings.length - 1].endMs).toLocaleDateString(undefined, { month: "short", day: "numeric" })} {formatClock(timelineSittings[timelineSittings.length - 1].endMs)}
+                </span>
+              </div>
+              <div className="tl-journey__trace" aria-hidden="true">
+                {timelineSittings.map((sitting, index) => (
+                  <Fragment key={sitting.id}>
+                    <span className={`tl-journey__trace-node ${sitting.id === selectedTimelineSitting?.id ? "is-selected" : ""}`} />
+                    {index < timelineSittings.length - 1 && <span className="tl-journey__trace-link" />}
+                  </Fragment>
+                ))}
+              </div>
+              <div className="tl-journey__chapters">
+                {timelineSittings.map((sitting, index) => {
+                  const date = new Date(sitting.startMs);
+                  const isSelected = sitting.id === selectedTimelineSitting?.id;
+                  const isPeak = sitting.moveCount === Math.max(...timelineSittings.map((item) => item.moveCount));
+                  const nextSitting = timelineSittings[index + 1];
+                  const breakMs = nextSitting ? Math.max(0, nextSitting.startMs - sitting.endMs) : 0;
+                  return (
+                    <Fragment key={sitting.id}>
+                      <m.button
+                        type="button"
+                        className={`tl-journey__chapter is-${sitting.kind} ${isSelected ? "is-selected" : ""}`}
+                        style={{ ["--chapter-weight" as string]: Math.max(1, Math.min(1.65, Math.log2(sitting.moveCount + 1) / 3)) }}
+                        animate={{ opacity: isSelected ? 1 : 0.82, scale: isSelected ? 1 : 0.992 }}
+                        whileHover={reduceMotion ? undefined : { y: -3, opacity: 1, scale: 1 }}
+                        whileTap={reduceMotion ? undefined : { scale: 0.992 }}
+                        transition={{ duration: reduceMotion ? 0 : 0.24 }}
+                        onClick={() => setSelectedSittingId(sitting.id)}
+                        aria-pressed={isSelected}
+                        title={`Show Sitting ${sitting.index + 1} in detail`}
+                      >
+                        <span className="tl-journey__chapter-top">
+                          <span className="tl-journey__ordinal">{String(sitting.index + 1).padStart(2, "0")}</span>
+                          <span>{date.toLocaleDateString(undefined, { month: "short", day: "numeric" })}</span>
+                          {isPeak && <span className="tl-journey__peak">most active</span>}
+                        </span>
+                        <span className="tl-journey__title">{index === 0 ? "Pass 01 · first movement" : `Pass ${String(index + 1).padStart(2, "0")}`}</span>
+                        <span className="tl-journey__read">{sitting.label}</span>
+                        <span className="tl-journey__focus">{sittingWork(sitting)}</span>
+                        <span className="tl-journey__time">{formatClock(sitting.startMs)} – {formatClock(sitting.endMs)}</span>
+                        <span className="tl-journey__facts">
+                          {sitting.moveCount} move{sitting.moveCount === 1 ? "" : "s"} <i /> {formatDuration(sitting.activeMs)} active
+                        </span>
+                      </m.button>
+                      {nextSitting && (
+                        <m.div
+                          className="tl-journey__break"
+                          aria-label={`No recorded work for ${formatDuration(breakMs)}`}
+                          initial={reduceMotion ? false : { opacity: 0 }}
+                          animate={{ opacity: 1 }}
+                          transition={{ duration: reduceMotion ? 0 : 0.4, delay: reduceMotion ? 0 : 0.28 + index * 0.06 }}
+                        >
+                          <span className="tl-journey__break-line" aria-hidden="true" />
+                          <span className="tl-journey__break-copy">
+                            <b>{formatDuration(breakMs)} paused</b>
+                            <small>no recorded work</small>
+                          </span>
+                        </m.div>
+                      )}
+                    </Fragment>
+                  );
+                })}
+              </div>
+              <div className="tl-sittings__legacy" aria-hidden="true">
+              <div className="tl-sittings__head">
+                <span>Whole project timeline</span>
+                <span>{timelineSittings.length} work sittings · actual clock time</span>
+              </div>
+              <div className="tl-sittings__rail" aria-hidden="true">
+                {timelineSittings.map((sitting) => {
+                  const left = pct(sitting.startMs, bounds);
+                  const right = pct(sitting.endMs, bounds);
+                  const width = Math.min(100 - left, Math.max(0.9, right - left));
+                  return (
+                    <span
+                      key={sitting.id}
+                      className={`tl-sittings__window ${sitting.id === selectedTimelineSitting?.id ? "is-selected" : ""}`}
+                      style={{ left: `${left}%`, width: `${width}%` }}
+                    />
+                  );
+                })}
+              </div>
+              <div className="tl-sittings__list">
+                {timelineSittings.map((sitting) => {
+                  const date = new Date(sitting.startMs);
+                  const isSelected = sitting.id === selectedTimelineSitting?.id;
+                  return (
+                    <button
+                      key={sitting.id}
+                      type="button"
+                      className={`tl-sittings__item ${isSelected ? "is-selected" : ""}`}
+                      onClick={() => setSelectedSittingId(sitting.id)}
+                      aria-pressed={isSelected}
+                      title={`Show Sitting ${sitting.index + 1} in detail`}
+                    >
+                      <span className="tl-sittings__number">Sitting {sitting.index + 1}</span>
+                      <span className="tl-sittings__when">
+                        {date.toLocaleDateString(undefined, { month: "short", day: "numeric" })} · {formatClock(sitting.startMs)}–{formatClock(sitting.endMs)}
+                      </span>
+                      <span className="tl-sittings__facts">
+                        {sitting.moveCount} move{sitting.moveCount === 1 ? "" : "s"} · {formatDuration(sitting.activeMs)} active
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+              </div>
+            </m.section>
+          )}
+
+          <m.div
+            className="tl-arrange-toolbar"
+            initial={reduceMotion ? false : { opacity: 0 }}
+            animate={{ opacity: 1 }}
+            transition={{ duration: reduceMotion ? 0 : 0.35, delay: reduceMotion ? 0 : 0.26 }}
+          >
+          {sittingLanes.length > 0 && (
             <div className="tl-capture-scope">
               <span className="tl-capture-scope__label">
                 <span className="tl-capture-scope__dot" aria-hidden="true" />
-                {isProjectTimeline ? "Project timeline" : "This take"}: showing {visibleLanes.length} track{visibleLanes.length === 1 ? "" : "s"} with recorded work
-                {quietLaneCount > 0 && ` · ${quietLaneCount} quiet`}
+                {selectedTimelineSitting
+                  ? `Sitting ${selectedTimelineSitting.index + 1} detail`
+                  : isProjectTimeline
+                    ? "Project timeline"
+                    : "This take"}
+                : showing {visibleSittingLanes.length} track{visibleSittingLanes.length === 1 ? "" : "s"} with recorded work
+                {sittingQuietLaneCount > 0 && ` · ${sittingQuietLaneCount} quiet`}
               </span>
-              {quietLaneCount > 0 && (
+              {sittingQuietLaneCount > 0 && (
                 <button
                   type="button"
                   className="tl-capture-scope__toggle"
                   onClick={() => setShowQuietTracks((current) => !current)}
                   aria-pressed={showQuietTracks}
                 >
-                  {showQuietTracks ? "Focus on activity" : `Show all ${lanes.length} tracks`}
+                  {showQuietTracks ? "Focus on activity" : `Show all ${sittingLanes.length} tracks`}
                 </button>
               )}
             </div>
           )}
 
           <div className="tl-legend">
+            <span className="tl-legend__hint">hover a gesture · click to pin</span>
             <span><span className="tl-key tl-key--heat" /> activity density</span>
             <span><span className="tl-key tl-key--move" /> running total</span>
             <span><span className="tl-key tl-key--note" /> note</span>
-            {bounds.recording && <span><span className="tl-key tl-key--now" /> now</span>}
+            {selectedSittingIsLive && <span><span className="tl-key tl-key--now" /> now</span>}
           </div>
+          </m.div>
 
-          <div className="tl-arrange">
+          <m.div
+            className="tl-arrange"
+            initial={reduceMotion ? false : { opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: reduceMotion ? 0 : 0.45, delay: reduceMotion ? 0 : 0.3 }}
+          >
             <div className="tl-headers">
               <div className="tl-rspacer" />
-              {visibleLanes.map((lane) => {
+              {visibleSittingLanes.map((lane) => {
                 const color = trackColor(lane.track);
                 return (
                   <button
@@ -1252,11 +1727,18 @@ export function SchemaTimeline({
                     onClick={() => setSelectedTrackId(lane.track.id)}
                     title={`${lane.track.name ?? "Untitled track"} — recorded activity`}
                   >
+                    <span className="tl-hdr__index">
+                      {lane.track.type === "master" ? "M" : String(lane.track.number).padStart(2, "0")}
+                    </span>
                     <span className="tl-hdr__sw" style={{ background: color }} />
                     <span className="tl-hdr__name">
                       {lane.track.type === "master" ? "Main" : lane.track.name ?? "Untitled track"}
                     </span>
-                    <span className="tl-hdr__quiet" aria-hidden="true" />
+                    {lane.track.id.startsWith("history:") && <span className="tl-hdr__past">past</span>}
+                    <span className="tl-hdr__activity" aria-label={`${lane.items.length} recorded events`}>
+                      <i /><i /><i />
+                      <b>{lane.items.length}</b>
+                    </span>
                   </button>
                 );
               })}
@@ -1265,12 +1747,11 @@ export function SchemaTimeline({
             <div className="tl-tracks">
               <Suspense fallback={<div className="tl-arrangement-canvas tl-arrangement-canvas--loading" />}>
                 <ArrangementCanvas
-                  lanes={visibleLanes}
-                  bounds={bounds}
+                  lanes={visibleSittingLanes}
+                  bounds={sittingBounds}
                   selectedTrackId={selectedTrackId}
                   onSelectTrack={setSelectedTrackId}
-                  recording={bounds.recording}
-                  sittingBreaks={timelineSittings.slice(1).map((sitting) => ({ atMs: sitting.startMs }))}
+                  recording={selectedSittingIsLive}
                 />
               </Suspense>
               <div className="tl-legacy-arrangement" aria-hidden="true">
@@ -1358,10 +1839,18 @@ export function SchemaTimeline({
               {bounds.recording && <span className="tl-playhead" style={{ left: `${pct(Date.now(), bounds)}%` }} />}
               </div>
             </div>
-          </div>
+          </m.div>
 
+          <AnimatePresence mode="wait" initial={false}>
           {selectedTrack && (
-            <div className="tl-dock">
+            <m.div
+              key={selectedTrack.id}
+              className="tl-dock"
+              initial={reduceMotion ? false : { opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={reduceMotion ? undefined : { opacity: 0, y: -6 }}
+              transition={{ duration: reduceMotion ? 0 : 0.25 }}
+            >
               <div className="tl-dock__head">
                 <span className="tl-dock__kick">Track memory</span>
                 <span className="tl-dock__name">
@@ -1369,6 +1858,10 @@ export function SchemaTimeline({
                   {selectedTrack.name ?? "Untitled track"}
                 </span>
                 <span className="tl-dock__meta">
+                  {selectedTrackIsHistoric ? (
+                    <>Captured in an earlier snapshot Â· {moveCountForTrack} move{moveCountForTrack === 1 ? "" : "s"}</>
+                  ) : (
+                    <>
                   {TRACK_TYPE_LABEL[selectedTrack.type]} · {selectedTrack.devices.length} device
                   {selectedTrack.devices.length === 1 ? "" : "s"} · {moveCountForTrack} move
                   {moveCountForTrack === 1 ? "" : "s"}
@@ -1377,6 +1870,8 @@ export function SchemaTimeline({
                   )}
                   {clipEventCountForTrack > 0 && (
                     <> · {clipEventCountForTrack} clip added</>
+                  )}
+                    </>
                   )}
                 </span>
                 {mostTouched && mostTouched.count > 1 && (
@@ -1400,7 +1895,11 @@ export function SchemaTimeline({
                   ))}
                 </div>
               ) : (
-                <p className="tl-chain__empty">No devices captured on this track.</p>
+                <p className="tl-chain__empty">
+                  {selectedTrackIsHistoric
+                    ? "This lane preserves recorded work from an earlier set snapshot."
+                    : "No devices captured on this track."}
+                </p>
               )}
 
               <div className="tl-story-head">What you did to {selectedTrack.name ?? "this track"}</div>
@@ -1559,12 +2058,14 @@ export function SchemaTimeline({
                   className={`tl-addnote__star ${noteStar ? "is-on" : ""}`}
                   aria-label="Flag as keeper"
                   aria-pressed={noteStar}
+                  disabled={selectedTrackIsHistoric}
                   onClick={() => setNoteStar((value) => !value)}
                 >
                   ★
                 </button>
                 <input
                   value={noteDraft}
+                  disabled={selectedTrackIsHistoric}
                   onChange={(event) => setNoteDraft(event.target.value)}
                   onKeyDown={(event) => {
                     if (event.key === "Enter") void handleAddNote();
@@ -1575,21 +2076,37 @@ export function SchemaTimeline({
                 <button
                   type="button"
                   className="tl-btn tl-btn--primary tl-addnote__save"
-                  disabled={!noteDraft.trim()}
+                  disabled={selectedTrackIsHistoric || !noteDraft.trim()}
                   onClick={() => void handleAddNote()}
                 >
                   Add note
                 </button>
               </div>
-            </div>
+            </m.div>
           )}
+          </AnimatePresence>
+          </m.section>
 
+          <details className="tl-memory-tape">
+            <summary>
+              <span className="tl-memory-tape__reel" aria-hidden="true"><i /><i /></span>
+              <span className="tl-memory-tape__title">
+                <b>Session tape</b>
+                <small>The event-by-event record behind the visual memory</small>
+              </span>
+              <span className="tl-memory-tape__count">
+                {sessionBlocks.length} passage{sessionBlocks.length === 1 ? "" : "s"}
+                {noteEdits.length > 0 && ` · ${noteEdits.length} MIDI edit${noteEdits.length === 1 ? "" : "s"}`}
+              </span>
+              <span className="tl-memory-tape__chevron" aria-hidden="true">⌄</span>
+            </summary>
+            <div className="tl-memory-tape__content">
           {sessionBlocks.length > 0 && (
             <section className="tl-activity-log" aria-label="Activity log">
               <div className="tl-activity-log__head">
                 <div>
                   <span className="tl-activity-log__kick">
-                    {isProjectTimeline ? "Project timeline" : "Activity log"}
+                    Event tape
                   </span>
                   <span className="tl-activity-log__sub">
                     {projectHistoryLoading
@@ -1606,7 +2123,7 @@ export function SchemaTimeline({
                     activityLogEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" })
                   }
                 >
-                  Jump to bottom
+                  Oldest event
                 </button>
               </div>
               <ol className="tl-activity-log__list">
@@ -1768,6 +2285,8 @@ export function SchemaTimeline({
               <p className="tl-recap__text">{sessionStory.join(" ")}</p>
             </div>
           )}
+            </div>
+          </details>
 
         </>
       )}
@@ -1813,6 +2332,7 @@ export function SchemaTimeline({
           </div>
         )}
       </div>
-    </div>
+    </m.div>
+    </LazyMotion>
   );
 }

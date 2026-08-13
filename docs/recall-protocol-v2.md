@@ -17,8 +17,11 @@ Two capture tiers currently share this protocol, told apart by `source`:
 | `"control_surface"` | `remote-script/Recall/`, a Python Control Surface running inside Live's embedded interpreter | TCP, `127.0.0.1:9001` | **What ships** — installed by the app's Setup screen |
 | `"max_for_live"` | The original Max for Live device, `m4l/` | UDP, `127.0.0.1:9000` | Retained in the repo for reference; not installed by the app |
 
-Implemented by control surface **v0.3.0**. When the script and this doc disagree, the
-script is right and this doc is a bug — update it.
+Implemented by control surface **v0.5.7**. This document's packet shapes remain a useful
+wire reference, but several historical coverage notes below predate the current script.
+For the current capture surface and the claims each data source is allowed to make, read
+[`capture-evidence.md`](capture-evidence.md) first. When the script and either document
+disagree, the script is right and the documentation is a bug — update it.
 
 ## Packet format
 

@@ -92,8 +92,9 @@ export type ParameterChange = {
   after_display_value: string | null;
   is_quantized: boolean | null;
   reason: string | null;
-  // Present only for an automation write captured against Live's musical ruler.
-  // These are source-reported positions, never derived from wall-clock time.
+  // Present only for a live automation write captured against Live's musical
+  // ruler. These are transport observations during the producer's action, not
+  // Arrangement-envelope breakpoints or an inferred constant/ramp span.
   automation_start_ms: number | null;
   automation_start_position: string | null;
   automation_end_position: string | null;

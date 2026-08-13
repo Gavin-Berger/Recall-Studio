@@ -25,6 +25,11 @@ type InstallDetection = {
   script_version: string | null;
 };
 
+/** The one field of metrics.rs::BridgeMetricsSnapshot this panel needs. */
+type BridgeMetricsSnapshot = {
+  capture_port_conflict: boolean;
+};
+
 const shortcuts = [
   ["Alt", "1", "Projects"],
   ["Alt", "2", "Recap"],
@@ -51,6 +56,7 @@ export function SettingsDialog({
   const [testingReminder, setTestingReminder] = useState(false);
   const [appVersion, setAppVersion] = useState<string | null>(null);
   const [detection, setDetection] = useState<InstallDetection | null>(null);
+  const [portConflict, setPortConflict] = useState(false);
 
   useEffect(() => {
     if (!open) return;
@@ -84,6 +90,19 @@ export function SettingsDialog({
         if (!cancelled) setDetection(null);
       });
 
+    // Whether THIS process lost the race for the capture port. Sticky in the
+    // backend (the listener binds once at startup), so one read per open is
+    // enough — it cannot change while the app is running.
+    invoke<BridgeMetricsSnapshot>("get_bridge_metrics")
+      .then((metrics) => {
+        if (!cancelled) setPortConflict(metrics.capture_port_conflict);
+      })
+      .catch(() => {
+        // Can't prove a conflict, so don't claim one. The panel falls back to
+        // the ordinary connection verdicts, which is the pre-existing behaviour.
+        if (!cancelled) setPortConflict(false);
+      });
+
     return () => {
       cancelled = true;
     };
@@ -100,6 +119,7 @@ export function SettingsDialog({
       detection?.recommended ??
       detection?.candidates.find((candidate) => candidate.exists)?.path ??
       null,
+    capturePortConflict: portConflict,
   };
 
   async function handleReminderToggle(enabled: boolean) {

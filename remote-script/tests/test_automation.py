@@ -34,7 +34,7 @@ def test_automation_position_uses_lives_bars_and_beats_without_math():
         beats = 1
         sub_division = 1
 
-    assert _automation_position_label(BeatsSongTime()) == "Bar 41 · Beat 1 · 1/16 1"
+    assert _automation_position_label(BeatsSongTime()) == "Bar 41 · Beat 1"
 
 
 def track(track_id, name, *, index=0, group_id=None, group_name=None, track_type="audio"):

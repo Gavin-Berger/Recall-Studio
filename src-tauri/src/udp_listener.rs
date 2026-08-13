@@ -26,7 +26,9 @@ const VERBOSE_UDP_LOGGING: bool = false;
 
 // Separate port from the UDP listener's 9000, so both transports can run at
 // once and a client picks its transport by which port it connects to.
-const TCP_LISTEN_ADDR: &str = "127.0.0.1:9001";
+// pub so the startup second-instance probe binds the SAME address the listener
+// will. Two copies of this string is how a guard silently stops guarding.
+pub const TCP_LISTEN_ADDR: &str = "127.0.0.1:9001";
 
 // Receive buffer must exceed the bridge's MAX_EVENT_BYTES (8192) so a large but
 // legal snapshot is never truncated mid-JSON into an unparseable packet.
@@ -754,12 +756,25 @@ fn rotate_session_if_project_changed(
 /// verdict, closing it before the project-change check has anything left to
 /// compare against.
 fn rotate_session_if_stale(
+    state: &Arc<Mutex<ConnectionState>>,
     session: &Arc<Mutex<SessionState>>,
     storage: &Arc<Mutex<StorageState>>,
     events: &Arc<Mutex<Vec<RecallEvent>>>,
     metrics: &Arc<BridgeMetrics>,
 ) {
     let now = now_ms();
+
+    // Snapshot both markers before we close anything. The old take's project
+    // can be inherited only when Ableton is still open on that exact set; if
+    // the producer changed sets during the break, carrying it forward would
+    // silently file new work under the wrong project.
+    let (open_als, previous_session_als) = {
+        let connection = state.lock().expect("Connection state lock failed");
+        (
+            connection.open_als_path.clone(),
+            connection.session_als_path.clone(),
+        )
+    };
 
     // stop_at needs the take's OWN last activity, not `now` — read it while
     // still holding the same lock is_stale used, so the two can't observe two
@@ -786,6 +801,19 @@ fn rotate_session_if_stale(
 
     let activated = {
         let storage = storage.lock().expect("Storage state lock failed");
+        let previous_project_id = previous_status
+            .session_id
+            .as_deref()
+            .and_then(|session_id| match storage.load_session(session_id) {
+                Ok(take) => take.project_id,
+                Err(error) => {
+                    log::warn!(
+                        "STALE-ROTATE: could not read the idle take's project -> {}",
+                        error
+                    );
+                    None
+                }
+            });
         if let Some(previous_session_id) = previous_status.session_id.as_deref() {
             // Shared with the boot-time staleness check in
             // resume_or_create_active_session, so the two detectors can't
@@ -800,11 +828,15 @@ fn rotate_session_if_stale(
                 metrics.set_last_error(error);
             }
         }
-        // start_fresh_session, not activate_take_for_open_file(None, None): the
-        // latter's "no open file" branch resumes the most-recently-stopped
-        // unfiled take if one exists, which would immediately reopen the take
-        // this function just closed. See start_fresh_session's own comment.
-        storage.start_fresh_session()
+        // Do not call activate_take_for_open_file here: its purpose is to
+        // resume an existing take for this file, which would erase the
+        // four-hour sitting boundary. Start a fresh row instead, preserving
+        // the project link only when the same `.als` is still open.
+        let same_open_set = previous_session_als == open_als;
+        let project_id = same_open_set
+            .then_some(previous_project_id.as_deref())
+            .flatten();
+        storage.start_fresh_session_for_open_file(project_id, open_als.as_deref())
     };
 
     let status = match activated {
@@ -829,11 +861,27 @@ fn rotate_session_if_stale(
         session.restore_active(session_id, started_at_ms, started_at_ms);
     }
 
+    // This is a new row but it already has the open set's identity. Keeping
+    // the in-memory marker in sync prevents the next packet from trying to
+    // rotate a second time, while the storage method above guarantees it can
+    // never resume or merge with the take that just closed.
+    set_session_anchor_after_idle_rotation(state, open_als);
+
     println!(
         "STALE-ROTATE: closed a take idle for {} ms and started a fresh one -> {:?}",
         now.saturating_sub(backdated_end_ms),
         status.session_id
     );
+}
+
+/// Keep the in-memory file anchor aligned with a fresh idle-break take that
+/// was inserted for the set Ableton still has open.
+fn set_session_anchor_after_idle_rotation(
+    state: &Arc<Mutex<ConnectionState>>,
+    open_als: Option<String>,
+) {
+    let mut connection = state.lock().expect("Connection state lock failed");
+    connection.session_als_path = open_als;
 }
 
 // Append a whole batch under ONE lock.
@@ -1408,6 +1456,12 @@ fn run_tcp_listener(
                 TCP_LISTEN_ADDR,
                 error
             );
+            // AddrInUse specifically means another Recall already owns capture.
+            // Flagged apart from the generic error so the UI can name the actual
+            // remedy ("quit the other Recall") instead of blaming the bridge.
+            if error.kind() == std::io::ErrorKind::AddrInUse {
+                metrics.note_capture_port_conflict();
+            }
             metrics.set_last_error(format!("TCP listener failed to bind: {}", error));
             return;
         }
@@ -1554,7 +1608,7 @@ fn process_packet(
     // absorbed into a project-change rotation that happens to fire on the
     // same packet. Runs on heartbeats too — see rotate_session_if_stale's own
     // comment for why that is what makes it actually catch an idle take.
-    rotate_session_if_stale(session, storage, events, metrics);
+    rotate_session_if_stale(state, session, storage, events, metrics);
     // Switch takes if Ableton has moved to a different project. Runs BEFORE
     // assignment so this event lands on the take for the file that is open now.
     rotate_session_if_project_changed(state, session, storage, events, metrics);
@@ -1982,6 +2036,33 @@ mod tests {
             open_als_path: None,
             session_als_path: None,
         }))
+    }
+
+    #[test]
+    fn an_idle_break_reanchors_the_fresh_take_to_the_set_still_open_in_live() {
+        let state = fresh_connection_state();
+        {
+            let mut connection = state.lock().unwrap();
+            connection.open_als_path = Some("M:/Ableton/Recall_Test.als".into());
+            connection.session_als_path = Some("M:/Ableton/Recall_Test.als".into());
+        }
+
+        set_session_anchor_after_idle_rotation(
+            &state,
+            Some("M:/Ableton/Recall_Test.als".into()),
+        );
+
+        let connection = state.lock().unwrap();
+        assert_eq!(
+            connection.open_als_path.as_deref(),
+            Some("M:/Ableton/Recall_Test.als"),
+            "Ableton's current set is still known"
+        );
+        assert_eq!(
+            connection.session_als_path.as_deref(),
+            Some("M:/Ableton/Recall_Test.als"),
+            "the fresh take owns its own file anchor"
+        );
     }
 
     /// Exactly what the control surface puts on the wire: `payload` is a nested

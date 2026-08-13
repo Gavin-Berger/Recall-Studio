@@ -493,6 +493,55 @@ impl StorageState {
         Ok(status)
     }
 
+    /// Unconditionally create a distinct recorded take for the `.als` that is
+    /// currently open. Unlike `activate_take_for_open_file`, this intentionally
+    /// never looks up or resumes an older take with the same file anchor.
+    ///
+    /// This is used after the four-hour idle boundary: the producer may still
+    /// be working in the exact same saved set, but this is a new sitting and
+    /// must remain a separate stored take. The project association and file
+    /// anchor are carried forward only so the view can present those takes as
+    /// one project's sequence, never to merge their history.
+    pub fn start_fresh_session_for_open_file(
+        &self,
+        project_id: Option<&str>,
+        open_als: Option<&str>,
+    ) -> Result<SessionStatus, String> {
+        let Some(als) = clean_optional(open_als) else {
+            return self.start_fresh_session();
+        };
+
+        let started_at_ms = now_ms();
+        let id = format!("session-{}", started_at_ms);
+        let name = Path::new(als)
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .unwrap_or("Take")
+            .to_string();
+        let connection = self.open_connection()?;
+
+        connection
+            .execute(
+                "
+                INSERT INTO sessions (
+                    id, project_id, capture_name, capture_status,
+                    project_path, als_path, take_origin,
+                    started_at_ms, ended_at_ms, created_at_ms
+                )
+                VALUES (?1, ?2, ?3, 'active', ?4, ?4, 'recorded', ?5, NULL, ?5)
+                ",
+                params![id, project_id, name, als, started_at_ms as i64],
+            )
+            .map_err(|error| format!("Failed to create fresh take for open file: {}", error))?;
+
+        Ok(SessionStatus {
+            active: true,
+            session_id: Some(id),
+            started_at_ms: Some(started_at_ms),
+            ended_at_ms: None,
+        })
+    }
+
     /// The most recent activity timestamp for a session: its latest captured
     /// event, or its own `started_at_ms` if it has none yet. `None` only if no
     /// session with this id exists at all.
@@ -4257,6 +4306,47 @@ mod tests {
         assert_eq!(fresh_take.als_path.as_deref(), Some(als("v9").as_str()));
         assert_eq!(fresh_take.take_origin, "recorded");
 
+        cleanup(&path);
+    }
+
+    #[test]
+    fn an_idle_break_creates_a_distinct_take_for_the_same_open_file() {
+        let (storage, path) = temp_storage();
+        let project_id = storage
+            .create_project("Recall Test", None, Some("/Projects/Recall Test Project"))
+            .unwrap();
+        let als = "/Projects/Recall Test Project/Recall Test.als";
+
+        let first = storage
+            .activate_take_for_open_file(Some(&project_id), Some(als))
+            .unwrap();
+        let first_id = first.session_id.unwrap();
+        storage
+            .save_session_stopped(&SessionStatus {
+                active: false,
+                session_id: Some(first_id.clone()),
+                started_at_ms: first.started_at_ms,
+                ended_at_ms: first.started_at_ms,
+            })
+            .unwrap();
+
+        let second = storage
+            .start_fresh_session_for_open_file(Some(&project_id), Some(als))
+            .unwrap();
+        let second_id = second.session_id.unwrap();
+        assert_ne!(second_id, first_id, "idle work must not resume the prior take");
+
+        let second_take = storage.load_session(&second_id).unwrap();
+        assert_eq!(second_take.project_id.as_deref(), Some(project_id.as_str()));
+        assert_eq!(second_take.als_path.as_deref(), Some(als));
+        assert!(second_take.ended_at_ms.is_none());
+
+        let takes = storage.list_projects(false).unwrap().remove(0).captures;
+        assert_eq!(
+            takes.iter().filter(|take| take.als_path.as_deref() == Some(als)).count(),
+            2,
+            "two sittings can share one saved set without merging"
+        );
         cleanup(&path);
     }
 

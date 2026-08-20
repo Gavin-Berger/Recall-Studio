@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { alsSetName } from "./sessionFormat";
+import { alsSetName, preferredProjectTitle } from "./sessionFormat";
 
 describe("alsSetName", () => {
   it("takes the filename from a path and drops the .als extension", () => {
@@ -16,5 +16,39 @@ describe("alsSetName", () => {
     expect(alsSetName(undefined)).toBeNull();
     expect(alsSetName("")).toBeNull();
     expect(alsSetName("0.als")).toBeNull();
+  });
+});
+
+describe("preferredProjectTitle", () => {
+  it("prefers the saved Ableton filename over Recall's shorter desk label", () => {
+    expect(preferredProjectTitle(
+      {
+        als_path: "C:\\Music\\Recall_Test\\Recall_Test.als",
+        project_path: "C:\\Music\\Recall_Test\\Recall_Test.als",
+        project_name: "Recall",
+        display_name: "Recall",
+      },
+      {
+        display_name: "Recall",
+        ableton_name: "Recall",
+        ableton_path: null,
+      },
+    )).toBe("Recall_Test");
+  });
+
+  it("falls back to the editable project label for an unsaved set", () => {
+    expect(preferredProjectTitle(
+      {
+        als_path: null,
+        project_path: null,
+        project_name: null,
+        display_name: null,
+      },
+      {
+        display_name: "New idea",
+        ableton_name: null,
+        ableton_path: null,
+      },
+    )).toBe("New idea");
   });
 });

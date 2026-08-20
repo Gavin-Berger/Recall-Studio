@@ -479,7 +479,7 @@ function VersionDetail({
                 Open timeline
               </button>
               <button type="button" className="px-btn" disabled={busy} onClick={() => onOpenRecap(take.id)}>
-                Recap
+                Report
               </button>
             </div>
           </>

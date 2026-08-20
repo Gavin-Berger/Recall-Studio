@@ -32,7 +32,7 @@ type BridgeMetricsSnapshot = {
 
 const shortcuts = [
   ["Alt", "1", "Projects"],
-  ["Alt", "2", "Recap"],
+  ["Alt", "2", "Report"],
   ["Alt", "3", "Timeline"],
   ["Alt", "4", "Organizer"],
   ["Alt", "5", "Planner"],

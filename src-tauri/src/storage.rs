@@ -1,9 +1,10 @@
 use crate::planner::PlannerTask;
 use crate::protocol::RecallEvent;
 use crate::schema_projection::{
-    build_parameter_changes, parse_note_edit, parse_session_tree, ChangeEvent, CreativeMoment,
-    CreativeMomentTarget, DeviceObj, DeviceRole, NoteEdit, ParameterChange, ParameterObj,
-    ParsedParam, ParsedTrack, ProjectSchema, TimelineClipEvent, TrackObj, TrackType,
+    apply_first_observed_states, build_parameter_changes, parse_note_edit, parse_session_tree,
+    ChangeEvent, CreativeMoment, CreativeMomentTarget, DeviceObj, DeviceRole, NoteEdit,
+    ParameterChange, ParameterObj, ParsedParam, ParsedTrack, ProjectSchema, TimelineClipEvent,
+    TrackObj, TrackType,
 };
 use crate::session::{
     ProjectFolderMetadata, SavedProject, SavedSession, SavedSessionEvent, SavedSessionMetadata,
@@ -822,18 +823,13 @@ impl StorageState {
                         || {
                             read_payload_string(
                                 pj,
-                                &[
-                                    "previous_parameter_display_value",
-                                    "previous_display_value",
-                                ],
+                                &["previous_parameter_display_value", "previous_display_value"],
                             )
                         },
                     ),
-                    parameter_is_quantized: parameter_is_quantized
-                        .map(|value| value != 0)
-                        .or_else(|| {
-                            read_payload_bool(pj, &["parameter_is_quantized", "is_quantized"])
-                        }),
+                    parameter_is_quantized: parameter_is_quantized.map(|value| value != 0).or_else(
+                        || read_payload_bool(pj, &["parameter_is_quantized", "is_quantized"]),
+                    ),
                     clip_name: clip_name
                         .or_else(|| read_payload_string(pj, &["clip_name", "clip"])),
                     sample_name: sample_name
@@ -844,6 +840,22 @@ impl StorageState {
                     playing: playing
                         .map(|value| value != 0)
                         .or_else(|| read_payload_bool(pj, &["playing", "is_playing"])),
+                    observed_arrangement_position: read_payload_string(
+                        pj,
+                        &["observed_arrangement_position"],
+                    ),
+                    observed_arrangement_beats: read_payload_f64(
+                        pj,
+                        &["observed_arrangement_beats"],
+                    ),
+                    arrangement_start_beats: read_payload_f64(
+                        pj,
+                        &["arrangement_start_beats"],
+                    ),
+                    arrangement_end_beats: read_payload_f64(
+                        pj,
+                        &["arrangement_end_beats"],
+                    ),
                     payload,
                     session_id,
                     is_heartbeat: event_type == "heartbeat",
@@ -1213,11 +1225,16 @@ impl StorageState {
 
         // Mark a take active and (on first recording of a scanned version) restart its
         // clock so the timeline measures from when recording actually began.
-        let resume = |id: String, started_at_ms: i64, origin: String| -> Result<SessionStatus, String> {
-            let started = if origin == "scanned" { now as i64 } else { started_at_ms };
-            connection
-                .execute(
-                    "
+        let resume =
+            |id: String, started_at_ms: i64, origin: String| -> Result<SessionStatus, String> {
+                let started = if origin == "scanned" {
+                    now as i64
+                } else {
+                    started_at_ms
+                };
+                connection
+                    .execute(
+                        "
                     UPDATE sessions
                     SET take_origin = 'recorded',
                         capture_status = 'active',
@@ -1225,16 +1242,16 @@ impl StorageState {
                         started_at_ms = ?2
                     WHERE id = ?1
                     ",
-                    params![id, started],
-                )
-                .map_err(|error| format!("Failed to resume take: {}", error))?;
-            Ok(SessionStatus {
-                active: true,
-                session_id: Some(id),
-                started_at_ms: Some(started as u64),
-                ended_at_ms: None,
-            })
-        };
+                        params![id, started],
+                    )
+                    .map_err(|error| format!("Failed to resume take: {}", error))?;
+                Ok(SessionStatus {
+                    active: true,
+                    session_id: Some(id),
+                    started_at_ms: Some(started as u64),
+                    ended_at_ms: None,
+                })
+            };
 
         // 1. A take already anchored to the open file → resume it.
         if let Some(als) = open_als {
@@ -1426,13 +1443,17 @@ impl StorageState {
         let mut existing: std::collections::HashSet<String> = std::collections::HashSet::new();
         {
             let mut statement = connection
-                .prepare("SELECT als_path FROM sessions WHERE project_id = ?1 AND als_path IS NOT NULL")
+                .prepare(
+                    "SELECT als_path FROM sessions WHERE project_id = ?1 AND als_path IS NOT NULL",
+                )
                 .map_err(|error| format!("Failed to prepare anchored-takes query: {}", error))?;
             let rows = statement
                 .query_map(params![project_id], |row| row.get::<_, String>(0))
                 .map_err(|error| format!("Failed to read anchored takes: {}", error))?;
             for path in rows {
-                existing.insert(path.map_err(|error| format!("Failed to collect take path: {}", error))?);
+                existing.insert(
+                    path.map_err(|error| format!("Failed to collect take path: {}", error))?,
+                );
             }
         }
 
@@ -1573,7 +1594,9 @@ impl StorageState {
                     project_id,
                     metadata.created_at_ms.map(|value| value as i64),
                     metadata.modified_at_ms.map(|value| value as i64),
-                    metadata.latest_file_modified_at_ms.map(|value| value as i64),
+                    metadata
+                        .latest_file_modified_at_ms
+                        .map(|value| value as i64),
                     metadata.file_count as i64,
                     metadata.total_size_bytes as i64,
                     metadata.als_file_count as i64,
@@ -2034,7 +2057,9 @@ impl StorageState {
                         event.parameter_display_value.as_deref(),
                         event.previous_parameter_display_value.as_deref(),
                         // SQLite has no boolean type; store is_quantized as 0/1, NULL if absent.
-                        event.parameter_is_quantized.map(|quantized| quantized as i64),
+                        event
+                            .parameter_is_quantized
+                            .map(|quantized| quantized as i64),
                         event.clip_name.as_deref(),
                         event.sample_name.as_deref(),
                         event.file_path.as_deref(),
@@ -2314,8 +2339,9 @@ impl StorageState {
                     .execute(
                         "INSERT OR IGNORE INTO devices
                          (id, session_id, track_id, ableton_id, name, role, vendor,
-                          plugin_format, preset_name, chain_index, enabled)
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, NULL, NULL, ?7, ?8)",
+                          plugin_format, preset_name, class_name, chain_index, enabled,
+                          initial_enabled, host_parameter_count)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, NULL, ?7, ?8, ?9, ?10, ?11, ?12)",
                         params![
                             device_id,
                             session_id,
@@ -2323,8 +2349,12 @@ impl StorageState {
                             device.ableton_id,
                             device.name,
                             device.role.as_str(),
+                            device.preset_name,
+                            device.class_name,
                             d_index as i64,
-                            device.enabled as i64
+                            device.enabled as i64,
+                            device.initial_enabled as i64,
+                            device.host_parameter_count as i64,
                         ],
                     )
                     .map_err(|error| format!("Failed to insert device: {}", error))?;
@@ -2396,9 +2426,10 @@ impl StorageState {
                       before_value, after_value, before_value_percent, after_value_percent,
                       unit, before_display_value, after_display_value, is_quantized,
                       reason, automation_start_ms, automation_start_position, automation_end_position,
+                      observed_arrangement_position, observed_arrangement_beats,
                       changed_at_ms, source_event_id)
                      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15,
-                             ?16, ?17, ?18, ?19, ?20, ?21, ?22)",
+                             ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24)",
                 )
                 .map_err(|error| {
                     format!("Failed to prepare parameter_changes insert: {}", error)
@@ -2432,6 +2463,8 @@ impl StorageState {
                         change.automation_start_ms.map(|value| value as i64),
                         change.automation_start_position,
                         change.automation_end_position,
+                        change.observed_arrangement_position,
+                        change.observed_arrangement_beats,
                         change.changed_at_ms as i64,
                         source_event_id
                     ])
@@ -2510,7 +2543,7 @@ impl StorageState {
                         before_value, after_value, before_value_percent, after_value_percent,
                         unit, before_display_value, after_display_value, is_quantized,
                         reason, automation_start_ms, automation_start_position, automation_end_position,
-                        changed_at_ms
+                        observed_arrangement_position, observed_arrangement_beats, changed_at_ms
                  FROM parameter_changes WHERE session_id = ?1
                  ORDER BY changed_at_ms ASC, id ASC",
             )
@@ -2540,7 +2573,9 @@ impl StorageState {
                         .and_then(|value| u64::try_from(value).ok()),
                     automation_start_position: row.get(17)?,
                     automation_end_position: row.get(18)?,
-                    changed_at_ms: row.get::<_, i64>(19)? as u64,
+                    observed_arrangement_position: row.get(19)?,
+                    observed_arrangement_beats: row.get(20)?,
+                    changed_at_ms: row.get::<_, i64>(21)? as u64,
                 })
             })
             .map_err(|error| format!("Failed to read parameter_changes: {}", error))?;
@@ -2584,13 +2619,9 @@ impl StorageState {
                 row.map_err(|error| format!("Failed to read note edit row: {}", error))?;
             // Unparseable rows are skipped, not fatal — one malformed payload
             // must not cost the producer the rest of the session's edits.
-            if let Some(edit) = parse_note_edit(
-                id,
-                timestamp_ms,
-                track_name,
-                track_id,
-                payload.as_deref(),
-            ) {
+            if let Some(edit) =
+                parse_note_edit(id, timestamp_ms, track_name, track_id, payload.as_deref())
+            {
                 edits.push(edit);
             }
         }
@@ -2605,7 +2636,7 @@ impl StorageState {
         let connection = self.open_connection()?;
         let mut statement = connection
             .prepare(
-                "SELECT id, event_type, timestamp_ms, track_name, track_id, clip_name, sample_name
+                "SELECT id, event_type, timestamp_ms, track_name, track_id, clip_name, sample_name, payload
                  FROM events
                  WHERE session_id = ?1
                    AND event_type IN ('sample_added', 'audio_clip_added', 'midi_clip_created', 'audio_clip_recorded', 'midi_clip_recorded', 'clip_created')
@@ -2615,6 +2646,13 @@ impl StorageState {
 
         let rows = statement
             .query_map(params![session_id], |row| {
+                let payload: Option<String> = row.get(7)?;
+                let (
+                    observed_arrangement_position,
+                    observed_arrangement_beats,
+                    arrangement_start_beats,
+                    arrangement_end_beats,
+                ) = arrangement_context_from_payload(payload.as_deref());
                 Ok(TimelineClipEvent {
                     id: format!("clip-event-{}", row.get::<_, i64>(0)?),
                     event_type: row.get(1)?,
@@ -2623,6 +2661,10 @@ impl StorageState {
                     track_id: row.get(4)?,
                     clip_name: row.get(5)?,
                     sample_name: row.get(6)?,
+                    observed_arrangement_position,
+                    observed_arrangement_beats,
+                    arrangement_start_beats,
+                    arrangement_end_beats,
                 })
             })
             .map_err(|error| format!("Failed to read timeline clip events: {}", error))?;
@@ -2943,9 +2985,12 @@ fn insert_parameter(
     transaction
         .execute(
             "INSERT OR IGNORE INTO parameters
-             (id, session_id, device_id, parent_parameter_id, name, value, unit, min, max,
-              normalized_value, chain_index)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, ?7, ?8, ?9, ?10)",
+             (id, session_id, device_id, parent_parameter_id, name, value, display_value,
+              initial_value, initial_display_value, default_value, unit, min, max,
+              normalized_value, is_quantized, value_items, automation_state,
+              parameter_state, is_enabled, chain_index)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, NULL, ?11, ?12,
+                     ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
             params![
                 param_id,
                 session_id,
@@ -2953,10 +2998,19 @@ fn insert_parameter(
                 parent_id,
                 param.name,
                 param.value,
+                param.display_value,
+                param.initial_value,
+                param.initial_display_value,
+                param.default_value,
                 param.min,
                 param.max,
                 param.normalized_value,
-                index as i64
+                param.is_quantized.map(|value| value as i64),
+                serde_json::to_string(&param.value_items).unwrap_or_else(|_| "[]".to_string()),
+                param.automation_state,
+                param.state,
+                param.is_enabled.map(|value| value as i64),
+                index as i64,
             ],
         )
         .map_err(|error| format!("Failed to insert parameter: {}", error))?;
@@ -2985,8 +3039,8 @@ fn write_moment_targets(
     Ok(())
 }
 
-/// The most recent snapshot for a session, preferring a deep capture (tracks with
-/// devices) over a shallow one. Returns an empty tree if none exists.
+/// The newest structural snapshot, enriched with the first state in which each
+/// device and parameter appeared across the immutable checkpoint history.
 fn latest_session_tree(
     connection: &Connection,
     session_id: &str,
@@ -2996,7 +3050,7 @@ fn latest_session_tree(
             "SELECT payload FROM events
              WHERE session_id = ?1
                AND event_type IN ('live_set_snapshot', 'session_snapshot', 'set_snapshot')
-             ORDER BY timestamp_ms DESC, id DESC",
+             ORDER BY timestamp_ms ASC, id ASC",
         )
         .map_err(|error| format!("Failed to prepare snapshot query: {}", error))?;
 
@@ -3006,7 +3060,9 @@ fn latest_session_tree(
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| format!("Failed to collect snapshots: {}", error))?;
 
-    let mut fallback: Option<Vec<ParsedTrack>> = None;
+    let mut chronological: Vec<Vec<ParsedTrack>> = Vec::new();
+    let mut latest_deep: Option<Vec<ParsedTrack>> = None;
+    let mut latest_any: Option<Vec<ParsedTrack>> = None;
     for payload in payloads.into_iter().flatten() {
         let Ok(value) = serde_json::from_str::<Value>(&payload) else {
             continue;
@@ -3016,14 +3072,15 @@ fn latest_session_tree(
             continue;
         }
         if tree.iter().any(|track| !track.devices.is_empty()) {
-            return Ok(tree);
+            latest_deep = Some(tree.clone());
         }
-        if fallback.is_none() {
-            fallback = Some(tree);
-        }
+        latest_any = Some(tree.clone());
+        chronological.push(tree);
     }
 
-    Ok(fallback.unwrap_or_default())
+    let mut latest = latest_deep.or(latest_any).unwrap_or_default();
+    apply_first_observed_states(&mut latest, &chronological);
+    Ok(latest)
 }
 
 /// Build a track/device tree from the incremental event stream, for when no deep
@@ -3230,11 +3287,10 @@ fn collect_change_events(
     let rows = statement
         .query_map(params![session_id], |row| {
             let payload: Option<String> = row.get(14)?;
-            let (
-                automation_start_ms,
-                automation_start_position,
-                automation_end_position,
-            ) = automation_span_from_payload(payload.as_deref());
+            let (automation_start_ms, automation_start_position, automation_end_position) =
+                automation_span_from_payload(payload.as_deref());
+            let (observed_arrangement_position, observed_arrangement_beats, _, _) =
+                arrangement_context_from_payload(payload.as_deref());
             Ok(ChangeEvent {
                 event_id: row.get::<_, i64>(0)?,
                 event_type: row.get(1)?,
@@ -3253,6 +3309,8 @@ fn collect_change_events(
                 automation_start_ms,
                 automation_start_position,
                 automation_end_position,
+                observed_arrangement_position,
+                observed_arrangement_beats,
             })
         })
         .map_err(|error| format!("Failed to read change events: {}", error))?;
@@ -3264,7 +3322,9 @@ fn collect_change_events(
 /// Automation's bars/beats labels are source data, not a projection guess. The
 /// event payload holds them because the events table is the immutable record;
 /// this parser carries them into the normalized parameter-change row.
-fn automation_span_from_payload(payload: Option<&str>) -> (Option<u64>, Option<String>, Option<String>) {
+fn automation_span_from_payload(
+    payload: Option<&str>,
+) -> (Option<u64>, Option<String>, Option<String>) {
     let Some(payload) = payload else {
         return (None, None, None);
     };
@@ -3285,6 +3345,36 @@ fn automation_span_from_payload(payload: Option<&str>) -> (Option<u64>, Option<S
     )
 }
 
+/// Musical-location context common to every new bridge event. The observed
+/// values locate the playhead at callback time; the optional start/end range is
+/// the object's own durable Arrangement location. They must remain distinct.
+fn arrangement_context_from_payload(
+    payload: Option<&str>,
+) -> (Option<String>, Option<f64>, Option<f64>, Option<f64>) {
+    let Some(payload) = payload else {
+        return (None, None, None, None);
+    };
+    let Ok(payload) = serde_json::from_str::<Value>(payload) else {
+        return (None, None, None, None);
+    };
+
+    (
+        payload
+            .get("observed_arrangement_position")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        payload
+            .get("observed_arrangement_beats")
+            .and_then(Value::as_f64),
+        payload
+            .get("arrangement_start_beats")
+            .and_then(Value::as_f64),
+        payload
+            .get("arrangement_end_beats")
+            .and_then(Value::as_f64),
+    )
+}
+
 /// A flat parameter row from the DB, assembled into a nested tree afterwards.
 struct ParamRow {
     id: String,
@@ -3292,10 +3382,19 @@ struct ParamRow {
     parent: Option<String>,
     name: Option<String>,
     value: Option<f64>,
+    display_value: Option<String>,
+    initial_value: Option<f64>,
+    initial_display_value: Option<String>,
+    default_value: Option<f64>,
     unit: Option<String>,
     min: Option<f64>,
     max: Option<f64>,
     normalized: Option<f64>,
+    is_quantized: Option<bool>,
+    value_items: Vec<String>,
+    automation_state: Option<i64>,
+    state: Option<i64>,
+    is_enabled: Option<bool>,
 }
 
 fn load_parameters_by_device(
@@ -3304,7 +3403,10 @@ fn load_parameters_by_device(
 ) -> Result<HashMap<String, Vec<ParameterObj>>, String> {
     let mut statement = connection
         .prepare(
-            "SELECT id, device_id, parent_parameter_id, name, value, unit, min, max, normalized_value
+            "SELECT id, device_id, parent_parameter_id, name, value, display_value,
+                    initial_value, initial_display_value, default_value, unit, min, max,
+                    normalized_value, is_quantized, value_items, automation_state,
+                    parameter_state, is_enabled
              FROM parameters WHERE session_id = ?1
              ORDER BY chain_index ASC, id ASC",
         )
@@ -3318,10 +3420,22 @@ fn load_parameters_by_device(
                 parent: row.get(2)?,
                 name: row.get(3)?,
                 value: row.get(4)?,
-                unit: row.get(5)?,
-                min: row.get(6)?,
-                max: row.get(7)?,
-                normalized: row.get(8)?,
+                display_value: row.get(5)?,
+                initial_value: row.get(6)?,
+                initial_display_value: row.get(7)?,
+                default_value: row.get(8)?,
+                unit: row.get(9)?,
+                min: row.get(10)?,
+                max: row.get(11)?,
+                normalized: row.get(12)?,
+                is_quantized: row.get::<_, Option<i64>>(13)?.map(|value| value != 0),
+                value_items: row
+                    .get::<_, Option<String>>(14)?
+                    .and_then(|json| serde_json::from_str(&json).ok())
+                    .unwrap_or_default(),
+                automation_state: row.get(15)?,
+                state: row.get(16)?,
+                is_enabled: row.get::<_, Option<i64>>(17)?.map(|value| value != 0),
             })
         })
         .map_err(|error| format!("Failed to read parameters: {}", error))?
@@ -3353,10 +3467,19 @@ fn build_param_objs(parent: Option<&str>, rows: &[ParamRow]) -> Vec<ParameterObj
             parent_parameter_id: row.parent.clone(),
             name: row.name.clone(),
             value: row.value,
+            display_value: row.display_value.clone(),
+            initial_value: row.initial_value,
+            initial_display_value: row.initial_display_value.clone(),
+            default_value: row.default_value,
             unit: row.unit.clone(),
             min: row.min,
             max: row.max,
             normalized_value: row.normalized,
+            is_quantized: row.is_quantized,
+            value_items: row.value_items.clone(),
+            automation_state: row.automation_state,
+            state: row.state,
+            is_enabled: row.is_enabled,
             children: build_param_objs(Some(&row.id), rows),
         })
         .collect()
@@ -3369,7 +3492,8 @@ fn load_devices_by_track(
 ) -> Result<HashMap<String, Vec<DeviceObj>>, String> {
     let mut statement = connection
         .prepare(
-            "SELECT id, track_id, ableton_id, name, role, chain_index, enabled
+            "SELECT id, track_id, ableton_id, name, role, chain_index, enabled,
+                    initial_enabled, host_parameter_count, class_name, preset_name
              FROM devices WHERE session_id = ?1
              ORDER BY chain_index ASC, id ASC",
         )
@@ -3388,6 +3512,10 @@ fn load_devices_by_track(
                 role: DeviceRole::from_str(&role),
                 chain_index: row.get::<_, Option<i64>>(5)?.unwrap_or(0),
                 enabled: row.get::<_, i64>(6)? != 0,
+                initial_enabled: row.get::<_, i64>(7)? != 0,
+                host_parameter_count: row.get::<_, i64>(8)?.max(0) as usize,
+                class_name: row.get(9)?,
+                preset_name: row.get(10)?,
             })
         })
         .map_err(|error| format!("Failed to read devices: {}", error))?;
@@ -3583,8 +3711,11 @@ pub fn initialize_database(db_path: &Path) -> rusqlite::Result<()> {
             vendor TEXT,
             plugin_format TEXT,            -- native | vst | vst3 | au | aax | unknown
             preset_name TEXT,
+            class_name TEXT,
             chain_index INTEGER NOT NULL,
             enabled INTEGER NOT NULL DEFAULT 1,
+            initial_enabled INTEGER NOT NULL DEFAULT 1,
+            host_parameter_count INTEGER NOT NULL DEFAULT 0,
             FOREIGN KEY(session_id) REFERENCES sessions(id)
         );
 
@@ -3598,10 +3729,19 @@ pub fn initialize_database(db_path: &Path) -> rusqlite::Result<()> {
             parent_parameter_id TEXT,      -- nested params (children[])
             name TEXT,
             value REAL,
+            display_value TEXT,
+            initial_value REAL,
+            initial_display_value TEXT,
+            default_value REAL,
             unit TEXT,
             min REAL,
             max REAL,
             normalized_value REAL,
+            is_quantized INTEGER,
+            value_items TEXT,
+            automation_state INTEGER,
+            parameter_state INTEGER,
+            is_enabled INTEGER,
             chain_index INTEGER,
             FOREIGN KEY(session_id) REFERENCES sessions(id)
         );
@@ -3630,6 +3770,8 @@ pub fn initialize_database(db_path: &Path) -> rusqlite::Result<()> {
             automation_start_ms INTEGER,
             automation_start_position TEXT,
             automation_end_position TEXT,
+            observed_arrangement_position TEXT,
+            observed_arrangement_beats REAL,
             changed_at_ms INTEGER NOT NULL,
             source_event_id INTEGER,
             FOREIGN KEY(session_id) REFERENCES sessions(id)
@@ -3679,6 +3821,8 @@ pub fn initialize_database(db_path: &Path) -> rusqlite::Result<()> {
     )?;
     migrate_event_columns(&connection)?;
     migrate_parameter_change_columns(&connection)?;
+    migrate_device_state_columns(&connection)?;
+    migrate_parameter_state_columns(&connection)?;
     backfill_projects(&connection)?;
     crate::organizer::initialize_schema(&connection)?;
 
@@ -3931,6 +4075,8 @@ fn migrate_parameter_change_columns(connection: &Connection) -> rusqlite::Result
         ("automation_start_ms", "INTEGER"),
         ("automation_start_position", "TEXT"),
         ("automation_end_position", "TEXT"),
+        ("observed_arrangement_position", "TEXT"),
+        ("observed_arrangement_beats", "REAL"),
     ];
 
     for (name, sql_type) in COLUMNS {
@@ -3941,6 +4087,54 @@ fn migrate_parameter_change_columns(connection: &Connection) -> rusqlite::Result
         }
     }
 
+    Ok(())
+}
+
+fn migrate_device_state_columns(connection: &Connection) -> rusqlite::Result<()> {
+    let existing: std::collections::HashSet<String> = {
+        let mut statement = connection.prepare("PRAGMA table_info(devices)")?;
+        let names = statement.query_map([], |row| row.get::<_, String>(1))?;
+        names.collect::<rusqlite::Result<_>>()?
+    };
+    const COLUMNS: &[(&str, &str)] = &[
+        ("class_name", "TEXT"),
+        ("initial_enabled", "INTEGER NOT NULL DEFAULT 1"),
+        ("host_parameter_count", "INTEGER NOT NULL DEFAULT 0"),
+    ];
+    for (name, sql_type) in COLUMNS {
+        if !existing.contains(*name) {
+            connection.execute_batch(&format!(
+                "ALTER TABLE devices ADD COLUMN {name} {sql_type};"
+            ))?;
+        }
+    }
+    Ok(())
+}
+
+fn migrate_parameter_state_columns(connection: &Connection) -> rusqlite::Result<()> {
+    let existing: std::collections::HashSet<String> = {
+        let mut statement = connection.prepare("PRAGMA table_info(parameters)")?;
+        let names = statement.query_map([], |row| row.get::<_, String>(1))?;
+        names.collect::<rusqlite::Result<_>>()?
+    };
+    const COLUMNS: &[(&str, &str)] = &[
+        ("display_value", "TEXT"),
+        ("initial_value", "REAL"),
+        ("initial_display_value", "TEXT"),
+        ("default_value", "REAL"),
+        ("is_quantized", "INTEGER"),
+        ("value_items", "TEXT"),
+        ("automation_state", "INTEGER"),
+        ("parameter_state", "INTEGER"),
+        ("is_enabled", "INTEGER"),
+    ];
+    for (name, sql_type) in COLUMNS {
+        if !existing.contains(*name) {
+            connection.execute_batch(&format!(
+                "ALTER TABLE parameters ADD COLUMN {name} {sql_type};"
+            ))?;
+        }
+    }
     Ok(())
 }
 
@@ -3981,6 +4175,23 @@ mod tests {
         let _ = std::fs::remove_file(path.with_extension("sqlite-shm"));
     }
 
+    #[test]
+    fn arrangement_context_keeps_observation_and_object_range_distinct() {
+        let payload = serde_json::json!({
+            "observed_arrangement_position": "Bar 41 · Beat 3",
+            "observed_arrangement_beats": 162.0,
+            "arrangement_start_beats": 128.0,
+            "arrangement_end_beats": 132.0
+        })
+        .to_string();
+
+        let context = arrangement_context_from_payload(Some(&payload));
+        assert_eq!(context.0.as_deref(), Some("Bar 41 · Beat 3"));
+        assert_eq!(context.1, Some(162.0));
+        assert_eq!(context.2, Some(128.0));
+        assert_eq!(context.3, Some(132.0));
+    }
+
     /// A minimal session-owned event; tests set the fields they care about.
     fn event(session_id: &str, event_type: &str) -> RecallEvent {
         RecallEvent {
@@ -4013,6 +4224,10 @@ mod tests {
             device_chain: None,
             bpm: None,
             playing: None,
+            observed_arrangement_position: None,
+            observed_arrangement_beats: None,
+            arrangement_start_beats: None,
+            arrangement_end_beats: None,
         }
     }
 
@@ -4168,7 +4383,11 @@ mod tests {
     fn rescan_adds_a_take_per_als_version_and_is_idempotent() {
         let (storage, path) = temp_storage();
         let project_id = storage
-            .create_project("Idols Perseus", None, Some("/Projects/Idols Perseus Project"))
+            .create_project(
+                "Idols Perseus",
+                None,
+                Some("/Projects/Idols Perseus Project"),
+            )
             .unwrap();
 
         let files = |names: &[&str]| -> Vec<(String, String, u64)> {
@@ -4211,7 +4430,15 @@ mod tests {
             .rescan_project_takes(&project_id, &files(&["v7", "v8", "v9", "v10"]))
             .unwrap();
         assert_eq!(after_save, 1);
-        assert_eq!(storage.list_projects(false).unwrap().remove(0).captures.len(), 4);
+        assert_eq!(
+            storage
+                .list_projects(false)
+                .unwrap()
+                .remove(0)
+                .captures
+                .len(),
+            4
+        );
 
         cleanup(&path);
     }
@@ -4220,7 +4447,11 @@ mod tests {
     fn scanned_takes_report_their_file_date_not_the_scan_date() {
         let (storage, path) = temp_storage();
         let project_id = storage
-            .create_project("Idols Perseus", None, Some("/Projects/Idols Perseus Project"))
+            .create_project(
+                "Idols Perseus",
+                None,
+                Some("/Projects/Idols Perseus Project"),
+            )
             .unwrap();
 
         // A version last saved long ago (mtime well in the past). Connecting a
@@ -4253,7 +4484,11 @@ mod tests {
     fn opening_a_project_resumes_the_take_for_the_open_als() {
         let (storage, path) = temp_storage();
         let project_id = storage
-            .create_project("Idols Perseus", None, Some("/Projects/Idols Perseus Project"))
+            .create_project(
+                "Idols Perseus",
+                None,
+                Some("/Projects/Idols Perseus Project"),
+            )
             .unwrap();
         let als = |name: &str| format!("/Projects/Idols Perseus Project/{name}.als");
 
@@ -4285,9 +4520,7 @@ mod tests {
         assert!(opened.active);
         assert!(opened.ended_at_ms.is_none());
 
-        let v8_after = storage
-            .load_session(&scanned_v8.id)
-            .unwrap();
+        let v8_after = storage.load_session(&scanned_v8.id).unwrap();
         assert_eq!(v8_after.take_origin, "recorded");
         assert_eq!(v8_after.als_path.as_deref(), Some(als("v8").as_str()));
 
@@ -4302,7 +4535,9 @@ mod tests {
             .activate_take_for_open_file(Some(&project_id), Some(&als("v9")))
             .unwrap();
         assert_ne!(fresh.session_id.as_deref(), Some(scanned_v8.id.as_str()));
-        let fresh_take = storage.load_session(fresh.session_id.as_deref().unwrap()).unwrap();
+        let fresh_take = storage
+            .load_session(fresh.session_id.as_deref().unwrap())
+            .unwrap();
         assert_eq!(fresh_take.als_path.as_deref(), Some(als("v9").as_str()));
         assert_eq!(fresh_take.take_origin, "recorded");
 
@@ -4334,7 +4569,10 @@ mod tests {
             .start_fresh_session_for_open_file(Some(&project_id), Some(als))
             .unwrap();
         let second_id = second.session_id.unwrap();
-        assert_ne!(second_id, first_id, "idle work must not resume the prior take");
+        assert_ne!(
+            second_id, first_id,
+            "idle work must not resume the prior take"
+        );
 
         let second_take = storage.load_session(&second_id).unwrap();
         assert_eq!(second_take.project_id.as_deref(), Some(project_id.as_str()));
@@ -4343,7 +4581,10 @@ mod tests {
 
         let takes = storage.list_projects(false).unwrap().remove(0).captures;
         assert_eq!(
-            takes.iter().filter(|take| take.als_path.as_deref() == Some(als)).count(),
+            takes
+                .iter()
+                .filter(|take| take.als_path.as_deref() == Some(als))
+                .count(),
             2,
             "two sittings can share one saved set without merging"
         );
@@ -4354,14 +4595,21 @@ mod tests {
     fn relinking_a_take_repoints_it_and_absorbs_the_scanned_placeholder() {
         let (storage, path) = temp_storage();
         let project_id = storage
-            .create_project("Idols Perseus", None, Some("/Projects/Idols Perseus Project"))
+            .create_project(
+                "Idols Perseus",
+                None,
+                Some("/Projects/Idols Perseus Project"),
+            )
             .unwrap();
         let als = |name: &str| format!("/Projects/Idols Perseus Project/{name}.als");
 
         storage
             .rescan_project_takes(
                 &project_id,
-                &[("v8".into(), als("v8"), 1_000), ("v8 final".into(), als("v8 final"), 2_000)],
+                &[
+                    ("v8".into(), als("v8"), 1_000),
+                    ("v8 final".into(), als("v8 final"), 2_000),
+                ],
             )
             .unwrap();
 
@@ -4380,7 +4628,11 @@ mod tests {
             .iter()
             .filter(|take| take.als_path.as_deref() == Some(als("v8 final").as_str()))
             .collect();
-        assert_eq!(final_takes.len(), 1, "placeholder should be absorbed, not duplicated");
+        assert_eq!(
+            final_takes.len(),
+            1,
+            "placeholder should be absorbed, not duplicated"
+        );
         assert_eq!(final_takes[0].id, recorded_id);
         assert_eq!(final_takes[0].take_origin, "recorded");
 
@@ -4513,7 +4765,9 @@ mod tests {
             .session_id
             .unwrap();
 
-        assert!(storage.is_session_empty_and_unanchored(&session_id).unwrap());
+        assert!(storage
+            .is_session_empty_and_unanchored(&session_id)
+            .unwrap());
 
         cleanup(&path);
     }
@@ -4531,7 +4785,9 @@ mod tests {
             .save_events_batch(&[event(&session_id, "heartbeat")])
             .unwrap();
 
-        assert!(!storage.is_session_empty_and_unanchored(&session_id).unwrap());
+        assert!(!storage
+            .is_session_empty_and_unanchored(&session_id)
+            .unwrap());
 
         cleanup(&path);
     }
@@ -4554,7 +4810,9 @@ mod tests {
             .unwrap();
         drop(connection);
 
-        assert!(!storage.is_session_empty_and_unanchored(&session_id).unwrap());
+        assert!(!storage
+            .is_session_empty_and_unanchored(&session_id)
+            .unwrap());
 
         cleanup(&path);
     }
@@ -4628,7 +4886,9 @@ mod tests {
     fn session_last_activity_is_none_for_an_unknown_session() {
         let (storage, path) = temp_storage();
         assert_eq!(
-            storage.session_last_activity_ms("session-does-not-exist").unwrap(),
+            storage
+                .session_last_activity_ms("session-does-not-exist")
+                .unwrap(),
             None
         );
         cleanup(&path);
@@ -4678,7 +4938,10 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(count, 0, "the stale empty session should be deleted, not left behind");
+        assert_eq!(
+            count, 0,
+            "the stale empty session should be deleted, not left behind"
+        );
 
         cleanup(&path);
     }
@@ -4985,8 +5248,24 @@ mod tests {
         storage
             .save_events_batch(&[
                 snapshot_event(&session_id, snapshot),
-                param_change_with_id(&session_id, 1_000, "Serum 2", "100", "Serum 2", "Cutoff", 0.2),
-                param_change_with_id(&session_id, 2_000, "Serum 2", "101", "Serum 2", "Cutoff", 0.4),
+                param_change_with_id(
+                    &session_id,
+                    1_000,
+                    "Serum 2",
+                    "100",
+                    "Serum 2",
+                    "Cutoff",
+                    0.2,
+                ),
+                param_change_with_id(
+                    &session_id,
+                    2_000,
+                    "Serum 2",
+                    "101",
+                    "Serum 2",
+                    "Cutoff",
+                    0.4,
+                ),
             ])
             .unwrap();
 
@@ -5089,6 +5368,116 @@ mod tests {
     }
 
     #[test]
+    fn materialize_round_trips_device_checkpoint_and_keeps_baseline_on_rebuild() {
+        let (storage, path) = temp_storage();
+        let session_id = storage
+            .resume_or_create_active_session()
+            .unwrap()
+            .session_id
+            .unwrap();
+        let checkpoint = |value: f64, display: &str, active: bool| {
+            serde_json::json!({
+                "snapshot_schema_version": 2,
+                "tracks": [{
+                    "index": 0, "id": "100", "name": "Lead", "has_midi_input": true,
+                    "devices": [{
+                        "id": "200", "name": "Serum 2", "type": 1,
+                        "is_active": active, "class_display_name": "Serum 2 VST3",
+                        "preset_name": "Glass Lead", "host_parameter_count": 1,
+                        "parameters": [{
+                            "id": "300", "name": "Arp", "value": value,
+                            "display_value": display, "min": 0.0, "max": 1.0,
+                            "is_quantized": true, "value_items": ["Off", "On"],
+                            "automation_state": 0, "state": 0, "is_enabled": true
+                        }]
+                    }]
+                }]
+            })
+        };
+        let mut first = snapshot_event(&session_id, checkpoint(0.0, "Off", true));
+        first.timestamp_ms = 100;
+        let mut reconciled = snapshot_event(&session_id, checkpoint(1.0, "On", false));
+        reconciled.timestamp_ms = 200;
+        storage.save_events_batch(&[first, reconciled]).unwrap();
+
+        for _ in 0..2 {
+            storage.materialize_session_schema(&session_id).unwrap();
+            let schema = storage.get_project_schema(&session_id).unwrap();
+            let device = &schema.tracks[0].devices[0];
+            let parameter = &device.parameters[0];
+            assert_eq!(device.class_name.as_deref(), Some("Serum 2 VST3"));
+            assert_eq!(device.preset_name.as_deref(), Some("Glass Lead"));
+            assert_eq!(device.host_parameter_count, 1);
+            assert!(device.initial_enabled);
+            assert!(!device.enabled);
+            assert_eq!(parameter.initial_display_value.as_deref(), Some("Off"));
+            assert_eq!(parameter.display_value.as_deref(), Some("On"));
+            assert_eq!(parameter.value_items, vec!["Off", "On"]);
+        }
+
+        cleanup(&path);
+    }
+
+    #[test]
+    fn migration_adds_device_checkpoint_columns_to_old_projection() {
+        let name = format!(
+            "recall-test-checkpoint-migrate-{}-{}.sqlite",
+            std::process::id(),
+            COUNTER.fetch_add(1, Ordering::Relaxed)
+        );
+        let path = std::env::temp_dir().join(name);
+        let _ = std::fs::remove_file(&path);
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE devices (id TEXT PRIMARY KEY, enabled INTEGER NOT NULL DEFAULT 1);
+                 CREATE TABLE parameters (id TEXT PRIMARY KEY, value REAL);",
+            )
+            .unwrap();
+
+        migrate_device_state_columns(&connection).unwrap();
+        migrate_parameter_state_columns(&connection).unwrap();
+
+        let device_columns: std::collections::HashSet<String> = {
+            let mut statement = connection.prepare("PRAGMA table_info(devices)").unwrap();
+            statement
+                .query_map([], |row| row.get::<_, String>(1))
+                .unwrap()
+                .collect::<rusqlite::Result<_>>()
+                .unwrap()
+        };
+        let parameter_columns: std::collections::HashSet<String> = {
+            let mut statement = connection.prepare("PRAGMA table_info(parameters)").unwrap();
+            statement
+                .query_map([], |row| row.get::<_, String>(1))
+                .unwrap()
+                .collect::<rusqlite::Result<_>>()
+                .unwrap()
+        };
+        for expected in ["class_name", "initial_enabled", "host_parameter_count"] {
+            assert!(device_columns.contains(expected));
+        }
+        for expected in [
+            "display_value",
+            "initial_value",
+            "initial_display_value",
+            "default_value",
+            "is_quantized",
+            "value_items",
+            "automation_state",
+            "parameter_state",
+            "is_enabled",
+        ] {
+            assert!(parameter_columns.contains(expected));
+        }
+
+        migrate_device_state_columns(&connection).unwrap();
+        migrate_parameter_state_columns(&connection).unwrap();
+        drop(connection);
+        cleanup(&path);
+    }
+
+    #[test]
     fn materialize_keeps_mixer_moves_without_a_snapshot_mixer_device() {
         let (storage, path) = temp_storage();
         let session_id = storage
@@ -5128,7 +5517,8 @@ mod tests {
             .session_id
             .unwrap();
 
-        let mut automation = param_change(&session_id, 1_000, "Lead", "Auto Filter", "Cutoff", 0.72);
+        let mut automation =
+            param_change(&session_id, 1_000, "Lead", "Auto Filter", "Cutoff", 0.72);
         automation.event_type = "automation_created".into();
         automation.track_id = Some("101".into());
         automation.previous_parameter_value = Some(0.5);

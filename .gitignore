@@ -36,6 +36,7 @@ logs/
 # Python bytecode
 __pycache__/
 *.pyc
+.pytest_cache/
 
 # `tauri icon` emits Android and iOS sets on every run. Recall is a Windows
 # desktop app, so they are ~40 files of dead weight that would otherwise get

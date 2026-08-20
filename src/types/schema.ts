@@ -29,10 +29,19 @@ export type ParameterObj = {
   parent_parameter_id: string | null;
   name: string | null;
   value: number | null;
+  display_value: string | null;
+  initial_value: number | null;
+  initial_display_value: string | null;
+  default_value: number | null;
   unit: string | null;
   min: number | null;
   max: number | null;
   normalized_value: number | null;
+  is_quantized: boolean | null;
+  value_items: string[];
+  automation_state: number | null;
+  state: number | null;
+  is_enabled: boolean | null;
   children: ParameterObj[];
 };
 
@@ -44,6 +53,10 @@ export type DeviceObj = {
   role: DeviceRole;
   chain_index: number;
   enabled: boolean;
+  initial_enabled: boolean;
+  host_parameter_count: number;
+  class_name: string | null;
+  preset_name: string | null;
   parameters: ParameterObj[];
 };
 
@@ -98,6 +111,8 @@ export type ParameterChange = {
   automation_start_ms: number | null;
   automation_start_position: string | null;
   automation_end_position: string | null;
+  observed_arrangement_position?: string | null;
+  observed_arrangement_beats?: number | null;
   changed_at_ms: number;
 };
 
@@ -145,6 +160,10 @@ export type NoteEdit = {
   velocity_mean: number | null;
   length_beats: number | null;
   summary: string | null;
+  observed_arrangement_position?: string | null;
+  observed_arrangement_beats?: number | null;
+  arrangement_start_beats?: number | null;
+  arrangement_end_beats?: number | null;
   changed_at_ms: number;
 };
 
@@ -161,6 +180,10 @@ export type TimelineClipEvent = {
   track_id: string | null;
   clip_name: string | null;
   sample_name: string | null;
+  observed_arrangement_position?: string | null;
+  observed_arrangement_beats?: number | null;
+  arrangement_start_beats?: number | null;
+  arrangement_end_beats?: number | null;
   changed_at_ms: number;
 };
 

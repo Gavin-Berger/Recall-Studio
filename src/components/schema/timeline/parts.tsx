@@ -5,6 +5,70 @@
 
 import type { Activity } from "./types";
 import { describeAutomationWriteObservation, formatMoveValue } from "./format";
+import { area as shapeArea, curveBasis, line as shapeLine } from "d3-shape";
+
+// A session-level gesture waveform. D3 supplies the same smooth interpolation
+// producers recognize from audio editors, but the amplitude comes from Recall's
+// captured move density rather than an invented decorative waveform.
+export function SessionMemoryWave({
+  levels,
+  gradientId,
+}: {
+  levels: number[];
+  gradientId: string;
+}) {
+  const width = 320;
+  const middle = 36;
+  const points = levels.map((level, index) => ({
+    x: levels.length <= 1 ? 0 : (index / (levels.length - 1)) * width,
+    amplitude: 2 + level * 28,
+    active: level > 0,
+  }));
+  const body = shapeArea<(typeof points)[number]>()
+    .x((point) => point.x)
+    .y0((point) => middle - point.amplitude)
+    .y1((point) => middle + point.amplitude)
+    .curve(curveBasis)(points);
+  const crest = shapeLine<(typeof points)[number]>()
+    .x((point) => point.x)
+    .y((point) => middle - point.amplitude)
+    .curve(curveBasis)(points);
+  const inner = shapeLine<(typeof points)[number]>()
+    .x((point) => point.x)
+    .y((point) => middle - point.amplitude * 0.36)
+    .curve(curveBasis)(points);
+
+  return (
+    <svg
+      className="tl-session-wave"
+      viewBox={`0 0 ${width} 72`}
+      preserveAspectRatio="none"
+      aria-hidden="true"
+    >
+      <defs>
+        <linearGradient id={gradientId} x1="0" y1="0" x2="1" y2="0">
+          <stop offset="0%" stopColor="currentColor" stopOpacity="0.12" />
+          <stop offset="50%" stopColor="currentColor" stopOpacity="0.34" />
+          <stop offset="100%" stopColor="currentColor" stopOpacity="0.1" />
+        </linearGradient>
+      </defs>
+      <path className="tl-session-wave__body" d={body ?? undefined} style={{ fill: `url(#${gradientId})` }} />
+      <path className="tl-session-wave__crest" d={crest ?? undefined} />
+      <path className="tl-session-wave__inner" d={inner ?? undefined} />
+      {points.map((point, index) =>
+        point.active && index % 4 === 0 ? (
+          <circle
+            key={index}
+            className="tl-session-wave__hit"
+            cx={point.x}
+            cy={middle - point.amplitude}
+            r="1.4"
+          />
+        ) : null,
+      )}
+    </svg>
+  );
+}
 
 export function ScanEmptyState({
   existingSet,

@@ -39,6 +39,31 @@ export function formatWhen(atMs: number, sessionStart: number, spanMs: number): 
   return spanMs > LONG_TAKE_MS ? formatClock(atMs) : formatElapsed(atMs - sessionStart);
 }
 
+// The day a moment belongs to, for a path that spans more than one. A project
+// record can cover months; eleven bare clock times with no day anchor make a
+// three-day gap look like an afternoon.
+export function formatDayLabel(atMs: number): string {
+  return new Date(atMs).toLocaleDateString(undefined, {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+  });
+}
+
+// True when two moments fall on different calendar days in the viewer's own
+// time zone. Compared by local date parts rather than by elapsed milliseconds:
+// 11pm and 1am are eight hours apart in neither direction that matters here,
+// but they are different days and the reader needs to be told so.
+export function isDifferentDay(aMs: number, bMs: number): boolean {
+  const a = new Date(aMs);
+  const b = new Date(bMs);
+  return (
+    a.getFullYear() !== b.getFullYear() ||
+    a.getMonth() !== b.getMonth() ||
+    a.getDate() !== b.getDate()
+  );
+}
+
 // Human, scannable take title. Auto-generated names (the raw "Session <epoch>"
 // the backend assigns) are replaced with the session's date + start time so the
 // header reads like a memory, not a database row.
@@ -96,7 +121,9 @@ export function activeDurationMs(timestamps: number[], nowMs: number | null = nu
   return total;
 }
 
-// Compact human duration for the header ("26 min", "1 hr 12 min", "48 sec").
+// Compact human duration for the header and work gaps ("26 min", "1 hr 12 min",
+// "3 days 16 hr"). Multi-day gaps should read like time away from the project,
+// not an implausibly long work stretch measured in hours.
 export function formatDuration(ms: number): string {
   const totalSeconds = Math.max(0, Math.round(ms / 1000));
   if (totalSeconds < 60) return `${totalSeconds} sec`;
@@ -104,6 +131,12 @@ export function formatDuration(ms: number): string {
   if (totalMinutes < 60) return `${totalMinutes} min`;
   const hours = Math.floor(totalMinutes / 60);
   const minutes = totalMinutes % 60;
+  if (hours >= 24) {
+    const days = Math.floor(hours / 24);
+    const remainingHours = hours % 24;
+    const dayLabel = `${days} day${days === 1 ? "" : "s"}`;
+    return remainingHours > 0 ? `${dayLabel} ${remainingHours} hr` : dayLabel;
+  }
   return minutes > 0 ? `${hours} hr ${minutes} min` : `${hours} hr`;
 }
 
@@ -203,12 +236,15 @@ export function describeNoteEdit(item: Activity): string {
 
 export function describeActivity(item: Activity): string {
   if (item.kind === "note") return item.title ?? "Note";
+  if (item.kind === "memory") return item.memorySummary ?? item.memoryTitle ?? "Song change";
   if (item.kind === "noteEdit") {
     return `${clipLabel(item.clipName)}: ${describeNoteEdit(item)}`;
   }
   if (item.kind === "clip") {
     const thing = item.assetName ?? item.clipName ?? "clip";
-    if (item.eventType === "sample_added") return `Sample added: ${thing}`;
+    if (item.eventType === "sample_added" || item.eventType === "audio_clip_added") {
+      return `Sample inserted: ${thing}`;
+    }
     if (item.eventType === "audio_clip_recorded") return `Recorded audio: ${thing}`;
     if (item.eventType === "midi_clip_recorded") return `Recorded MIDI: ${thing}`;
     return `Clip added: ${thing}`;

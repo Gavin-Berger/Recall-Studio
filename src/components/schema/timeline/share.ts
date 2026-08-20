@@ -4,9 +4,13 @@
 // but repeated adjustments to one control are collected into one decision so a
 // producer can read the document instead of decoding a stream of knob events.
 
-import type { CreativeMoment, NoteEdit, ParameterChange } from "../../../types/schema";
+import type { CreativeMoment, NoteEdit, ParameterChange, TimelineClipEvent } from "../../../types/schema";
+import type { SavedSessionEvent } from "../../../types/recall";
 import type { ExportFormat, SessionBlock } from "./types";
-import { formatMoveValue } from "./format";
+import { formatDuration, formatMoveValue } from "./format";
+import { producerMemoryEvents, type ProducerMemoryCategory, type ProducerMemoryEvent } from "./eventMemory";
+import { analyzeSessionSources, normalizedSessionActivities } from "./sessionAnalysis";
+import { describePathCleanup, presentPassage } from "./passagePresenter";
 
 const TIMELINE_BLOCK_GAP_MS = 2 * 60 * 1000;
 const UNKNOWN_VALUE = "—";
@@ -17,7 +21,9 @@ export type ShareTimelineSource = {
   startedAtMs: number | null;
   changes: ParameterChange[];
   noteEdits?: NoteEdit[];
+  clipEvents?: TimelineClipEvent[];
   moments?: CreativeMoment[];
+  sessionEvents?: SavedSessionEvent[];
 };
 
 export type ShareProjectRecord = {
@@ -39,6 +45,44 @@ export type ShareProjectStory = {
     moves: number;
     noteEdits: number;
     activeMs: number;
+  }[];
+};
+
+// A portable, evidence-first version of the same path shown in the app. This
+// deliberately avoids exporting a free-form AI recap: every sentence and step
+// is traceable to ordered captured actions.
+export type ShareSessionPath = {
+  summary: string | null;
+  duplicateReportCount: number;
+  openingStateEventCount: number;
+  steps: {
+    order: number;
+    position: "only" | "start" | "middle" | "finish";
+    label: string;
+    startMs: number;
+    endMs: number;
+    gapBeforeMs: number | null;
+    actionCount: number;
+    controlMoveCount: number;
+    midiEditCount: number;
+    clipEventCount: number;
+    structureEventCount: number;
+    markers: { title: string; note: string | null; atMs: number }[];
+    sources: string[];
+    tracks: string[];
+    // Only tracks the producer acted on, so an exported count of "tracks
+    // balanced" means the same thing the app means by it.
+    tracksTouched: string[];
+    observedArrangementPositions: string[];
+    primaryTrack: string | null;
+    firstAction: string | null;
+    lastAction: string | null;
+    // Rendered by the shared presenter so the file and the screen phrase a step
+    // identically — including the device name and net before → after per control.
+    title: string;
+    breakdown: string | null;
+    where: string | null;
+    controls: { name: string; outcome: string | null; count: number }[];
   }[];
 };
 
@@ -103,12 +147,44 @@ type TimelineEntry =
       endMs: number;
       track: string | null;
       detail: string;
+    }
+  | {
+      kind: "clip";
+      id: string;
+      sourceId: string;
+      sourceLabel: string;
+      atMs: number;
+      endMs: number;
+      track: string;
+      detail: string;
+    }
+  | {
+      kind: "memory";
+      id: string;
+      sourceId: string;
+      sourceLabel: string;
+      atMs: number;
+      endMs: number;
+      track: string | null;
+      title: string;
+      detail: string;
+      category: ProducerMemoryCategory;
     };
 
 type RawTimelineItem =
   | { kind: "move"; source: ShareTimelineSource; atMs: number; change: ParameterChange }
   | { kind: "midi"; source: ShareTimelineSource; atMs: number; edit: NoteEdit }
-  | { kind: "note"; source: ShareTimelineSource; atMs: number; moment: CreativeMoment };
+  | { kind: "note"; source: ShareTimelineSource; atMs: number; moment: CreativeMoment }
+  | { kind: "clip"; source: ShareTimelineSource; atMs: number; event: TimelineClipEvent }
+  | { kind: "memory"; source: ShareTimelineSource; atMs: number; event: ProducerMemoryEvent };
+
+function rawTimelineItemId(item: RawTimelineItem): string {
+  if (item.kind === "move") return item.change.id;
+  if (item.kind === "midi") return item.edit.id;
+  if (item.kind === "clip") return item.event.id;
+  if (item.kind === "note") return item.moment.id;
+  return item.event.id;
+}
 
 function cleanName(value: string | null | undefined, fallback: string): string {
   const trimmed = value?.trim();
@@ -155,23 +231,44 @@ function eventTrackKey(change: ParameterChange): string {
   return change.track_id?.trim() || cleanName(change.track_name, "Unassigned track").toLowerCase();
 }
 
+function describeClipEvent(event: TimelineClipEvent): string {
+  const name = cleanName(event.sample_name ?? event.clip_name, "Untitled clip");
+  if (event.event_type === "sample_added" || event.event_type === "audio_clip_added") return `Sample inserted: ${name}`;
+  if (event.event_type === "audio_clip_recorded") return `Recorded audio: ${name}`;
+  if (event.event_type === "midi_clip_recorded") return `Recorded MIDI: ${name}`;
+  return `Clip added: ${name}`;
+}
+
 function buildChronologicalTimeline(sources: ShareTimelineSource[]): TimelineEntry[] {
   const raw: RawTimelineItem[] = [];
   for (const source of sources) {
-    for (const change of source.changes) {
-      if (Number.isFinite(change.changed_at_ms)) {
-        raw.push({ kind: "move", source, atMs: change.changed_at_ms, change });
+    const activities = normalizedSessionActivities({
+      changes: source.changes,
+      noteEdits: source.noteEdits ?? [],
+      clipEvents: source.clipEvents ?? [],
+      memoryEvents: producerMemoryEvents(source.sessionEvents ?? []),
+      moments: source.moments ?? [],
+      sessionStartedAtMs: source.startedAtMs,
+    });
+    for (const activity of activities) {
+      if (activity.kind === "move") {
+        raw.push({ kind: "move", source, atMs: activity.atMs, change: activity.change });
+      } else if (activity.kind === "midi") {
+        raw.push({ kind: "midi", source, atMs: activity.atMs, edit: activity.edit });
+      } else if (activity.kind === "clip") {
+        raw.push({ kind: "clip", source, atMs: activity.atMs, event: activity.event });
+      } else if (activity.kind === "moment") {
+        raw.push({ kind: "note", source, atMs: activity.atMs, moment: activity.moment });
+      } else {
+        raw.push({ kind: "memory", source, atMs: activity.atMs, event: activity.event });
       }
     }
-    for (const edit of source.noteEdits ?? []) {
-      if (Number.isFinite(edit.changed_at_ms)) raw.push({ kind: "midi", source, atMs: edit.changed_at_ms, edit });
-    }
-    for (const moment of source.moments ?? []) {
-      const atMs = moment.timeline_start_ms ?? moment.created_at_ms;
-      if (Number.isFinite(atMs)) raw.push({ kind: "note", source, atMs, moment });
-    }
   }
-  raw.sort((a, b) => a.atMs - b.atMs);
+  raw.sort((a, b) =>
+    a.atMs - b.atMs ||
+    a.source.id.localeCompare(b.source.id) ||
+    rawTimelineItemId(a).localeCompare(rawTimelineItemId(b)),
+  );
 
   const entries: TimelineEntry[] = [];
   for (const item of raw) {
@@ -199,6 +296,34 @@ function buildChronologicalTimeline(sources: ShareTimelineSource[]): TimelineEnt
         endMs: item.atMs,
         track: null,
         detail: cleanName(item.moment.title, "Saved note"),
+      });
+      continue;
+    }
+    if (item.kind === "clip") {
+      entries.push({
+        kind: "clip",
+        id: item.event.id,
+        sourceId: item.source.id,
+        sourceLabel: item.source.label,
+        atMs: item.atMs,
+        endMs: item.atMs,
+        track: cleanName(item.event.track_name, "Unassigned track"),
+        detail: describeClipEvent(item.event),
+      });
+      continue;
+    }
+    if (item.kind === "memory") {
+      entries.push({
+        kind: "memory",
+        id: item.event.id,
+        sourceId: item.source.id,
+        sourceLabel: item.source.label,
+        atMs: item.atMs,
+        endMs: item.atMs,
+        track: item.event.trackName,
+        title: item.event.title,
+        detail: item.event.summary,
+        category: item.event.category,
       });
       continue;
     }
@@ -306,6 +431,52 @@ function projectRecordOf(input: ShareInput, sources: ShareTimelineSource[]): Sha
   );
 }
 
+function sessionPathOf(sources: ShareTimelineSource[]): ShareSessionPath {
+  const analysis = analyzeSessionSources(sources.map((source) => ({
+    sourceId: source.id,
+    sourceLabel: source.label,
+    changes: source.changes,
+    noteEdits: source.noteEdits ?? [],
+    clipEvents: source.clipEvents ?? [],
+    memoryEvents: producerMemoryEvents(source.sessionEvents ?? []),
+    moments: source.moments ?? [],
+    sessionStartedAtMs: source.startedAtMs,
+  })));
+  return {
+    summary: analysis.pathSummary,
+    duplicateReportCount: analysis.duplicateReportCount,
+    openingStateEventCount: analysis.openingStateEventCount,
+    steps: analysis.passages.map((passage) => {
+      const presented = presentPassage(passage);
+      return {
+      order: passage.order,
+      position: passage.pathPosition,
+      label: passage.label,
+      startMs: passage.startMs,
+      endMs: passage.endMs,
+      gapBeforeMs: passage.gapBeforeMs,
+      actionCount: passage.actionCount,
+      controlMoveCount: passage.controlMoveCount,
+      midiEditCount: passage.midiEditCount,
+      clipEventCount: passage.clipEventCount,
+      structureEventCount: passage.structureEventCount,
+      markers: passage.markers.map(({ title, note, atMs }) => ({ title, note, atMs })),
+      sources: passage.sourceLabels,
+      tracks: passage.trackNames,
+      tracksTouched: passage.primaryTrackNames,
+      observedArrangementPositions: passage.observedArrangementPositions,
+      primaryTrack: passage.primaryTrackName,
+      firstAction: passage.firstAction,
+      lastAction: passage.lastAction,
+      title: presented.title,
+      breakdown: presented.breakdown,
+      where: presented.where,
+      controls: presented.controls,
+      };
+    }),
+  };
+}
+
 // One structured snapshot of the take/project, shared by JSON, Markdown, text,
 // and the print-ready PDF. `tracks` and `sections` stay in the JSON model for
 // backwards compatibility; people-facing formats render the chronological log.
@@ -339,6 +510,7 @@ export function buildShareData(input: ShareInput) {
     takeSummary: input.story ? input.story.join(" ") : null,
     projectRecord: projectRecordOf(input, sources),
     projectStory: input.projectStory ?? null,
+    sessionPath: sessionPathOf(sources),
     timeline: buildChronologicalTimeline(sources),
     sections: input.blocks.map((block) => ({
       track: block.trackName,
@@ -403,6 +575,15 @@ function appendTimelineMarkdown(lines: string[], timeline: TimelineEntry[]) {
       lines.push(`- **${formatClock(entry.atMs)} · ${entry.track}** — MIDI · **${entry.clip}**: ${entry.detail}`);
       continue;
     }
+    if (entry.kind === "clip") {
+      lines.push(`- **${formatClock(entry.atMs)} · ${entry.track}** — ${entry.detail}`);
+      continue;
+    }
+    if (entry.kind === "memory") {
+      const track = entry.track ? ` · ${entry.track}` : "";
+      lines.push(`- **${formatClock(entry.atMs)}${track}** — ${entry.title}: ${entry.detail}`);
+      continue;
+    }
     lines.push(`- **${formatClock(entry.atMs)}** — Saved note: ${entry.detail}`);
   }
   lines.push("");
@@ -422,6 +603,56 @@ function appendProjectHeaderMarkdown(lines: string[], d: ShareData) {
   const captured = formatDateTime(record.firstCapturedAtMs ?? d.recordedAtMs);
   if (captured) lines.push(`- **First captured:** ${captured}`);
   lines.push(`- **Exported:** ${formatDateTime(d.exportedAtMs)}`);
+  lines.push("");
+}
+
+function pathPositionLabel(position: ShareSessionPath["steps"][number]["position"]): string {
+  if (position === "only") return "This session";
+  if (position === "start") return "Start";
+  if (position === "finish") return "Finish";
+  return "Then";
+}
+
+function pathScope(step: ShareSessionPath["steps"][number]): string {
+  if (step.primaryTrack) return ` · most activity: ${step.primaryTrack}`;
+  // Tracks the producer acted on, not every track some report named.
+  return step.tracksTouched.length > 0 ? ` · ${step.tracksTouched.slice(0, 2).join(", ")}` : "";
+}
+
+// "EQ Eight · Filter 1 Freq 400 Hz → 2.1 kHz (12x)" — the controls a step turned
+// on, with what they were set to. Shared by every export format.
+function pathControls(step: ShareSessionPath["steps"][number]): string | null {
+  if (step.controls.length === 0) return null;
+  return step.controls
+    .map((control) => {
+      const outcome = control.outcome ? ` ${control.outcome}` : "";
+      const count = control.count > 1 ? ` (${control.count}x)` : "";
+      return `${control.name}${outcome}${count}`;
+    })
+    .join(" · ");
+}
+
+function appendSessionPathMarkdown(lines: string[], d: ShareData) {
+  const path = d.sessionPath;
+  if (path.steps.length === 0) return;
+  const hasMultipleSources = new Set(path.steps.flatMap((step) => step.sources)).size > 1;
+  const cleanup = describePathCleanup(path);
+  lines.push("## Session path", "");
+  if (path.summary) lines.push(path.summary, "");
+  if (cleanup.length > 0) lines.push(`Path cleanup: ${cleanup.join(" · ")}.`, "");
+  for (const step of path.steps) {
+    const gap = step.gapBeforeMs && step.gapBeforeMs > 0 ? ` · after ${formatDuration(step.gapBeforeMs)} gap` : "";
+    const source = hasMultipleSources && step.sources.length > 0 ? ` · take: ${step.sources.join(" + ")}` : "";
+    const arrangement = step.where ? ` · observed at ${step.where}` : "";
+    const end = step.endMs !== step.startMs ? `–${formatClock(step.endMs)}` : "";
+    lines.push(`${step.order}. **${pathPositionLabel(step.position)} · ${formatDateTime(step.startMs) ?? formatClock(step.startMs)}${end}** — ${step.title}${pathScope(step)}${source}${arrangement}${gap}`);
+    const evidence = [
+      step.breakdown,
+      pathControls(step),
+      step.markers.length > 0 ? `Marked: ${step.markers.map((marker) => marker.title).join(" · ")}` : null,
+    ].filter((item): item is string => Boolean(item));
+    if (evidence.length > 0) lines.push(`   - ${evidence.join(" — ")}`);
+  }
   lines.push("");
 }
 
@@ -445,6 +676,7 @@ function appendStoryMarkdown(lines: string[], d: ShareData) {
 function renderMarkdown(d: ShareData): string {
   const lines: string[] = [];
   appendProjectHeaderMarkdown(lines, d);
+  appendSessionPathMarkdown(lines, d);
   appendStoryMarkdown(lines, d);
   appendTimelineMarkdown(lines, d.timeline);
   if (d.timeline.length === 0) lines.push("No recorded changes yet.", "");
@@ -464,6 +696,26 @@ function renderText(d: ShareData): string {
   if (record.captureCount > 0) lines.push(`Captured takes: ${record.captureCount}`);
   if (d.duration) lines.push(`This take: ${d.duration}`);
   lines.push(`Exported: ${formatDateTime(d.exportedAtMs)}`, "");
+
+  if (d.sessionPath.steps.length > 0) {
+    const hasMultipleSources = new Set(d.sessionPath.steps.flatMap((step) => step.sources)).size > 1;
+    const cleanup = describePathCleanup(d.sessionPath);
+    lines.push("SESSION PATH");
+    if (d.sessionPath.summary) lines.push(d.sessionPath.summary);
+    if (cleanup.length > 0) lines.push(`Path cleanup: ${cleanup.join("; ")}.`);
+    for (const step of d.sessionPath.steps) {
+      const gap = step.gapBeforeMs && step.gapBeforeMs > 0 ? `; after ${formatDuration(step.gapBeforeMs)} gap` : "";
+      const source = hasMultipleSources && step.sources.length > 0 ? `; take: ${step.sources.join(" + ")}` : "";
+      const arrangement = step.where ? `; observed at ${step.where}` : "";
+      const evidence = [
+        step.breakdown,
+        pathControls(step),
+        step.markers.length > 0 ? `marked: ${step.markers.map((marker) => marker.title).join(" · ")}` : null,
+      ].filter((item): item is string => Boolean(item)).join("; ");
+      lines.push(`- ${pathPositionLabel(step.position)} · ${formatDateTime(step.startMs) ?? formatClock(step.startMs)} — ${step.title}${pathScope(step)}${source}${arrangement}${gap}${evidence ? ` (${evidence})` : ""}`);
+    }
+    lines.push("");
+  }
 
   if (d.projectStory || d.takeSummary) {
     lines.push("SONG STORY");
@@ -501,6 +753,10 @@ function renderText(d: ShareData): string {
         }
       } else if (entry.kind === "midi") {
         lines.push(`  ${formatClock(entry.atMs)}  ${entry.track} — MIDI · ${entry.clip}: ${entry.detail}`);
+      } else if (entry.kind === "clip") {
+        lines.push(`  ${formatClock(entry.atMs)}  ${entry.track} — ${entry.detail}`);
+      } else if (entry.kind === "memory") {
+        lines.push(`  ${formatClock(entry.atMs)}  ${entry.track ? `${entry.track} — ` : ""}${entry.title}: ${entry.detail}`);
       } else {
         lines.push(`  ${formatClock(entry.atMs)}  Saved note: ${entry.detail}`);
       }
@@ -539,6 +795,28 @@ function projectDetailsHtml(d: ShareData): string {
     ["Exported", formatDateTime(d.exportedAtMs) ?? "Now"],
   ].filter((row): row is string[] => row !== null);
   return rows.map(([label, value]) => `<div><dt>${esc(label)}</dt><dd>${esc(value)}</dd></div>`).join("");
+}
+
+function sessionPathHtml(d: ShareData): string {
+  const path = d.sessionPath;
+  if (path.steps.length === 0) return "";
+  const hasMultipleSources = new Set(path.steps.flatMap((step) => step.sources)).size > 1;
+  const cleanup = describePathCleanup(path).join(" · ");
+  const steps = path.steps.map((step) => {
+    const gap = step.gapBeforeMs && step.gapBeforeMs > 0 ? ` · after ${formatDuration(step.gapBeforeMs)} gap` : "";
+    const scope = [
+      hasMultipleSources && step.sources.length > 0 ? `Take: ${step.sources.join(" + ")}` : null,
+      step.primaryTrack ? `Most activity: ${step.primaryTrack}` : step.tracksTouched.slice(0, 2).join(", "),
+      step.where ? `Observed at ${step.where}` : null,
+    ].filter((item): item is string => Boolean(item)).join(" · ");
+    const evidence = [
+      step.breakdown,
+      pathControls(step),
+      step.markers.length > 0 ? `Marked: ${step.markers.map((marker) => marker.title).join(" · ")}` : null,
+    ].filter((item): item is string => Boolean(item)).join(" — ");
+    return `<li><time>${esc(formatDateTime(step.startMs) ?? formatClock(step.startMs))}</time><div><b>${esc(pathPositionLabel(step.position))} · ${esc(step.title)}</b><span>${esc(scope)}${esc(gap)}</span>${evidence ? `<small>${esc(evidence)}</small>` : ""}</div></li>`;
+  }).join("");
+  return `<section><h2>Session path</h2>${path.summary ? `<p class="summary">${esc(path.summary)}</p>` : ""}${cleanup ? `<p class="quiet">Path cleanup: ${esc(cleanup)}.</p>` : ""}<ol class="story">${steps}</ol></section>`;
 }
 
 function storyHtml(d: ShareData): string {
@@ -583,6 +861,14 @@ function timelineHtml(d: ShareData): string {
     }
     if (entry.kind === "midi") {
       output.push(`<li class="entry"><time>${esc(formatClock(entry.atMs))}</time><div>${take}<h4>${esc(entry.track)} <small>MIDI edit</small></h4><p><b>${esc(entry.clip)}</b> · ${esc(entry.detail)}</p></div></li>`);
+      continue;
+    }
+    if (entry.kind === "clip") {
+      output.push(`<li class="entry"><time>${esc(formatClock(entry.atMs))}</time><div>${take}<h4>${esc(entry.track)} <small>Clip</small></h4><p>${esc(entry.detail)}</p></div></li>`);
+      continue;
+    }
+    if (entry.kind === "memory") {
+      output.push(`<li class="entry"><time>${esc(formatClock(entry.atMs))}</time><div>${take}<h4>${esc(entry.track ?? entry.title)} <small>${esc(entry.category)}</small></h4><p>${entry.track ? `<b>${esc(entry.title)}</b> · ` : ""}${esc(entry.detail)}</p></div></li>`);
       continue;
     }
     output.push(`<li class="entry"><time>${esc(formatClock(entry.atMs))}</time><div>${take}<h4>Saved note</h4><p>${esc(entry.detail)}</p></div></li>`);
@@ -633,6 +919,7 @@ function renderHtml(d: ShareData): string {
 </style></head><body>
   <header><div class="brand">Recall Studio · Project record</div><h1>${esc(heading)}</h1><p class="sub">A readable record of the project’s captured decisions.</p></header>
   <section><h2>Project details</h2><dl class="details">${projectDetailsHtml(d)}</dl></section>
+  ${sessionPathHtml(d)}
   ${storyHtml(d)}
   ${timelineHtml(d)}
   <div class="foot">Exported from Recall Studio</div>

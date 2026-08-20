@@ -134,7 +134,7 @@ export function StartupScreen({
 
             <div className="startup-snapshot__flow">
               <span>Project Desk</span>
-              <span>Recap</span>
+              <span>Report</span>
               <span>Timeline</span>
             </div>
           </aside>

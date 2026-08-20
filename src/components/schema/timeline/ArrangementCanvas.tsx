@@ -1,13 +1,15 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
-import { Group, Layer, Line, Rect, Stage, Text } from "react-konva";
+import { Circle, Group, Layer, Line, Path, Rect, Stage, Text } from "react-konva";
 import type { TrackObj } from "../../../types/schema";
 import type { Activity } from "./types";
 import { describeActivity, formatClock } from "./format";
-import { buildTicks, pct, type TimelineBounds } from "./graph";
+import type { TimelineBounds } from "./graph";
+import { buildActivityScale } from "./activityScale";
+import { activityPhrasePath } from "./activityPhrase";
 
 type Lane = { track: TrackObj; items: Activity[] };
 
-type Region = { start: number; end: number; count: number; hasNote: boolean; events: Activity[] };
+type Region = { start: number; end: number; count: number; events: Activity[] };
 type GestureMemory = {
   activity: Activity;
   trackName: string;
@@ -15,16 +17,60 @@ type GestureMemory = {
   y: number;
 };
 
-const RULER_HEIGHT = 24;
-const LANE_HEIGHT = 46;
+type RegionStyle = {
+  accent: string;
+};
+
+const RULER_HEIGHT = 28;
+const LANE_HEIGHT = 52;
 const TICK_LABEL_WIDTH = 58;
-const MEMORY_CARD_HEIGHT = 76;
 
 function gestureKind(activity: Activity): string {
   if (activity.kind === "note") return "Producer note";
   if (activity.kind === "noteEdit") return "MIDI edit";
   if (activity.kind === "clip") return "Clip memory";
+  if (activity.kind === "memory") return activity.memoryTitle ?? "Song change";
   return activity.automation ? "Automation write" : activity.deviceName === "Mixer" ? "Mixer gesture" : "Parameter gesture";
+}
+
+function regionStyle(events: Activity[]): RegionStyle {
+  if (events.some((event) => event.kind === "memory" && event.memoryCategory === "song")) {
+    return { accent: "#d2b46e" };
+  }
+  if (events.some((event) => event.kind === "memory" && event.memoryCategory === "recording")) {
+    return { accent: "#dc8f8b" };
+  }
+  if (events.some((event) => event.kind === "memory" && event.memoryCategory === "structure")) {
+    return { accent: "#75c5bd" };
+  }
+  if (events.some((event) => event.kind === "memory" && event.memoryCategory === "automation")) {
+    return { accent: "#9ba8ff" };
+  }
+  if (events.some((event) => event.kind === "memory" && event.memoryCategory === "mix")) {
+    return { accent: "#82b9e8" };
+  }
+  if (events.some((event) => event.kind === "memory" && event.memoryCategory === "performance")) {
+    return { accent: "#c29bea" };
+  }
+  if (events.some((event) => event.kind === "memory" && event.memoryCategory === "project")) {
+    return { accent: "#a8b2c8" };
+  }
+  if (events.some((event) => event.kind === "clip")) {
+    return { accent: "#79c7cf" };
+  }
+  if (events.some((event) => event.kind === "noteEdit")) {
+    return { accent: "#baa7ff" };
+  }
+  if (events.some((event) => event.kind === "note")) {
+    return { accent: "#d8b66f" };
+  }
+  if (events.some((event) => event.automation)) {
+    return { accent: "#9ba8ff" };
+  }
+  if (events.some((event) => event.deviceName === "Mixer")) {
+    return { accent: "#82b9e8" };
+  }
+  return { accent: "#9daeff" };
 }
 
 function useWidth() {
@@ -61,23 +107,17 @@ function regionsFor(items: Activity[], bounds: TimelineBounds): Region[] {
         start: item.atMs,
         end: item.atMs,
         count: 1,
-        hasNote: item.kind !== "move",
         events: [item],
       };
       regions.push(current);
     } else {
       current.end = item.atMs;
       current.count += 1;
-      current.hasNote ||= item.kind !== "move";
       current.events.push(item);
     }
   }
 
   return regions;
-}
-
-function fraction(atMs: number, bounds: TimelineBounds) {
-  return pct(atMs, bounds) / 100;
 }
 
 export function ArrangementCanvas({
@@ -97,7 +137,12 @@ export function ArrangementCanvas({
   const [hoveredGesture, setHoveredGesture] = useState<GestureMemory | null>(null);
   const [pinnedGesture, setPinnedGesture] = useState<GestureMemory | null>(null);
   const height = RULER_HEIGHT + lanes.length * LANE_HEIGHT;
-  const ticks = useMemo(() => buildTicks(bounds), [bounds]);
+  const activityScale = useMemo(
+    () => buildActivityScale(lanes.flatMap((lane) => lane.items.map((item) => item.atMs))),
+    [lanes],
+  );
+  const ticks = activityScale.ticks;
+  const activityCellCount = Math.min(activityScale.slots.length, 48);
   const regions = useMemo(
     () => new Map(lanes.map((lane) => [lane.track.id, regionsFor(lane.items, bounds)])),
     [lanes, bounds],
@@ -109,6 +154,15 @@ export function ArrangementCanvas({
     setPinnedGesture(null);
   }, [bounds.start, bounds.span, lanes]);
 
+  useEffect(() => {
+    if (!pinnedGesture) return;
+    const clearPinnedGesture = (event: globalThis.KeyboardEvent) => {
+      if (event.key === "Escape") setPinnedGesture(null);
+    };
+    document.addEventListener("keydown", clearPinnedGesture);
+    return () => document.removeEventListener("keydown", clearPinnedGesture);
+  }, [pinnedGesture]);
+
   const gestureAtPointer = (
     events: Activity[],
     trackName: string,
@@ -116,15 +170,15 @@ export function ArrangementCanvas({
     laneY: number,
   ): GestureMemory => {
     const activity = events.reduce((nearest, candidate) =>
-      Math.abs(fraction(candidate.atMs, bounds) * width - pointerX) <
-      Math.abs(fraction(nearest.atMs, bounds) * width - pointerX)
+      Math.abs(activityScale.fraction(candidate.atMs) * width - pointerX) <
+      Math.abs(activityScale.fraction(nearest.atMs) * width - pointerX)
         ? candidate
         : nearest,
     );
     return {
       activity,
       trackName,
-      x: fraction(activity.atMs, bounds) * width,
+      x: activityScale.fraction(activity.atMs) * width,
       y: laneY + LANE_HEIGHT / 2,
     };
   };
@@ -146,25 +200,25 @@ export function ArrangementCanvas({
           onMouseDown={(event) => selectAt(event.evt.clientY)}
         >
           <Layer>
-            <Rect width={width} height={height} fill="#080b12" />
-            <Rect width={width} height={RULER_HEIGHT} fill="#111725" />
-            <Line points={[0, RULER_HEIGHT - 0.5, width, RULER_HEIGHT - 0.5]} stroke="#30394c" strokeWidth={1} />
+            <Rect width={width} height={height} fill="#090d13" />
+            <Rect width={width} height={RULER_HEIGHT} fill="#111720" />
+            <Line points={[0, RULER_HEIGHT - 0.5, width, RULER_HEIGHT - 0.5]} stroke="#30394b" strokeWidth={1} />
             {ticks.map((tick, index) => {
-              const x = Math.round(tick.pct / 100 * width) + 0.5;
+              const x = Math.round(tick.fraction * width) + 0.5;
               return (
-                <Fragment key={`${tick.label}-${index}`}>
+                <Fragment key={`${tick.atMs}-${index}`}>
                   <Line
                     points={[x, RULER_HEIGHT, x, height]}
-                    stroke="#2a3243"
+                    stroke="#242c3a"
                     strokeWidth={1}
-                    opacity={index === 0 ? 0 : 0.72}
+                    opacity={index === 0 ? 0 : 0.52}
                   />
                   <Line points={[x, RULER_HEIGHT - 6, x, RULER_HEIGHT]} stroke="#536078" strokeWidth={1} />
                   <Text
                     x={Math.max(3, Math.min(width - TICK_LABEL_WIDTH, x + 5))}
                     y={5}
-                    text={tick.label}
-                    fill="#a4aec4"
+                    text={formatClock(tick.atMs)}
+                    fill="#929db1"
                     fontFamily="IBM Plex Mono, monospace"
                     fontSize={10}
                   />
@@ -183,39 +237,97 @@ export function ArrangementCanvas({
                     y={y}
                     width={width}
                     height={LANE_HEIGHT}
-                    fill={selected ? "#16243c" : index % 2 === 0 ? "#0b0f18" : "#090d15"}
+                    fill={selected ? "#141c29" : index % 2 === 0 ? "#0a0e15" : "#090c12"}
                   />
-                  {selected && <Rect x={0} y={y} width={3} height={LANE_HEIGHT} fill="#88a5ff" shadowColor="#88a5ff" shadowBlur={8} />}
-                  <Line points={[0, y + LANE_HEIGHT - 0.5, width, y + LANE_HEIGHT - 0.5]} stroke="#1d2432" strokeWidth={1} />
+                  {selected && <Rect x={0} y={y} width={2} height={LANE_HEIGHT} fill="#91a5e6" />}
+                  {Array.from({ length: activityCellCount }, (_, slotIndex) => {
+                    const cellWidth = width / Math.max(1, activityCellCount);
+                    return (
+                      <Fragment key={`${lane.track.id}-activity-cell-${slotIndex}`}>
+                        {slotIndex % 2 === 0 && (
+                          <Rect
+                            x={slotIndex * cellWidth}
+                            y={y}
+                            width={cellWidth}
+                            height={LANE_HEIGHT}
+                            fill="#171d28"
+                            opacity={0.055}
+                            listening={false}
+                          />
+                        )}
+                        {slotIndex > 0 && (
+                          <Line
+                            points={[slotIndex * cellWidth + 0.5, y, slotIndex * cellWidth + 0.5, y + LANE_HEIGHT]}
+                            stroke="#202736"
+                            strokeWidth={1}
+                            opacity={0.24}
+                            listening={false}
+                          />
+                        )}
+                      </Fragment>
+                    );
+                  })}
+                  <Line
+                    points={[0, y + LANE_HEIGHT / 2, width, y + LANE_HEIGHT / 2]}
+                    stroke="#273040"
+                    strokeWidth={1}
+                    opacity={0.34}
+                    listening={false}
+                  />
+                  <Line points={[0, y + LANE_HEIGHT - 0.5, width, y + LANE_HEIGHT - 0.5]} stroke="#1d2430" strokeWidth={1} />
                   {laneRegions.map((region, regionIndex) => {
-                    const x = fraction(region.start, bounds) * width;
-                    const end = fraction(region.end, bounds) * width;
-                    const regionWidth = Math.max(32, end - x + Math.min(width * 0.012, 30));
+                    const x = activityScale.fraction(region.start) * width;
+                    const end = activityScale.fraction(region.end) * width;
+                    const regionWidth = Math.max(12, end - x + Math.min(width * 0.006, 14));
                     const paintedWidth = Math.min(regionWidth, width - x);
-                    const clipY = y + 8;
-                    const clipHeight = LANE_HEIGHT - 16;
-                    const density = Math.min(1, region.count / 8);
+                    const centerY = y + LANE_HEIGHT / 2;
+                    const style = regionStyle(region.events);
+                    const eventXs = region.events.map((activity) => activityScale.fraction(activity.atMs) * width);
+                    const phrasePath = activityPhrasePath(eventXs, centerY, width, selected ? 13 : 10.5);
                     return (
                       <Fragment key={`${lane.track.id}-${regionIndex}`}>
+                        {phrasePath && (
+                          <Path
+                            data={phrasePath}
+                            fill={style.accent}
+                            fillOpacity={selected ? 0.25 : 0.15}
+                            stroke={style.accent}
+                            strokeWidth={selected ? 1.15 : 0.75}
+                            opacity={selected ? 0.95 : 0.72}
+                            shadowColor={style.accent}
+                            shadowBlur={selected ? 7 : 0}
+                            shadowOpacity={selected ? 0.14 : 0}
+                            listening={false}
+                          />
+                        )}
+                        {region.events.map((activity) => {
+                          const eventX = activityScale.fraction(activity.atMs) * width;
+                          return (
+                            <Circle
+                              key={activity.id}
+                              x={eventX}
+                              y={centerY}
+                              radius={activity.kind === "note" ? 2.1 : activity.kind === "memory" ? 2.25 : activity.automation ? 1.75 : 1.15}
+                              fill="#0a0d13"
+                              stroke={style.accent}
+                              strokeWidth={0.9}
+                              opacity={selected ? 0.9 : 0.6}
+                              listening={false}
+                            />
+                          );
+                        })}
                         <Rect
                           x={x}
-                          y={clipY}
-                          width={paintedWidth}
-                          height={clipHeight}
-                          cornerRadius={2}
-                          stroke={region.hasNote ? "#bac8ff" : selected ? "#9fb4ee" : "#7787a8"}
-                          strokeWidth={1}
-                          fillLinearGradientStartPoint={{ x: 0, y: 0 }}
-                          fillLinearGradientEndPoint={{ x: 0, y: clipHeight }}
-                          fillLinearGradientColorStops={region.hasNote
-                            ? [0, "#53699a", 0.55, "#3d4f79", 1, "#293753"]
-                            : [0, "#52627e", 0.55, "#394760", 1, "#273247"]}
-                          opacity={(selected ? 0.86 : 0.68) + density * 0.12}
+                          y={y + 5}
+                          width={Math.max(24, paintedWidth)}
+                          height={LANE_HEIGHT - 10}
+                          fill="#ffffff"
+                          opacity={0.001}
                           onMouseEnter={(event) => {
                             const stage = event.target.getStage();
                             const pointer = stage?.getPointerPosition();
                             if (!pointer) return;
-                            stage!.container().style.cursor = "crosshair";
+                            stage!.container().style.cursor = "pointer";
                             setHoveredGesture(gestureAtPointer(region.events, lane.track.name ?? "Untitled track", pointer.x, y));
                           }}
                           onMouseMove={(event) => {
@@ -225,7 +337,7 @@ export function ArrangementCanvas({
                           }}
                           onMouseLeave={(event) => {
                             const stage = event.target.getStage();
-                            if (stage) stage.container().style.cursor = "pointer";
+                            if (stage) stage.container().style.cursor = "default";
                             setHoveredGesture(null);
                           }}
                           onClick={(event) => {
@@ -235,36 +347,16 @@ export function ArrangementCanvas({
                             setPinnedGesture((current) => current?.activity.id === gesture.activity.id ? null : gesture);
                           }}
                         />
-                        <Line
-                          points={[x + 2, clipY + 1.5, Math.min(x + paintedWidth - 2, width - 2), clipY + 1.5]}
-                          stroke={region.hasNote ? "#d2d9ff" : "#c5cfdf"}
-                          strokeWidth={1}
-                          opacity={0.55 + density * 0.35}
-                          listening={false}
-                        />
-                        {region.events.slice(-24).map((item, eventIndex) => {
-                          const eventX = Math.max(x + 3, Math.min(x + paintedWidth - 3, fraction(item.atMs, bounds) * width));
-                          return (
-                            <Line
-                              key={`${item.id}-${eventIndex}`}
-                              points={[eventX, clipY + 5, eventX, clipY + clipHeight - 4]}
-                              stroke={item.kind === "note" ? "#f2c66d" : item.kind === "noteEdit" ? "#c2adff" : "#d7dfef"}
-                              strokeWidth={item.kind === "move" ? 1 : 2}
-                              opacity={0.32 + Math.min(0.5, density * 0.55)}
-                              listening={false}
-                            />
-                          );
-                        })}
-                        {paintedWidth >= 74 && (
+                        {region.count > 1 && (
                           <Text
-                            x={x + 7}
-                            y={clipY + 8}
-                            width={paintedWidth - 12}
-                            text={`${region.count} ${region.count === 1 ? "gesture" : "gestures"}`}
-                            fill="#e0e6f4"
+                            x={Math.min(width - 22, Math.max(x + 11, end + 5))}
+                            y={centerY - 5}
+                            width={20}
+                            text={String(region.count)}
+                            fill="#8995aa"
                             fontFamily="IBM Plex Mono, monospace"
-                            fontSize={9}
-                            ellipsis
+                            fontSize={8}
+                            opacity={0.62}
                             listening={false}
                           />
                         )}
@@ -283,89 +375,36 @@ export function ArrangementCanvas({
                 shadowBlur={7}
               />
             )}
-            {visibleGesture && (() => {
-              const cardWidth = Math.min(330, Math.max(230, width * 0.32));
-              const cardX = Math.max(7, Math.min(width - cardWidth - 7, visibleGesture.x + 13));
-              const aboveY = visibleGesture.y - MEMORY_CARD_HEIGHT - 10;
-              const cardY = aboveY >= RULER_HEIGHT + 3
-                ? aboveY
-                : Math.min(height - MEMORY_CARD_HEIGHT - 5, visibleGesture.y + 12);
-              const pinned = pinnedGesture?.activity.id === visibleGesture.activity.id;
-              return (
-                <Group listening={false}>
-                  <Line
-                    points={[visibleGesture.x, RULER_HEIGHT, visibleGesture.x, height]}
-                    stroke={pinned ? "#f2c66d" : "#9fb4ff"}
-                    strokeWidth={1}
-                    dash={[3, 4]}
-                    opacity={0.52}
-                  />
-                  <Rect
-                    x={visibleGesture.x - 2}
-                    y={visibleGesture.y - 2}
-                    width={5}
-                    height={5}
-                    fill={pinned ? "#f2c66d" : "#b6c6ff"}
-                    shadowColor={pinned ? "#f2c66d" : "#88a5ff"}
-                    shadowBlur={8}
-                  />
-                  <Group x={cardX} y={cardY}>
-                    <Rect
-                      width={cardWidth}
-                      height={MEMORY_CARD_HEIGHT}
-                      cornerRadius={4}
-                      fill="#121827"
-                      stroke={pinned ? "#a98d55" : "#52658f"}
-                      strokeWidth={1}
-                      shadowColor="#000000"
-                      shadowBlur={12}
-                      shadowOpacity={0.42}
-                    />
-                    <Rect
-                      width={3}
-                      height={MEMORY_CARD_HEIGHT}
-                      fill={pinned ? "#f2c66d" : "#88a5ff"}
-                    />
-                    <Text
-                      x={12}
-                      y={9}
-                      text={`${gestureKind(visibleGesture.activity).toUpperCase()}  ·  ${formatClock(visibleGesture.activity.atMs)}`}
-                      fill={pinned ? "#f0cf8e" : "#9fb4ff"}
-                      fontFamily="IBM Plex Mono, monospace"
-                      fontSize={9}
-                      fontStyle="bold"
-                    />
-                    <Text
-                      x={12}
-                      y={25}
-                      width={cardWidth - 24}
-                      text={visibleGesture.trackName}
-                      fill="#f0f3fa"
-                      fontFamily="IBM Plex Sans, sans-serif"
-                      fontSize={11}
-                      fontStyle="bold"
-                      ellipsis
-                      wrap="none"
-                    />
-                    <Text
-                      x={12}
-                      y={43}
-                      width={cardWidth - 24}
-                      height={25}
-                      text={describeActivity(visibleGesture.activity)}
-                      fill="#aab5cc"
-                      fontFamily="IBM Plex Mono, monospace"
-                      fontSize={9}
-                      lineHeight={1.25}
-                      ellipsis
-                      wrap="word"
-                    />
-                  </Group>
-                </Group>
-              );
-            })()}
+            {visibleGesture && (
+              <Group listening={false}>
+                <Line
+                  points={[visibleGesture.x, RULER_HEIGHT, visibleGesture.x, height]}
+                  stroke={pinnedGesture ? "#c8b470" : "#8fa5df"}
+                  strokeWidth={1}
+                  opacity={pinnedGesture ? 0.5 : 0.24}
+                />
+                <Circle
+                  x={visibleGesture.x}
+                  y={visibleGesture.y}
+                  radius={3}
+                  fill="#0a0d13"
+                  stroke={pinnedGesture ? "#c8b470" : "#9bb0eb"}
+                  strokeWidth={1.25}
+                />
+              </Group>
+            )}
           </Layer>
         </Stage>
+      )}
+      {visibleGesture && (
+        <div className={`tl-canvas-readout ${pinnedGesture ? "is-pinned" : ""}`}>
+          <span className="tl-canvas-readout__kind">
+            {gestureKind(visibleGesture.activity)} · {formatClock(visibleGesture.activity.atMs)}
+          </span>
+          <strong>{visibleGesture.trackName}</strong>
+          <span className="tl-canvas-readout__change">{describeActivity(visibleGesture.activity)}</span>
+          {pinnedGesture && <small>pinned · Esc to close</small>}
+        </div>
       )}
     </div>
   );

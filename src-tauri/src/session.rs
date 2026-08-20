@@ -122,6 +122,10 @@ pub struct SavedSessionEvent {
     pub file_path: Option<String>,
     pub bpm: Option<f64>,
     pub playing: Option<bool>,
+    pub observed_arrangement_position: Option<String>,
+    pub observed_arrangement_beats: Option<f64>,
+    pub arrangement_start_beats: Option<f64>,
+    pub arrangement_end_beats: Option<f64>,
     pub is_heartbeat: bool,
 }
 
@@ -162,6 +166,10 @@ impl From<RecallEvent> for SavedSessionEvent {
             file_path: event.file_path,
             bpm: event.bpm,
             playing: event.playing,
+            observed_arrangement_position: event.observed_arrangement_position,
+            observed_arrangement_beats: event.observed_arrangement_beats,
+            arrangement_start_beats: event.arrangement_start_beats,
+            arrangement_end_beats: event.arrangement_end_beats,
             is_heartbeat,
         }
     }

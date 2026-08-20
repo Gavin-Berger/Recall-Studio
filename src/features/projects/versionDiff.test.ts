@@ -11,6 +11,10 @@ function device(name: string, index = 0): DeviceObj {
     role: "audio_effect",
     chain_index: index,
     enabled: true,
+    initial_enabled: true,
+    host_parameter_count: 0,
+    class_name: null,
+    preset_name: null,
     parameters: [],
   };
 }

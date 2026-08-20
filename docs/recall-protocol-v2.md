@@ -17,7 +17,7 @@ Two capture tiers currently share this protocol, told apart by `source`:
 | `"control_surface"` | `remote-script/Recall/`, a Python Control Surface running inside Live's embedded interpreter | TCP, `127.0.0.1:9001` | **What ships** — installed by the app's Setup screen |
 | `"max_for_live"` | The original Max for Live device, `m4l/` | UDP, `127.0.0.1:9000` | Retained in the repo for reference; not installed by the app |
 
-Implemented by control surface **v0.5.7**. This document's packet shapes remain a useful
+Implemented by control surface **v0.6.0**. This document's packet shapes remain a useful
 wire reference, but several historical coverage notes below predate the current script.
 For the current capture surface and the claims each data source is allowed to make, read
 [`capture-evidence.md`](capture-evidence.md) first. When the script and either document
@@ -37,6 +37,26 @@ connection. The control surface's `_emit()` sends exactly this shape — no more
   "payload":      { "track_name": "Bass", "parameter_name": "Filter Cutoff", "...": "..." }
 }
 ```
+
+### Device-state checkpoints
+
+`live_set_snapshot` payloads with `snapshot_schema_version: 2` are durable
+first-observed device checkpoints as well as structural snapshots. Each host-visible
+parameter may include `display_value`, `default_value` (continuous parameters only),
+`is_quantized`, `value_items`, `automation_state`, `state`, and `is_enabled` alongside
+its raw value and range. Devices carry `host_parameter_count` and, only when Live
+publishes them, `class_name`, `class_display_name`, and `preset_name`.
+
+The control surface reads the baseline before attaching listeners, then reconciles on
+the first display tick. Fingerprinting suppresses an unchanged second snapshot. A
+bounded selected-track roster sweep also discovers parameters a plug-in exposes later
+through Configure Mode; their baseline begins at the first state Recall could actually
+observe. Rebuilding preserves the earliest snapshot value for each device and parameter
+instead of redefining the baseline as the newest value.
+
+This is **host-visible coverage**, not a claim about a plug-in's opaque internal state.
+Recall must not label it a complete Serum/VST state unless the host exposed every
+control.
 
 **Notably absent: `title` and `description`.** The control surface never sends them —
 verified by reading `_emit()` — so for every event from this tier, the human-facing
@@ -83,20 +103,45 @@ for the same concept.
 | `track_name` | string | any event about a specific track | which track they were working on |
 | `track_id` | string | most track/device/parameter events | Live's stable per-track pointer (`track._live_ptr`) — the identity used to attribute a move to a lane even if the track is later renamed |
 | `track_type` | string | *(not currently sent by the control surface)* | — |
+| `observed_arrangement_position` | string | **every control-surface event when Live exposes the ruler** | the playhead location in producer language, e.g. `Bar 41 · Beat 3` |
+| `observed_arrangement_beats` | number | **every control-surface event when Live exposes song time** | the same observed playhead location as raw global beats for sorting and future ruler math |
+| `arrangement_start_beats` / `arrangement_end_beats` | number | events about an Arrangement clip when Live exposes its object range | the clip's exact durable span in the Arrangement, never inferred from the playhead |
 | `device_name` | string | `device_toggled`, `parameter_changed`, `focus_changed` | the instrument or effect, e.g. "Serum 2" |
 | `device_chain` | string | `focus_changed` | the full signal chain on the selected track |
+| `parameter_count` | number | `focus_changed` | how many controls the bridge attached listeners to on this track |
+| `parameter_count_total` | number | `focus_changed` | how many controls the track actually publishes — differs from `parameter_count` whenever a device exceeded `MAX_PARAMS_PER_DEVICE` |
+| `parameters_truncated` | bool | `focus_changed` | whether any device on the track was only partially watched |
+| `truncated_devices` | array | `focus_changed` | `{device_name, watched, available}` per partially watched device — what the app turns into "N controls on Serum 2 were outside capture range" |
 | `parameter_name` | string | `parameter_changed` | the knob/control, e.g. "Filter Cutoff" |
 | `parameter_value` | number | `parameter_changed` | the settled value (raw, device units) |
 | `previous_parameter_value` | number | `parameter_changed` | the value before this gesture began |
 | `parameter_value_percent` / `previous_parameter_value_percent` | number | `parameter_changed` | before/after normalized to the parameter's own range, 0-100 |
 | `parameter_value_min` / `parameter_value_max` | number | `parameter_changed` | the full range swept during the gesture — not recoverable from before/after alone |
 | `parameter_display_value` / `previous_parameter_display_value` | string | `parameter_changed` | the value as Ableton's own UI would show it, units included, e.g. "500 Hz" — from `parameter.str_for_value()` |
-| `parameter_is_quantized` | bool | *(not currently sent)* | — |
+| `parameter_is_quantized` | bool | `parameter_changed` | whether the value is a switch/chooser rather than a continuous control |
 | `clip_name` | string | `midi_clip_created`, `audio_clip_added`, `clip_deleted`, `clip_notes_changed` | the clip's name, or `null` if Live has none (see `_safe_name` in the architecture doc) |
 | `sample_name` / `file_path` | string | *(not currently sent by the control surface — was an M4L-tier field)* | — |
 | `project_name` / `project_path` | string | *(not currently sent — see the known gap below)* | — |
 | `bpm` | number | `tempo_changed` | the project tempo |
 | `playing` | boolean | *(not currently sent by the control surface)* | — |
+
+### Musical-location truth rule
+
+The two location pairs answer different questions and must not be substituted for one
+another:
+
+- `observed_arrangement_*` answers **where Live's playhead was when Recall observed the
+  move**. The common `_emit()` boundary supplies it for every event, while debounced
+  parameter gestures, automation writes, and note edits preserve the position from
+  their final real Live callback instead of the later settle tick.
+- `arrangement_start_beats` / `arrangement_end_beats` answers **where the object itself
+  lives**. These fields are emitted only for Arrangement clips. Session clips expose
+  `start_time` as playback state, so Recall deliberately leaves the object range empty.
+
+The UI may say “playhead observed” for the first pair. It may say an item exists at a
+bar/range only when the second pair or another object-specific Live field proves it.
+This prevents a producer editing a clip while listening elsewhere from creating false
+reconstruction evidence.
 
 **Known gap, verified:** `project_path` is in this table because the backend resolves
 it and depends on it (`ConnectionState.open_als_path`, used by
@@ -159,6 +204,17 @@ grepping `event_catalog.rs` for both strings and finding nothing. Each gets
 `Coalescible` priority (shed first under any queue pressure) and a title of
 `"Recall Event: track_list_changed"` / `"Recall Event: focus_changed"` rather than
 readable copy. Cheap to fix — add two rows to the catalog — not yet done.
+
+**Coverage metadata rides on a sheddable event.** `focus_changed` now carries the
+only report of what the bridge could and could not watch (`parameters_truncated`,
+`truncated_devices`), and its `Coalescible` fallback priority makes it the first
+thing dropped when the queue fills. Raising its priority is the wrong fix —
+navigation would then crowd out real work under exactly the pressure the shedding
+policy exists for. The consequence is bounded and one-directional: a shed report
+means the app stays *silent* about a coverage gap it would otherwise have named.
+It never causes a false claim of full coverage, because full coverage is
+expressed as saying nothing rather than as a positive assertion. A durable fix
+would carry coverage on the session record instead of on a per-focus event.
 
 ### Instruments & effects
 

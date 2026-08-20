@@ -1,0 +1,3 @@
+[submodule "ableton-lom-explorer"]
+	path = ableton-lom-explorer
+	url = https://github.com/Gavin-Berger/ableton-lom-explorer.git

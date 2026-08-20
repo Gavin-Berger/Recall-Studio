@@ -80,4 +80,18 @@ pub struct RecallEvent {
     pub bpm: Option<f64>,
     #[serde(default)]
     pub playing: Option<bool>,
+    // Universal musical-location context stamped at the bridge's common emit
+    // boundary. This is where Live's playhead was when the event was observed;
+    // it is deliberately separate from an object's own Arrangement range.
+    #[serde(default)]
+    pub observed_arrangement_position: Option<String>,
+    #[serde(default)]
+    pub observed_arrangement_beats: Option<f64>,
+    // Exact global beat range for an Arrangement object such as a clip. Session
+    // clips leave these empty because their start_time is playback state, not a
+    // durable place in the song.
+    #[serde(default)]
+    pub arrangement_start_beats: Option<f64>,
+    #[serde(default)]
+    pub arrangement_end_beats: Option<f64>,
 }

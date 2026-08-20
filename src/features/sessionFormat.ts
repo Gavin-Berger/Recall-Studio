@@ -1,7 +1,7 @@
 // Shared session date/duration formatting for the project + recap screens, so
 // the two surfaces render takes identically.
 
-import type { SavedSessionMetadata } from "../types";
+import type { SavedProject, SavedSessionMetadata } from "../types";
 
 export function formatSessionDate(ms: number): string {
   return new Date(ms).toLocaleDateString(undefined, {
@@ -49,6 +49,36 @@ export function alsSetName(path: string | null | undefined): string | null {
   const file = path.split(/[\\/]/).pop() ?? "";
   const name = file.replace(/\.als$/i, "").trim();
   return name === "" || name === "0" ? null : name;
+}
+
+/**
+ * The producer-facing project title. A saved `.als` filename is more reliable
+ * than Recall's editable desk label, so it wins whenever one is available.
+ */
+export function preferredProjectTitle(
+  session: Pick<
+    SavedSessionMetadata,
+    "als_path" | "project_path" | "project_name" | "display_name"
+  > | null,
+  project: Pick<SavedProject, "display_name" | "ableton_name" | "ableton_path"> | null,
+  schemaName?: string | null,
+): string {
+  const clean = (value: string | null | undefined) => {
+    const name = value?.trim() ?? "";
+    return name === "" || name === "0" ? null : name;
+  };
+
+  return (
+    alsSetName(session?.als_path) ??
+    alsSetName(session?.project_path) ??
+    alsSetName(project?.ableton_path) ??
+    clean(project?.ableton_name) ??
+    clean(session?.project_name) ??
+    clean(project?.display_name) ??
+    clean(session?.display_name) ??
+    clean(schemaName) ??
+    "Untitled project"
+  );
 }
 
 /** What the connection chip should say about the set Ableton has open. */

@@ -80,9 +80,18 @@ pub struct ParsedParam {
     pub ableton_id: Option<String>,
     pub name: Option<String>,
     pub value: Option<f64>,
+    pub display_value: Option<String>,
+    pub initial_value: Option<f64>,
+    pub initial_display_value: Option<String>,
+    pub default_value: Option<f64>,
     pub min: Option<f64>,
     pub max: Option<f64>,
     pub normalized_value: Option<f64>,
+    pub is_quantized: Option<bool>,
+    pub value_items: Vec<String>,
+    pub automation_state: Option<i64>,
+    pub state: Option<i64>,
+    pub is_enabled: Option<bool>,
     pub children: Vec<ParsedParam>,
 }
 
@@ -92,6 +101,10 @@ pub struct ParsedDevice {
     pub name: Option<String>,
     pub role: DeviceRole,
     pub enabled: bool,
+    pub initial_enabled: bool,
+    pub host_parameter_count: usize,
+    pub class_name: Option<String>,
+    pub preset_name: Option<String>,
     pub params: Vec<ParsedParam>,
 }
 
@@ -115,10 +128,19 @@ pub struct ParameterObj {
     pub parent_parameter_id: Option<String>,
     pub name: Option<String>,
     pub value: Option<f64>,
+    pub display_value: Option<String>,
+    pub initial_value: Option<f64>,
+    pub initial_display_value: Option<String>,
+    pub default_value: Option<f64>,
     pub unit: Option<String>,
     pub min: Option<f64>,
     pub max: Option<f64>,
     pub normalized_value: Option<f64>,
+    pub is_quantized: Option<bool>,
+    pub value_items: Vec<String>,
+    pub automation_state: Option<i64>,
+    pub state: Option<i64>,
+    pub is_enabled: Option<bool>,
     pub children: Vec<ParameterObj>,
 }
 
@@ -131,6 +153,10 @@ pub struct DeviceObj {
     pub role: DeviceRole,
     pub chain_index: i64,
     pub enabled: bool,
+    pub initial_enabled: bool,
+    pub host_parameter_count: usize,
+    pub class_name: Option<String>,
+    pub preset_name: Option<String>,
     pub parameters: Vec<ParameterObj>,
 }
 
@@ -189,6 +215,8 @@ pub struct ParameterChange {
     pub automation_start_ms: Option<u64>,
     pub automation_start_position: Option<String>,
     pub automation_end_position: Option<String>,
+    pub observed_arrangement_position: Option<String>,
+    pub observed_arrangement_beats: Option<f64>,
     pub changed_at_ms: u64,
 }
 
@@ -230,6 +258,10 @@ pub struct NoteEdit {
     pub length_beats: Option<f64>,
     /// Ready-to-show phrase: "16 notes (+4), C1-G1 -> C1-G2".
     pub summary: Option<String>,
+    pub observed_arrangement_position: Option<String>,
+    pub observed_arrangement_beats: Option<f64>,
+    pub arrangement_start_beats: Option<f64>,
+    pub arrangement_end_beats: Option<f64>,
     pub changed_at_ms: u64,
 }
 
@@ -243,6 +275,10 @@ pub struct TimelineClipEvent {
     pub track_id: Option<String>,
     pub clip_name: Option<String>,
     pub sample_name: Option<String>,
+    pub observed_arrangement_position: Option<String>,
+    pub observed_arrangement_beats: Option<f64>,
+    pub arrangement_start_beats: Option<f64>,
+    pub arrangement_end_beats: Option<f64>,
     pub changed_at_ms: u64,
 }
 
@@ -268,6 +304,7 @@ pub fn parse_note_edit(
             .map(|value| value.to_string())
     };
     let int = |key: &str| parsed.get(key).and_then(Value::as_i64);
+    let float = |key: &str| parsed.get(key).and_then(Value::as_f64);
 
     Some(NoteEdit {
         id: format!("note-edit-{}", event_id),
@@ -290,6 +327,10 @@ pub fn parse_note_edit(
         velocity_mean: parsed.get("velocity_mean").and_then(Value::as_f64),
         length_beats: parsed.get("length_beats").and_then(Value::as_f64),
         summary: text("summary"),
+        observed_arrangement_position: text("observed_arrangement_position"),
+        observed_arrangement_beats: float("observed_arrangement_beats"),
+        arrangement_start_beats: float("arrangement_start_beats"),
+        arrangement_end_beats: float("arrangement_end_beats"),
         changed_at_ms: timestamp_ms,
     })
 }
@@ -379,7 +420,7 @@ fn parse_track(track: &Value, is_return: bool) -> ParsedTrack {
 }
 
 fn parse_device(device: &Value) -> ParsedDevice {
-    let params = device
+    let params: Vec<ParsedParam> = device
         .get("parameters")
         .and_then(Value::as_array)
         .map(|array| array.iter().map(parse_param).collect())
@@ -394,6 +435,18 @@ fn parse_device(device: &Value) -> ParsedDevice {
             .get("is_active")
             .and_then(as_loose_bool)
             .unwrap_or(true),
+        initial_enabled: device
+            .get("is_active")
+            .and_then(as_loose_bool)
+            .unwrap_or(true),
+        host_parameter_count: device
+            .get("host_parameter_count")
+            .and_then(Value::as_u64)
+            .map(|value| value as usize)
+            .unwrap_or(params.len()),
+        class_name: read_string(device.get("class_display_name"))
+            .or_else(|| read_string(device.get("class_name"))),
+        preset_name: read_string(device.get("preset_name")),
         params,
     }
 }
@@ -409,11 +462,135 @@ fn parse_param(param: &Value) -> ParsedParam {
         ableton_id: read_id(param.get("id")),
         name: read_string(param.get("name")),
         value: param.get("value").and_then(Value::as_f64),
+        display_value: read_string(param.get("display_value")),
+        initial_value: param.get("value").and_then(Value::as_f64),
+        initial_display_value: read_string(param.get("display_value")),
+        default_value: param.get("default_value").and_then(Value::as_f64),
         min: param.get("min").and_then(Value::as_f64),
         max: param.get("max").and_then(Value::as_f64),
         normalized_value: param.get("normalized_value").and_then(Value::as_f64),
+        is_quantized: param.get("is_quantized").and_then(as_loose_bool),
+        value_items: param
+            .get("value_items")
+            .and_then(Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|item| read_string(Some(item)))
+                    .collect()
+            })
+            .unwrap_or_default(),
+        automation_state: param.get("automation_state").and_then(Value::as_i64),
+        state: param.get("state").and_then(Value::as_i64),
+        is_enabled: param.get("is_enabled").and_then(as_loose_bool),
         children,
     }
+}
+
+/// Apply the earliest state in which each device/parameter was observed to the
+/// newest structural tree. Snapshot events remain immutable; rebuilding this
+/// projection can therefore never redefine a baseline as "whatever is true
+/// now". Parameters introduced later use the first snapshot in which they
+/// actually appeared rather than inheriting a fictional project-load value.
+pub fn apply_first_observed_states(latest: &mut [ParsedTrack], chronological: &[Vec<ParsedTrack>]) {
+    let mut device_enabled: HashMap<String, bool> = HashMap::new();
+    let mut parameter_values: HashMap<String, (Option<f64>, Option<String>)> = HashMap::new();
+
+    for tree in chronological {
+        for (track_index, track) in tree.iter().enumerate() {
+            let track_key = observation_key(
+                "track",
+                track.ableton_id.as_deref(),
+                track.name.as_deref(),
+                track_index,
+            );
+            for (device_index, device) in track.devices.iter().enumerate() {
+                let device_key = format!(
+                    "{}::{}",
+                    track_key,
+                    observation_key(
+                        "device",
+                        device.ableton_id.as_deref(),
+                        device.name.as_deref(),
+                        device_index
+                    )
+                );
+                device_enabled
+                    .entry(device_key.clone())
+                    .or_insert(device.enabled);
+                for (parameter_index, parameter) in device.params.iter().enumerate() {
+                    let parameter_key = format!(
+                        "{}::{}",
+                        device_key,
+                        observation_key(
+                            "parameter",
+                            parameter.ableton_id.as_deref(),
+                            parameter.name.as_deref(),
+                            parameter_index
+                        )
+                    );
+                    parameter_values
+                        .entry(parameter_key)
+                        .or_insert_with(|| (parameter.value, parameter.display_value.clone()));
+                }
+            }
+        }
+    }
+
+    for (track_index, track) in latest.iter_mut().enumerate() {
+        let track_key = observation_key(
+            "track",
+            track.ableton_id.as_deref(),
+            track.name.as_deref(),
+            track_index,
+        );
+        for (device_index, device) in track.devices.iter_mut().enumerate() {
+            let device_key = format!(
+                "{}::{}",
+                track_key,
+                observation_key(
+                    "device",
+                    device.ableton_id.as_deref(),
+                    device.name.as_deref(),
+                    device_index
+                )
+            );
+            if let Some(enabled) = device_enabled.get(&device_key) {
+                device.initial_enabled = *enabled;
+            }
+            for (parameter_index, parameter) in device.params.iter_mut().enumerate() {
+                let parameter_key = format!(
+                    "{}::{}",
+                    device_key,
+                    observation_key(
+                        "parameter",
+                        parameter.ableton_id.as_deref(),
+                        parameter.name.as_deref(),
+                        parameter_index
+                    )
+                );
+                if let Some((value, display)) = parameter_values.get(&parameter_key) {
+                    parameter.initial_value = *value;
+                    parameter.initial_display_value = display.clone();
+                }
+            }
+        }
+    }
+}
+
+fn observation_key(
+    kind: &str,
+    ableton_id: Option<&str>,
+    name: Option<&str>,
+    index: usize,
+) -> String {
+    if let Some(id) = ableton_id.filter(|id| !id.trim().is_empty()) {
+        return format!("{kind}:id:{id}");
+    }
+    format!(
+        "{kind}:name:{}:idx:{index}",
+        name.unwrap_or("").trim().to_lowercase()
+    )
 }
 
 /// Map a device to its chain role. Trusts a bridge-provided `role` string first
@@ -495,6 +672,8 @@ pub struct ChangeEvent {
     pub automation_start_ms: Option<u64>,
     pub automation_start_position: Option<String>,
     pub automation_end_position: Option<String>,
+    pub observed_arrangement_position: Option<String>,
+    pub observed_arrangement_beats: Option<f64>,
 }
 
 /// The string a change's track is grouped by: Live's stable track_id when the
@@ -584,6 +763,8 @@ pub fn build_parameter_changes(
             automation_start_ms: change.automation_start_ms,
             automation_start_position: change.automation_start_position.clone(),
             automation_end_position: change.automation_end_position.clone(),
+            observed_arrangement_position: change.observed_arrangement_position.clone(),
+            observed_arrangement_beats: change.observed_arrangement_beats,
             changed_at_ms: change.timestamp_ms,
         });
 
@@ -721,7 +902,10 @@ mod tests {
         let child = &tracks[1];
 
         assert_eq!(parent.track_type, TrackType::Group);
-        assert_eq!(parent.group_ableton_id, None, "a top-level group has no parent");
+        assert_eq!(
+            parent.group_ableton_id, None,
+            "a top-level group has no parent"
+        );
         assert_eq!(child.group_ableton_id.as_deref(), Some("g1"));
         assert_eq!(
             child.group_ableton_id.as_deref(),
@@ -778,6 +962,72 @@ mod tests {
     }
 
     #[test]
+    fn device_checkpoint_keeps_host_visible_parameter_metadata() {
+        let payload = json!({
+            "tracks": [{
+                "index": 0, "id": "t1", "name": "Lead",
+                "devices": [{
+                    "id": "d1", "name": "Serum 2", "type": 1,
+                    "class_display_name": "Serum 2 VST3",
+                    "preset_name": "Glass Lead",
+                    "host_parameter_count": 2,
+                    "parameters": [{
+                        "id": "p1", "name": "Arp", "value": 1.0,
+                        "display_value": "On", "min": 0.0, "max": 1.0,
+                        "is_quantized": true, "value_items": ["Off", "On"],
+                        "automation_state": 1, "state": 0, "is_enabled": true
+                    }]
+                }]
+            }]
+        });
+        let tracks = parse_session_tree(&payload);
+        let device = &tracks[0].devices[0];
+        let parameter = &device.params[0];
+        assert_eq!(device.host_parameter_count, 2);
+        assert_eq!(device.class_name.as_deref(), Some("Serum 2 VST3"));
+        assert_eq!(device.preset_name.as_deref(), Some("Glass Lead"));
+        assert_eq!(parameter.display_value.as_deref(), Some("On"));
+        assert_eq!(parameter.initial_display_value.as_deref(), Some("On"));
+        assert_eq!(parameter.value_items, vec!["Off", "On"]);
+        assert_eq!(parameter.automation_state, Some(1));
+        assert_eq!(parameter.is_enabled, Some(true));
+    }
+
+    #[test]
+    fn rebuild_preserves_earliest_observed_value_for_each_parameter() {
+        let first = parse_session_tree(&json!({
+            "tracks": [{"index": 0, "id": "t1", "name": "Lead", "devices": [{
+                "id": "d1", "name": "Serum 2", "is_active": true, "parameters": [
+                    {"id": "p1", "name": "Arp", "value": 0.0, "display_value": "Off"}
+                ]
+            }]}]
+        }));
+        let second = parse_session_tree(&json!({
+            "tracks": [{"index": 0, "id": "t1", "name": "Lead", "devices": [{
+                "id": "d1", "name": "Serum 2", "is_active": false, "parameters": [
+                    {"id": "p1", "name": "Arp", "value": 1.0, "display_value": "On"},
+                    {"id": "p2", "name": "Rate", "value": 0.5, "display_value": "1/8"}
+                ]
+            }]}]
+        }));
+        let mut latest = second.clone();
+        apply_first_observed_states(&mut latest, &[first, second]);
+        let device = &latest[0].devices[0];
+        assert!(device.initial_enabled);
+        assert!(!device.enabled);
+        assert_eq!(
+            device.params[0].initial_display_value.as_deref(),
+            Some("Off")
+        );
+        assert_eq!(device.params[0].display_value.as_deref(), Some("On"));
+        assert_eq!(
+            device.params[1].initial_display_value.as_deref(),
+            Some("1/8"),
+            "a parameter introduced later starts where it was first actually seen"
+        );
+    }
+
+    #[test]
     fn before_after_chains_within_a_parameter() {
         let changes = vec![
             ChangeEvent {
@@ -798,6 +1048,8 @@ mod tests {
                 automation_start_ms: None,
                 automation_start_position: None,
                 automation_end_position: None,
+                observed_arrangement_position: None,
+                observed_arrangement_beats: None,
             },
             ChangeEvent {
                 event_id: 2,
@@ -817,6 +1069,8 @@ mod tests {
                 automation_start_ms: None,
                 automation_start_position: None,
                 automation_end_position: None,
+                observed_arrangement_position: None,
+                observed_arrangement_beats: None,
             },
         ];
 
@@ -861,6 +1115,8 @@ mod tests {
                 automation_start_ms: None,
                 automation_start_position: None,
                 automation_end_position: None,
+                observed_arrangement_position: None,
+                observed_arrangement_beats: None,
             },
             ChangeEvent {
                 event_id: 2,
@@ -880,6 +1136,8 @@ mod tests {
                 automation_start_ms: None,
                 automation_start_position: None,
                 automation_end_position: None,
+                observed_arrangement_position: None,
+                observed_arrangement_beats: None,
             },
         ];
         let rows = build_parameter_changes(changes, &HashMap::new());
@@ -908,6 +1166,8 @@ mod tests {
             automation_start_ms: None,
             automation_start_position: None,
             automation_end_position: None,
+            observed_arrangement_position: Some("Bar 33 · Beat 2".into()),
+            observed_arrangement_beats: Some(129.0),
         }];
 
         let rows = build_parameter_changes(changes, &HashMap::new());
@@ -917,6 +1177,11 @@ mod tests {
         assert_eq!(rows[0].after_value, Some(0.8));
         assert_eq!(rows[0].before_value_percent, Some(20.0));
         assert_eq!(rows[0].after_value_percent, Some(80.0));
+        assert_eq!(
+            rows[0].observed_arrangement_position.as_deref(),
+            Some("Bar 33 · Beat 2")
+        );
+        assert_eq!(rows[0].observed_arrangement_beats, Some(129.0));
     }
 
     #[test]
@@ -944,6 +1209,8 @@ mod tests {
                 automation_start_ms: None,
                 automation_start_position: None,
                 automation_end_position: None,
+                observed_arrangement_position: None,
+                observed_arrangement_beats: None,
             },
             ChangeEvent {
                 event_id: 2,
@@ -963,6 +1230,8 @@ mod tests {
                 automation_start_ms: None,
                 automation_start_position: None,
                 automation_end_position: None,
+                observed_arrangement_position: None,
+                observed_arrangement_beats: None,
             },
         ];
 
@@ -1032,7 +1301,8 @@ mod tests {
         })
         .to_string();
 
-        let edit = parse_note_edit(42, 1_700_000_000_000, None, None, Some(&payload)).expect("parsed");
+        let edit =
+            parse_note_edit(42, 1_700_000_000_000, None, None, Some(&payload)).expect("parsed");
 
         assert_eq!(edit.id, "note-edit-42");
         assert_eq!(edit.track_name.as_deref(), Some("Bass"));
@@ -1040,7 +1310,10 @@ mod tests {
         assert_eq!(edit.change_kind.as_deref(), Some("notes_added"));
         assert_eq!(edit.note_count, Some(16));
         assert_eq!(edit.previous_note_count, Some(12));
-        assert_eq!(edit.summary.as_deref(), Some("16 notes (+4), C1-G1 -> C1-G2"));
+        assert_eq!(
+            edit.summary.as_deref(),
+            Some("16 notes (+4), C1-G1 -> C1-G2")
+        );
         assert_eq!(edit.changed_at_ms, 1_700_000_000_000);
     }
 
@@ -1049,7 +1322,14 @@ mod tests {
         // The column is what every other read path joins on; a stale payload
         // name must not win over it.
         let payload = json!({ "track_name": "payload name", "note_count": 4 }).to_string();
-        let edit = parse_note_edit(1, 0, Some("column name".into()), Some("stable-id".into()), Some(&payload)).unwrap();
+        let edit = parse_note_edit(
+            1,
+            0,
+            Some("column name".into()),
+            Some("stable-id".into()),
+            Some(&payload),
+        )
+        .unwrap();
         assert_eq!(edit.track_name.as_deref(), Some("column name"));
         assert_eq!(edit.track_id.as_deref(), Some("stable-id"));
     }

@@ -275,6 +275,27 @@ describe("splitBySurvival / cutTracks", () => {
 });
 
 describe("buildSittings", () => {
+  it("counts an inserted sample as a production move and sitting activity", () => {
+    const sitting = buildSittings([
+      activity({ atMs: 1000, trackName: "Freeze 113 Serum", trackId: "113", kind: "clip" }),
+    ])[0];
+
+    expect(sitting.moveCount).toBe(1);
+    expect(sitting.noteEditCount).toBe(0);
+    expect(sitting.tracksTouched).toEqual(["Freeze 113 Serum"]);
+    expect(sitting.activeMs).toBe(60_000);
+  });
+
+  it("counts a durable song-memory event without pretending it is sound design", () => {
+    const sitting = buildSittings([
+      activity({ atMs: 1000, trackName: "Main", trackId: "main", kind: "memory" }),
+    ])[0];
+
+    expect(sitting.moveCount).toBe(1);
+    expect(sitting.kind).toBe("session");
+    expect(sitting.label).toBe("a work session");
+  });
+
   it("recognizes settled mixer moves across channels as a mix pass", () => {
     const sitting = buildSittings([
       activity({ atMs: 0, trackName: "Lead", trackId: "101", deviceName: "Mixer" }),

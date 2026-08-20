@@ -25,7 +25,7 @@ type NavItem = {
 
 const NAV_ITEMS: NavItem[] = [
   { id: "projects", label: "Projects", hint: "Songs & versions", shortcut: "Alt+1" },
-  { id: "recap", label: "Recap", hint: "Session summary", shortcut: "Alt+2" },
+  { id: "recap", label: "Report", hint: "What happened, step by step", shortcut: "Alt+2" },
   { id: "timeline", label: "Timeline", hint: "Workspace", shortcut: "Alt+3" },
   { id: "organizer", label: "Organizer", hint: "Mixes & releases", shortcut: "Alt+4" },
   { id: "planner", label: "Planner", hint: "Calendar & tasks", shortcut: "Alt+5" },

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { CreativeMoment, NoteEdit, ParameterChange } from "../../../types";
+import type { CreativeMoment, NoteEdit, ParameterChange, SavedSessionEvent } from "../../../types";
 import {
   activeDurationMs,
   buildLookups,
@@ -11,6 +11,8 @@ import {
   describeNoteEdit,
   clipLabel,
   formatDuration,
+  formatDayLabel,
+  isDifferentDay,
   formatElapsed,
   formatWhen,
   formatClock,
@@ -51,6 +53,39 @@ function makeChange(overrides: Partial<ParameterChange> = {}): ParameterChange {
   };
 }
 
+function makeSessionEvent(overrides: Partial<SavedSessionEvent>): SavedSessionEvent {
+  return {
+    id: "event-1",
+    type: "tempo_changed",
+    timestamp_ms: 25_000,
+    summary: null,
+    title: "Tempo changed",
+    description: "Tempo changed",
+    source: "control_surface",
+    payload: null,
+    session_id: "take-1",
+    track: null,
+    track_type: null,
+    device: null,
+    device_chain: null,
+    parameter: null,
+    parameter_value: null,
+    previous_parameter_value: null,
+    parameter_value_percent: null,
+    previous_parameter_value_percent: null,
+    parameter_display_value: null,
+    previous_parameter_display_value: null,
+    parameter_is_quantized: null,
+    clip_name: null,
+    sample_name: null,
+    file_path: null,
+    bpm: 128,
+    playing: null,
+    is_heartbeat: false,
+    ...overrides,
+  };
+}
+
 describe("formatElapsed", () => {
   it("renders minutes:seconds", () => {
     expect(formatElapsed(0)).toBe("0:00");
@@ -63,11 +98,12 @@ describe("formatElapsed", () => {
 });
 
 describe("formatDuration", () => {
-  it("scales seconds → minutes → hours", () => {
+  it("scales seconds → minutes → hours → days", () => {
     expect(formatDuration(30_000)).toBe("30 sec");
     expect(formatDuration(90_000)).toBe("1 min");
     expect(formatDuration(3_600_000)).toBe("1 hr");
     expect(formatDuration(4_500_000)).toBe("1 hr 15 min");
+    expect(formatDuration(88.5 * 60 * 60 * 1000)).toBe("3 days 16 hr");
   });
 });
 
@@ -287,6 +323,21 @@ describe("buildShareData / buildShareDocument", () => {
               changed_at_ms: 30_000,
             } satisfies NoteEdit,
           ],
+          clipEvents: [{
+            id: "clip-event-9",
+            event_type: "sample_added",
+            track_name: "Hi Hats",
+            track_id: "hats",
+            clip_name: "Open hat",
+            sample_name: "open_hat.wav",
+            changed_at_ms: 24_000,
+          }],
+          sessionEvents: [makeSessionEvent({
+            id: "10",
+            timestamp_ms: 25_000,
+            bpm: 128,
+            payload: JSON.stringify({ previous_bpm: 124 }),
+          })],
         },
       ],
     });
@@ -296,9 +347,13 @@ describe("buildShareData / buildShareDocument", () => {
     expect(markdown).toContain("**Ableton set:** nightfall_v4");
     expect(markdown).toContain("**Producer:** Gberg");
     expect(markdown).toContain("## Song story");
+    expect(markdown).toContain("## Session path");
     expect(markdown).toContain("## Full timeline");
     expect(markdown).toContain("**Verse hats**: 16 notes (+4)");
-    expect(markdown.indexOf("Bass")).toBeLessThan(markdown.indexOf("Hi Hats"));
+    expect(markdown).toContain("Sample inserted: open_hat.wav");
+    expect(markdown).toContain("Tempo changed: 124 BPM → 128 BPM");
+    const fullTimeline = markdown.slice(markdown.indexOf("## Full timeline"));
+    expect(fullTimeline.indexOf("Bass")).toBeLessThan(fullTimeline.indexOf("Hi Hats"));
   });
 
 });
@@ -417,6 +472,22 @@ describe("describeNoteEdit", () => {
   });
 });
 
+describe("sample insertion activity", () => {
+  it("uses the captured sample filename instead of a generic clip label", () => {
+    const activity: Activity = {
+      id: "sample-1",
+      kind: "clip",
+      trackId: "freeze-113",
+      atMs: 1_000,
+      clipName: "drums_14_kick",
+      assetName: "drums_14_kick.wav",
+      eventType: "sample_added",
+    };
+
+    expect(describeActivity(activity)).toBe("Sample inserted: drums_14_kick.wav");
+  });
+});
+
 describe("formatWhen", () => {
   const start = new Date("2026-07-21T21:36:00").getTime();
 
@@ -445,5 +516,34 @@ describe("formatWhen", () => {
     const ticks = buildTicks(bounds);
     expect(ticks[0].label).toBe(formatWhen(start, start, span));
     expect(ticks[4].label).toBe(formatWhen(start + span, start, span));
+  });
+});
+
+describe("isDifferentDay", () => {
+  // Compared by local calendar date, not by elapsed milliseconds: a session
+  // running from 11pm to 1am crosses a day in two hours, and a reader scanning
+  // bare clock times needs to be told so.
+  it("separates two moments that fall on different local dates", () => {
+    const lateNight = new Date(2026, 7, 14, 23, 30).getTime();
+    const afterMidnight = new Date(2026, 7, 15, 1, 0).getTime();
+    expect(isDifferentDay(lateNight, afterMidnight)).toBe(true);
+  });
+
+  it("keeps a long stretch inside one day together", () => {
+    const morning = new Date(2026, 7, 15, 9, 0).getTime();
+    const night = new Date(2026, 7, 15, 23, 0).getTime();
+    expect(isDifferentDay(morning, night)).toBe(false);
+  });
+
+  it("separates the same day in different years", () => {
+    expect(isDifferentDay(new Date(2025, 7, 15).getTime(), new Date(2026, 7, 15).getTime())).toBe(true);
+  });
+});
+
+describe("formatDayLabel", () => {
+  it("names the weekday and date so a multi-day path has an anchor", () => {
+    const label = formatDayLabel(new Date(2026, 7, 15, 14, 14).getTime());
+    expect(label).toContain("15");
+    expect(label.length).toBeGreaterThan(5);
   });
 });

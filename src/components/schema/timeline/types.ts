@@ -3,6 +3,8 @@
 // agree on one shape without importing the big component file.
 
 import type { NoteChangeKind } from "../../../types/schema";
+import type { ProducerMemoryCategory } from "./eventMemory";
+import type { CapturedEvidence } from "./captureEvidence";
 
 export type LoadStatus = "idle" | "loading" | "ready" | "error";
 export type ExportFormat = "md" | "txt" | "json" | "pdf";
@@ -55,6 +57,40 @@ export const LIVE_REFRESH_EVENT_TYPES = new Set([
   "device_added",
   "device_removed",
   "device_chain_changed",
+  "device_toggled",
+  "device_preset_changed",
+  "tempo_changed",
+  "signature_changed",
+  "time_signature_changed",
+  "scale_changed",
+  "key_changed",
+  "recording_started",
+  "recording_stopped",
+  "clip_recording_started",
+  "clip_recording_stopped",
+  "track_created",
+  "track_deleted",
+  "track_name_changed",
+  "tracks_grouped",
+  "track_ungrouped",
+  "return_track_added",
+  "track_frozen",
+  "track_flattened",
+  "track_routing_changed",
+  "automation_deleted",
+  "scene_launched",
+  "clip_launched",
+  "clip_renamed",
+  "clip_moved",
+  "clip_duplicated",
+  "clip_consolidated",
+  "clip_quantized",
+  "notes_quantized",
+  "quantize_applied",
+  "capture_midi",
+  "midi_captured",
+  "warp_mode_changed",
+  "project_saved",
 ]);
 
 export type LiveRecallEvent = {
@@ -79,7 +115,7 @@ export const BRIDGE_LOG_LIMIT = 20;
 // changing inside a clip.
 export type Activity = {
   id: string;
-  kind: "move" | "note" | "noteEdit" | "clip";
+  kind: "move" | "note" | "noteEdit" | "clip" | "memory";
   trackId: string;
   atMs: number;
   // move
@@ -102,6 +138,12 @@ export type Activity = {
   // claim that the lane spans the interval.
   automationStartPosition?: string | null;
   automationEndPosition?: string | null;
+  // Where Live's playhead was when the event arrived. Universal context from
+  // bridge v0.6.0; distinct from the object's own Arrangement range below.
+  observedArrangementPosition?: string | null;
+  observedArrangementBeats?: number | null;
+  arrangementStartBeats?: number | null;
+  arrangementEndBeats?: number | null;
   // Whether this parameter is categorical (a mode selector) rather than a
   // continuous value — drives pill-vs-number rendering and suppresses the
   // up/down direction caret (a mode flip has no direction).
@@ -134,6 +176,12 @@ export type Activity = {
     | "audio_clip_recorded"
     | "midi_clip_recorded"
     | "clip_created";
+  // Selected immutable events that explain how the set evolved without being
+  // raw telemetry: tempo, structure, recording, launches, saves, and similar.
+  memoryCategory?: ProducerMemoryCategory;
+  memoryTitle?: string;
+  memorySummary?: string;
+  evidence?: CapturedEvidence | null;
 };
 
 // A run of consecutive same-parameter moves collapsed into one story row.

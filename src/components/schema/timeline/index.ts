@@ -7,3 +7,8 @@ export * from "./format";
 export * from "./graph";
 export * from "./share";
 export * from "./parts";
+export * from "./eventMemory";
+export * from "./captureEvidence";
+export * from "./captureCoverage";
+export * from "./sessionAnalysis";
+export * from "./passagePresenter";

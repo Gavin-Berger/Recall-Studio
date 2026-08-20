@@ -14,6 +14,7 @@ import type {
   ProjectSchema,
   TimelineClipEvent,
 } from "../../types/schema";
+import type { SavedSession } from "../../types/recall";
 
 /** Rebuild the normalized tables for a session from its event log. */
 export function materializeSessionSchema(sessionId: string): Promise<void> {
@@ -40,6 +41,11 @@ export function getNoteEdits(sessionId: string): Promise<NoteEdit[]> {
 /** Audio/sample drops and newly created clips, for timeline activity density. */
 export function getTimelineClipEvents(sessionId: string): Promise<TimelineClipEvent[]> {
   return invoke<TimelineClipEvent[]>("get_timeline_clip_events", { sessionId });
+}
+
+/** Complete immutable event record for producer-facing timeline context. */
+export function loadSessionEvents(sessionId: string): Promise<SavedSession> {
+  return invoke<SavedSession>("load_session_events", { sessionId });
 }
 
 export function listCreativeMoments(sessionId: string): Promise<CreativeMoment[]> {

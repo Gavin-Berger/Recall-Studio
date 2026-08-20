@@ -33,6 +33,10 @@ import {
 } from "./features/planner/notifications";
 import { localDateKey } from "./features/planner/planner";
 import { abletonSetName } from "./features/sessionFormat";
+import {
+  REPORT_PREVIEW_SESSION_ID,
+  reportPreviewSessions,
+} from "./features/projects/sessionReportPreview";
 import type {
   ConnectionStatus,
   DailyPlanReminderSettings,
@@ -62,6 +66,9 @@ const POLL_INTERVAL_MS = 1000;
 const BACKGROUND_POLL_INTERVAL_MS = 30_000;
 const PRODUCER_NAME_STORAGE_KEY = "recall-studio.producer-name";
 const THEME_STORAGE_KEY = "recall-studio.theme";
+const REPORT_PREVIEW =
+  import.meta.env.DEV &&
+  new URLSearchParams(window.location.search).get("reportPreview") === "1";
 
 function loadProducerName(): string {
   try {
@@ -101,7 +108,7 @@ function isTypingTarget(target: EventTarget | null): boolean {
 }
 
 function App() {
-  const [surface, setSurface] = useState<AppSurface>("projects");
+  const [surface, setSurface] = useState<AppSurface>(REPORT_PREVIEW ? "recap" : "projects");
   const [reportOpen, setReportOpen] = useState(false);
   const [connection, setConnection] = useState<ConnectionStatus>({
     connected: false,
@@ -109,14 +116,18 @@ function App() {
     last_message: null,
     bridge_version: null,
   });
-  const [savedSessions, setSavedSessions] = useState<SavedSessionMetadata[]>([]);
+  const [savedSessions, setSavedSessions] = useState<SavedSessionMetadata[]>(
+    REPORT_PREVIEW ? reportPreviewSessions : [],
+  );
   const [savedProjects, setSavedProjects] = useState<SavedProject[]>([]);
-  const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
+  const [selectedSessionId, setSelectedSessionId] = useState<string | null>(
+    REPORT_PREVIEW ? REPORT_PREVIEW_SESSION_ID : null,
+  );
   // Which project the versions surface is showing. The library poll keeps the
   // project object itself fresh, so new .als versions appear while you look.
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
-  const [libraryReady, setLibraryReady] = useState(false);
-  const [enteredStudio, setEnteredStudio] = useState(false);
+  const [libraryReady, setLibraryReady] = useState(REPORT_PREVIEW);
+  const [enteredStudio, setEnteredStudio] = useState(REPORT_PREVIEW);
   const [producerName, setProducerName] = useState(loadProducerName);
   const [theme, setTheme] = useState<StudioTheme>(loadTheme);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -594,6 +605,7 @@ function App() {
         <SessionRecapScreen
           sessionId={effectiveSessionId}
           sessions={savedSessions}
+          onSelectSession={handleOpenRecap}
           onOpenTimeline={handleOpenTimeline}
           onOpenProjects={() => setSurface("projects")}
         />

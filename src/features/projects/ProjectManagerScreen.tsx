@@ -8,6 +8,7 @@ import {
 import { RecallMark } from "../../components/RecallMark";
 import { abletonSetName, describeBridgeSet, formatSessionDate, formatSessionDuration } from "../sessionFormat";
 import { RelinkDialog, type AlsFileChoice } from "./RelinkDialog";
+import { ReportIcon } from "./ReportIcons";
 import { detectTakeMismatch } from "./takeMismatch";
 import type {
   ConnectionStatus,
@@ -101,6 +102,15 @@ export function ProjectManagerScreen({
     () => projects.flatMap((project) => project.captures).concat(unassignedSessions),
     [projects, unassignedSessions],
   );
+  const reportSession = useMemo(() => {
+    if (activeSession) return activeSession;
+    const selected = allCaptures.find((session) => session.id === selectedSessionId);
+    if (selected) return selected;
+    return allCaptures.reduce<SavedSessionMetadata | null>(
+      (latest, session) => !latest || session.last_updated_at_ms > latest.last_updated_at_ms ? session : latest,
+      null,
+    );
+  }, [activeSession, allCaptures, selectedSessionId]);
   const totalMoments = allCaptures.reduce((total, session) => total + session.creative_event_count, 0);
 
   const trimmedQuery = query.trim().toLowerCase();
@@ -274,6 +284,18 @@ export function ProjectManagerScreen({
                 </button>
               )}
             </label>
+
+            {reportSession && (
+              <button
+                type="button"
+                className="home-action home-action--report"
+                title={`Open the producer report for ${captureName(reportSession)}`}
+                onClick={() => onOpenRecap(reportSession.id)}
+              >
+                <ReportIcon name="overview" />
+                {reportSession.ended_at_ms === null ? "Open Live Report" : "Open Report"}
+              </button>
+            )}
 
             <button
               type="button"
@@ -879,8 +901,9 @@ function TakeRow({
       </span>
 
       <span className="px-take__actions">
-        <button type="button" className="px-btn" disabled={busy} onClick={() => onOpenRecap(session.id)}>
-          Recap
+        <button type="button" className="px-btn px-btn--report" disabled={busy} onClick={() => onOpenRecap(session.id)}>
+          <ReportIcon name="overview" />
+          Report
         </button>
         <button type="button" className="px-btn" disabled={busy} onClick={() => onOpenTimeline(session.id)}>
           Timeline

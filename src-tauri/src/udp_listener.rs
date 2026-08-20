@@ -354,6 +354,26 @@ fn normalize_udp_json(mut value: Value) -> Result<Value, String> {
     let device_chain = find_string(object, payload_obj, &["device_chain", "chain"]);
     let bpm = find_f64(object, payload_obj, &["bpm", "tempo"]);
     let playing = find_bool(object, payload_obj, &["playing", "is_playing"]);
+    let observed_arrangement_position = find_string(
+        object,
+        payload_obj,
+        &["observed_arrangement_position"],
+    );
+    let observed_arrangement_beats = find_f64(
+        object,
+        payload_obj,
+        &["observed_arrangement_beats"],
+    );
+    let arrangement_start_beats = find_f64(
+        object,
+        payload_obj,
+        &["arrangement_start_beats"],
+    );
+    let arrangement_end_beats = find_f64(
+        object,
+        payload_obj,
+        &["arrangement_end_beats"],
+    );
     let parameter_value = find_f64(
         object,
         payload_obj,
@@ -451,6 +471,25 @@ fn normalize_udp_json(mut value: Value) -> Result<Value, String> {
         Some(v) => object.insert("playing".to_string(), json!(v)),
         None => object.insert("playing".to_string(), Value::Null),
     };
+    match observed_arrangement_position {
+        Some(v) => object.insert(
+            "observed_arrangement_position".to_string(),
+            Value::String(v),
+        ),
+        None => object.insert("observed_arrangement_position".to_string(), Value::Null),
+    };
+    match observed_arrangement_beats {
+        Some(v) => object.insert("observed_arrangement_beats".to_string(), json!(v)),
+        None => object.insert("observed_arrangement_beats".to_string(), Value::Null),
+    };
+    match arrangement_start_beats {
+        Some(v) => object.insert("arrangement_start_beats".to_string(), json!(v)),
+        None => object.insert("arrangement_start_beats".to_string(), Value::Null),
+    };
+    match arrangement_end_beats {
+        Some(v) => object.insert("arrangement_end_beats".to_string(), json!(v)),
+        None => object.insert("arrangement_end_beats".to_string(), Value::Null),
+    };
     match parameter_value {
         Some(v) => object.insert("parameter_value".to_string(), json!(v)),
         None => object.insert("parameter_value".to_string(), Value::Null),
@@ -509,6 +548,10 @@ const LOGGED_EVENT_TYPES: &[&str] = &[
     "parameter_changed",
     "automation_created",
     "automation_edited",
+    "warp_markers_changed",
+    "clip_gain_changed",
+    "clip_pitch_changed",
+    "clip_loop_changed",
     // Settled mix decisions
     "volume_changed",
     "pan_changed",
@@ -524,6 +567,12 @@ const LOGGED_EVENT_TYPES: &[&str] = &[
     "clip_launched",
     // Session View performance
     "scene_launched",
+    "scene_created",
+    "scene_renamed",
+    "cue_point_added",
+    "cue_point_renamed",
+    "cue_point_moved",
+    "project_saved",
     // Deep snapshots that feed the schema projection
     "live_set_snapshot",
     "session_snapshot",
@@ -1867,6 +1916,24 @@ mod tests {
         }));
         assert_eq!(obj["sample_name"], json!("kick.wav"));
         assert_eq!(obj["track_type"], json!("audio"));
+    }
+
+    #[test]
+    fn normalize_promotes_musical_location_without_conflating_object_range() {
+        let obj = normalized(json!({
+            "event_type": "sample_added",
+            "payload": {
+                "observed_arrangement_position": "Bar 41 · Beat 3",
+                "observed_arrangement_beats": 162.0,
+                "arrangement_start_beats": 128.0,
+                "arrangement_end_beats": 132.0
+            }
+        }));
+
+        assert_eq!(obj["observed_arrangement_position"], json!("Bar 41 · Beat 3"));
+        assert_eq!(obj["observed_arrangement_beats"], json!(162.0));
+        assert_eq!(obj["arrangement_start_beats"], json!(128.0));
+        assert_eq!(obj["arrangement_end_beats"], json!(132.0));
     }
 
     #[test]

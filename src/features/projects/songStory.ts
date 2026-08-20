@@ -30,7 +30,9 @@ export type StoryActivity = {
   deviceName: string | null;
   role: DeviceRole | null;
   trackType: TrackType | null;
-  kind: "move" | "noteEdit";
+  // A clip/sample insertion is a concrete production move. It participates in
+  // sitting boundaries and move totals, but not device-role classification.
+  kind: "move" | "noteEdit" | "clip" | "memory";
 };
 
 // What a sitting looked like, in producer terms rather than "kind" flags.

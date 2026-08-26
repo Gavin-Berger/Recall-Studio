@@ -7,6 +7,7 @@ import { CommitGraphView } from "./CommitGraphView";
 import { laneColorVar } from "./versionGraphGeometry";
 import {
   elbowPath,
+  groupByDay,
   landingSessionId,
   laneX,
   projectHistory,
@@ -148,13 +149,21 @@ function Contents({ state }: { state: ContentsState }) {
     );
   }
 
-  const groups: { title: string; total: number; rows: { key: string; label: string; context: string | null; changes?: number }[] }[] = [
-    { title: "Tracks", total: contents.totals.tracks, rows: contents.tracks },
-    { title: "Devices", total: contents.totals.devices, rows: contents.devices },
-    { title: "Parameters", total: contents.totals.parameters, rows: contents.parameters },
-    { title: "Notes", total: contents.totals.notes, rows: contents.notes },
-    { title: "Added", total: contents.totals.added, rows: contents.added },
-  ].filter((group) => group.rows.length > 0);
+  type Group = {
+    title: string;
+    total: number;
+    rows: { key: string; label: string; context: string | null; changes?: number }[];
+    /** Everything was touched once, so there is nothing worth naming. */
+    spread: boolean;
+  };
+
+  const groups: Group[] = [
+    { title: "Tracks", total: contents.totals.tracks, rows: contents.tracks, spread: contents.evenlySpread.tracks },
+    { title: "Devices", total: contents.totals.devices, rows: contents.devices, spread: contents.evenlySpread.devices },
+    { title: "Parameters", total: contents.totals.parameters, rows: contents.parameters, spread: contents.evenlySpread.parameters },
+    { title: "Notes", total: contents.totals.notes, rows: contents.notes, spread: false },
+    { title: "Added", total: contents.totals.added, rows: contents.added, spread: false },
+  ].filter((group) => group.rows.length > 0 || group.total > 0);
 
   return (
     <div className="ph-contents">
@@ -164,18 +173,26 @@ function Contents({ state }: { state: ContentsState }) {
             {group.title}
             <span className="ph-contents__count">{group.total}</span>
           </h3>
-          <ul className="ph-contents__list">
-            {group.rows.map((row) => (
-              <li key={row.key}>
-                <span className="ph-contents__label">{row.label}</span>
-                {row.context && <span className="ph-contents__ctx">{row.context}</span>}
-                {typeof row.changes === "number" && (
-                  <span className="ph-contents__n">{row.changes.toLocaleString()}</span>
-                )}
-              </li>
-            ))}
-          </ul>
-          {group.total > group.rows.length && (
+          {group.rows.length > 0 ? (
+            <ul className="ph-contents__list">
+              {group.rows.map((row) => (
+                <li key={row.key}>
+                  <span className="ph-contents__label">{row.label}</span>
+                  {row.context && <span className="ph-contents__ctx">{row.context}</span>}
+                  {typeof row.changes === "number" && (
+                    <span className="ph-contents__n">{row.changes.toLocaleString()}</span>
+                  )}
+                </li>
+              ))}
+            </ul>
+          ) : (
+            // Nothing stood out. Naming five at random would read as a finding
+            // when it is really the shape of a plugin's parameter list.
+            <p className="ph-contents__even">
+              {group.spread ? "each touched once" : "nothing recorded"}
+            </p>
+          )}
+          {group.rows.length > 0 && group.total > group.rows.length && (
             <p className="ph-contents__more">
               +{group.total - group.rows.length} more
             </p>
@@ -183,6 +200,49 @@ function Contents({ state }: { state: ContentsState }) {
         </section>
       ))}
     </div>
+  );
+}
+
+/**
+ * A day heading that the rail runs straight through.
+ *
+ * GitHub groups commits by day and can get away with a plain heading because it
+ * draws no graph beside them. Here a heading with no rail would cut every lane
+ * in half at each date, so the divider draws the pass-through lines of the row
+ * BELOW it — the lanes alive at that point — with no node of its own.
+ */
+function DayDivider({
+  label,
+  lanes,
+  shape,
+}: {
+  label: string;
+  lanes: number[];
+  shape: RailShape;
+}) {
+  return (
+    <li className="ph-day">
+      <svg
+        className="ph-rail ph-rail--pass"
+        width={shape.columns * RAIL_COL}
+        height={28}
+        viewBox={`0 0 ${shape.columns * RAIL_COL} 28`}
+        aria-hidden="true"
+      >
+        {lanes.map((lane) => (
+          <line
+            key={lane}
+            className="ph-rail__line"
+            x1={laneX(lane)}
+            y1={0}
+            x2={laneX(lane)}
+            y2={28}
+            style={{ stroke: laneColorVar(shape.depthOf.get(lane) ?? 0) }}
+          />
+        ))}
+      </svg>
+      <h2 className="ph-day__label">{label}</h2>
+    </li>
   );
 }
 
@@ -246,8 +306,8 @@ function CommitRow({
           <span className="ph-row__why">{commit.reason}</span>
 
           <span className="ph-row__meta">
-            <span>{formatSessionDate(commit.atMs)}</span>
-            <span aria-hidden="true">·</span>
+            {/* The date lives on the day heading above; repeating it on every
+                row under it is noise. */}
             <span>{formatClock(commit.atMs)}</span>
             <span aria-hidden="true">·</span>
             <span>{formatSessionDuration(commit.session)}</span>
@@ -326,6 +386,7 @@ export function ProjectHistoryScreen({
   const history = useMemo(() => projectHistory(project?.captures ?? []), [project]);
   const { rows, artifacts, emptyCheckpoints } = history;
   const shape = useMemo(() => railShape(rows), [rows]);
+  const days = useMemo(() => groupByDay(rows), [rows]);
   const commits = useMemo(() => rows.map((row) => row.commit), [rows]);
 
   // Captured once per project rather than per row, so every "3d ago" on screen
@@ -419,19 +480,32 @@ export function ProjectHistoryScreen({
       {rows.length > 0 && (
         <section className="ph__list" aria-label="Commits">
           <ol className="ph-rows">
-            {rows.map((row, index) => (
-              <CommitRow
-                key={row.commit.id}
-                row={row}
-                index={index}
-                shape={shape}
-                nowMs={nowMs}
-                contents={contents[row.commit.id] ?? null}
-                selected={row.commit.id === selectedRow?.commit.id}
-                onSelect={() => setSelectedCommitId(row.commit.id)}
-                onOpenReport={() => onOpenReport(landingSessionId(row))}
-                onOpenWorkspace={() => onOpenWorkspace(landingSessionId(row))}
-              />
+            {days.map((day) => (
+              <li key={day.key} className="ph-day-group">
+                <ol className="ph-rows">
+                  <DayDivider
+                    label={formatSessionDate(day.atMs)}
+                    // The lanes alive at the first row under this heading are
+                    // the ones that must keep running through it.
+                    lanes={day.entries[0]?.row.railLanes ?? []}
+                    shape={shape}
+                  />
+                  {day.entries.map(({ row, index }) => (
+                    <CommitRow
+                      key={row.commit.id}
+                      row={row}
+                      index={index}
+                      shape={shape}
+                      nowMs={nowMs}
+                      contents={contents[row.commit.id] ?? null}
+                      selected={row.commit.id === selectedRow?.commit.id}
+                      onSelect={() => setSelectedCommitId(row.commit.id)}
+                      onOpenReport={() => onOpenReport(landingSessionId(row))}
+                      onOpenWorkspace={() => onOpenWorkspace(landingSessionId(row))}
+                    />
+                  ))}
+                </ol>
+              </li>
             ))}
           </ol>
         </section>

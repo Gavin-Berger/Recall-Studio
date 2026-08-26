@@ -52,6 +52,11 @@ export type ContentsEntry = {
 };
 
 export type CommitContents = {
+  /**
+   * Groups where everything was touched exactly once, so there is nothing to
+   * rank. The surface reports the size instead of naming five at random.
+   */
+  evenlySpread: { tracks: boolean; devices: boolean; parameters: boolean };
   tracks: ContentsEntry[];
   devices: ContentsEntry[];
   parameters: ContentsEntry[];
@@ -70,10 +75,22 @@ export type CommitContents = {
   empty: boolean;
 };
 
+/**
+ * Rank a group, and drop the long tail of things touched exactly once.
+ *
+ * Real data made the case: one commit moved 52 parameters, 47 of them a single
+ * time, so the "top five" was five arbitrary EQ bands all showing 1. That is
+ * not where the work went — it is the shape of a plugin. A row earns its place
+ * by accounting for more than one change; when nothing does, the group reports
+ * its size and says the touches were spread evenly rather than naming five at
+ * random.
+ */
 function rank(map: Map<string, ContentsEntry>): ContentsEntry[] {
-  return [...map.values()]
-    .sort((a, b) => b.changes - a.changes || a.label.localeCompare(b.label))
-    .slice(0, CONTENTS_LIMIT);
+  const ordered = [...map.values()].sort(
+    (a, b) => b.changes - a.changes || a.label.localeCompare(b.label),
+  );
+  const notable = ordered.filter((entry) => entry.changes > 1);
+  return notable.slice(0, CONTENTS_LIMIT);
 }
 
 function bump(
@@ -156,7 +173,15 @@ export function summarizeCommit(
     added: clips.length,
   };
 
+  const spread = (map: Map<string, ContentsEntry>) =>
+    map.size > 0 && [...map.values()].every((entry) => entry.changes === 1);
+
   return {
+    evenlySpread: {
+      tracks: spread(tracks),
+      devices: spread(devices),
+      parameters: spread(parameters),
+    },
     tracks: rank(tracks),
     devices: rank(devices),
     parameters: rank(parameters),
@@ -192,6 +217,14 @@ export function commitHeadline(contents: CommitContents): string {
         : `Worked ${lead.label} and ${contents.totals.tracks - 1} other ${
             contents.totals.tracks === 2 ? "track" : "tracks"
           }`,
+    );
+  } else if (contents.totals.tracks > 0) {
+    // Nothing stood out — every track was touched once. Naming one would imply
+    // the work concentrated there when it did not, so count them instead.
+    parts.push(
+      contents.totals.tracks === 1
+        ? "Touched 1 track"
+        : `Touched ${contents.totals.tracks} tracks`,
     );
   }
 

@@ -75,8 +75,16 @@ export type CommitBasis = "continued" | "branched";
  *
  * Past this, a new set appearing is a fresh start rather than a save-as, and
  * the honest answer is a root with no parent at all.
+ *
+ * Was three days, and the first real project broke it: a four-day gap between
+ * sessions is an ordinary week, not a fresh start, and it stranded a commit as
+ * a root that plainly continued the work before it. Two weeks is the interval
+ * at which a producer genuinely has to reopen the project and remember where
+ * they were. It stays well short of "any earlier commit", which would be the
+ * bare chronology this model exists to avoid — and whatever it links is drawn
+ * dashed and says outright that it was not observed.
  */
-export const CONTINUATION_WINDOW_MS = 1000 * 60 * 60 * 24 * 3;
+export const CONTINUATION_WINDOW_MS = 1000 * 60 * 60 * 24 * 14;
 
 export type ProjectCommit = {
   /** The capture session's id. Stable, and what the Report and workspace key on. */

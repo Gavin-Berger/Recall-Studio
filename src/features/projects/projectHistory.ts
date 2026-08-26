@@ -216,6 +216,45 @@ export function elbowPath(row: HistoryRow): string | null {
   ].join(" ");
 }
 
+/**
+ * The rows split into calendar days, newest first.
+ *
+ * A commit is now a stretch of work rather than a file, so a busy week produces
+ * a lot of them and an undivided list stops being scannable. Git logs and
+ * GitHub both group by day for the same reason: the date is how anyone
+ * actually navigates back to "that thing I did on Tuesday".
+ *
+ * Rows keep their ORIGINAL index. The rail is indexed by position in the whole
+ * list, so renumbering inside a group would break every lane's head/tail and
+ * the lines would stop meeting across a day boundary.
+ */
+export type HistoryDay = {
+  /** Stable key: the local calendar day the work started. */
+  key: string;
+  /** Milliseconds at the start of that day, for formatting. */
+  atMs: number;
+  entries: { row: HistoryRow; index: number }[];
+};
+
+export function groupByDay(rows: HistoryRow[]): HistoryDay[] {
+  const days: HistoryDay[] = [];
+  rows.forEach((row, index) => {
+    const date = new Date(row.commit.atMs);
+    const key = `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`;
+    const last = days[days.length - 1];
+    if (last && last.key === key) {
+      last.entries.push({ row, index });
+      return;
+    }
+    days.push({
+      key,
+      atMs: new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime(),
+      entries: [{ row, index }],
+    });
+  });
+  return days;
+}
+
 /** The session a producer expects to open when they pick a commit. */
 export function landingSessionId(row: HistoryRow): string {
   return row.commit.id;

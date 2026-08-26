@@ -75,13 +75,61 @@ describe("summarizeCommit", () => {
       [
         change({ track_id: "t1", track_name: "Drums" }),
         change({ track_id: "t1", track_name: "Drums" }),
+        change({ track_id: "t1", track_name: "Drums" }),
+        change({ track_id: "t2", track_name: "Bass" }),
         change({ track_id: "t2", track_name: "Bass" }),
       ],
       [],
       [],
     );
     expect(contents.tracks.map((entry) => entry.label)).toEqual(["Drums", "Bass"]);
-    expect(contents.tracks[0]!.changes).toBe(2);
+    expect(contents.tracks[0]!.changes).toBe(3);
+  });
+
+  it("drops the long tail of things touched exactly once", () => {
+    // Real data: one commit moved 52 parameters, 47 of them once. The "top
+    // five" was five arbitrary EQ bands all showing 1, which reads as a
+    // finding when it is really the shape of a plugin.
+    const contents = summarizeCommit(
+      [
+        change({ track_id: "t1", track_name: "Drums" }),
+        change({ track_id: "t1", track_name: "Drums" }),
+        change({ track_id: "t2", track_name: "Bass" }),
+        change({ track_id: "t3", track_name: "Pad" }),
+      ],
+      [],
+      [],
+    );
+    expect(contents.tracks.map((entry) => entry.label)).toEqual(["Drums"]);
+    // The total still reports all three, so nothing is hidden.
+    expect(contents.totals.tracks).toBe(3);
+  });
+
+  it("says a group was evenly spread when nothing stands out", () => {
+    const contents = summarizeCommit(
+      [
+        change({ track_id: "t1", track_name: "Drums" }),
+        change({ track_id: "t2", track_name: "Bass" }),
+      ],
+      [],
+      [],
+    );
+    expect(contents.tracks).toEqual([]);
+    expect(contents.evenlySpread.tracks).toBe(true);
+    expect(contents.totals.tracks).toBe(2);
+  });
+
+  it("does not call a group evenly spread when something does stand out", () => {
+    const contents = summarizeCommit(
+      [
+        change({ track_id: "t1", track_name: "Drums" }),
+        change({ track_id: "t1", track_name: "Drums" }),
+        change({ track_id: "t2", track_name: "Bass" }),
+      ],
+      [],
+      [],
+    );
+    expect(contents.evenlySpread.tracks).toBe(false);
   });
 
   it("keeps two identically named tracks apart", () => {
@@ -117,6 +165,8 @@ describe("summarizeCommit", () => {
     const contents = summarizeCommit(
       [
         change({ device_name: "mixer", device_id: null, parameter_name: "Volume" }),
+        change({ device_name: "mixer", device_id: null, parameter_name: "Volume" }),
+        change({ device_name: "Serum", device_id: "d1" }),
         change({ device_name: "Serum", device_id: "d1" }),
       ],
       [],
@@ -141,14 +191,20 @@ describe("summarizeCommit", () => {
   });
 
   it("names the track a device sits on", () => {
-    const contents = summarizeCommit([change({ track_name: "Drums" })], [], []);
+    const contents = summarizeCommit(
+      [change({ track_name: "Drums" }), change({ track_name: "Drums" })],
+      [],
+      [],
+    );
     expect(contents.devices[0]!.context).toBe("Drums");
   });
 
   it("caps each group so the panel stays a glance", () => {
+    // Two changes each, so every track ranks and the cap is what limits the
+    // list rather than the single-touch filter.
     const many = Array.from({ length: CONTENTS_LIMIT + 4 }, (_, index) =>
       change({ track_id: `t${index}`, track_name: `Track ${index}` }),
-    );
+    ).flatMap((entry) => [entry, { ...entry, id: `${entry.id}b` }]);
     const contents = summarizeCommit(many, [], []);
     expect(contents.tracks).toHaveLength(CONTENTS_LIMIT);
     // The total still reports everything, so the surface can say "+N more".
@@ -182,7 +238,11 @@ describe("summarizeCommit", () => {
   });
 
   it("does not invent a name for an untitled track", () => {
-    const contents = summarizeCommit([change({ track_name: null, track_id: "t9" })], [], []);
+    const contents = summarizeCommit(
+      [change({ track_name: null, track_id: "t9" }), change({ track_name: null, track_id: "t9" })],
+      [],
+      [],
+    );
     expect(contents.tracks[0]!.label).toBe("Untitled track");
   });
 });
@@ -213,15 +273,34 @@ describe("commitHeadline", () => {
 
   it("uses the singular for exactly one other track", () => {
     const contents = summarizeCommit(
-      [change({ track_id: "t1", track_name: "Drums" }), change({ track_id: "t2", track_name: "Bass" })],
+      [
+        change({ track_id: "t1", track_name: "Drums" }),
+        change({ track_id: "t1", track_name: "Drums" }),
+        change({ track_id: "t2", track_name: "Bass" }),
+      ],
       [],
       [],
     );
     expect(commitHeadline(contents)).toContain("1 other track");
   });
 
+  it("counts tracks rather than naming one when the work was spread evenly", () => {
+    // Naming a track here would imply the work concentrated there. It did not.
+    const contents = summarizeCommit(
+      [
+        change({ track_id: "t1", track_name: "Drums" }),
+        change({ track_id: "t2", track_name: "Bass" }),
+        change({ track_id: "t3", track_name: "Pad" }),
+      ],
+      [],
+      [],
+    );
+    expect(commitHeadline(contents)).toContain("Touched 3 tracks");
+    expect(commitHeadline(contents)).not.toContain("Worked");
+  });
+
   it("mentions notes and additions when there are any", () => {
-    const contents = summarizeCommit([change()], [note()], [clip()]);
+    const contents = summarizeCommit([change(), change()], [note()], [clip()]);
     const headline = commitHeadline(contents);
     expect(headline).toContain("1 note edit");
     expect(headline).toContain("1 added");

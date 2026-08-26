@@ -107,7 +107,10 @@
 .ph-row {
   position: relative;
   display: flex;
-  align-items: center;
+  /* Top, not centre: a selected row grows tall with its contents panel and
+     centred actions drift to the middle of it, away from the commit they act
+     on. */
+  align-items: flex-start;
   gap: var(--s2);
   border-top: var(--stroke-hair) solid var(--line-soft);
 }
@@ -234,7 +237,7 @@
 .ph-row__actions {
   display: flex;
   gap: var(--s2);
-  padding-right: var(--s2);
+  padding: var(--s3) var(--s2) 0 0;
   flex: none;
   opacity: 0;
 }
@@ -469,6 +472,50 @@
 
 .ph-contents__more {
   margin: var(--s1) 0 0;
+  color: var(--faint-aa);
+  font-family: var(--font-mono);
+  font-size: var(--t-micro);
+}
+
+/* Day grouping ------------------------------------------------------------ */
+
+/* A commit is a stretch of work, so a busy week makes a long list. Grouping by
+   day is how anyone actually navigates back to "that thing I did on Tuesday" —
+   and the rail runs through the heading so no lane is cut in half by a date. */
+.ph-day-group {
+  list-style: none;
+}
+
+.ph-day-group > .ph-rows {
+  gap: 0;
+}
+
+.ph-day {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  list-style: none;
+}
+
+.ph-rail--pass {
+  margin: 0;
+  flex: none;
+}
+
+.ph-day__label {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: var(--t-micro);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--faint-aa);
+  font-weight: 500;
+}
+
+/* A group with nothing worth naming reports its size instead of listing five
+   arbitrary rows. */
+.ph-contents__even {
+  margin: 0;
   color: var(--faint-aa);
   font-family: var(--font-mono);
   font-size: var(--t-micro);

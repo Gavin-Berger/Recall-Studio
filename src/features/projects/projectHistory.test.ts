@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { SavedSessionMetadata } from "../../types/recall";
 import {
   elbowPath,
+  groupByDay,
   laneX,
   projectHistory,
   RAIL_NODE_Y,
@@ -247,5 +248,42 @@ describe("elbowPath", () => {
   it("draws nothing for a root", () => {
     const rows = rowsOf(linear);
     expect(elbowPath(rows[rows.length - 1]!)).toBeNull();
+  });
+});
+
+describe("groupByDay", () => {
+  it("splits the rows into calendar days, newest first", () => {
+    // linear runs 0h, 5h, 30h, 50h from the same start, so it spans three days.
+    const days = groupByDay(rowsOf(linear));
+    expect(days.length).toBeGreaterThan(1);
+    expect(days[0]!.atMs).toBeGreaterThan(days[days.length - 1]!.atMs);
+  });
+
+  it("keeps commits from the same day together", () => {
+    const days = groupByDay(rowsOf([work("a", "one", 0), work("b", "one", 2)]));
+    expect(days).toHaveLength(1);
+    expect(days[0]!.entries).toHaveLength(2);
+  });
+
+  it("keeps every row's ORIGINAL index", () => {
+    // The rail is indexed by position in the whole list. Renumbering inside a
+    // group would break every lane's head and tail, and the lines would stop
+    // meeting across a day boundary.
+    const rows = rowsOf(linear);
+    const flat = groupByDay(rows).flatMap((day) => day.entries);
+    expect(flat.map((entry) => entry.index)).toEqual(rows.map((_, index) => index));
+    for (const entry of flat) {
+      expect(rows[entry.index]).toBe(entry.row);
+    }
+  });
+
+  it("loses no rows", () => {
+    const rows = rowsOf(returned);
+    const flat = groupByDay(rows).flatMap((day) => day.entries);
+    expect(flat).toHaveLength(rows.length);
+  });
+
+  it("handles an empty history", () => {
+    expect(groupByDay([])).toEqual([]);
   });
 });

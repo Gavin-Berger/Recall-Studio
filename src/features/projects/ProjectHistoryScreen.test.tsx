@@ -106,8 +106,17 @@ function graph() {
   return within(screen.getByRole("group", { name: "Project history" }));
 }
 
+/**
+ * The commit rows only.
+ *
+ * The list nests: an <ol> of day groups, each holding a date divider and its
+ * rows. `getAllByRole("listitem")` would sweep up the groups and dividers too,
+ * so this selects the rows themselves.
+ */
 function commitRows(): HTMLElement[] {
-  return within(screen.getByLabelText("Commits")).getAllByRole("listitem");
+  return Array.from(
+    screen.getByLabelText("Commits").querySelectorAll<HTMLElement>(".ph-row"),
+  );
 }
 
 describe("ProjectHistoryScreen", () => {

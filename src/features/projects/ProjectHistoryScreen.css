@@ -1,0 +1,291 @@
+/* Project history — the graph on top, the version list underneath.
+   Monochrome throughout (DESIGN.md §2): lane luminance carries position, and
+   --signal appears only on selection, focus, and a live capture. No hue is
+   spent on type. Nothing here moves after it arrives (§6). */
+
+/* `.home-surface` is a centering flex container that already supplies the page
+   padding, so this takes the full width it is given and adds none of its own —
+   otherwise the padding doubles and the screen shrinks to its content.
+   No max-width: §8 exempts graph surfaces from the single-column rule, because
+   a squeezed time axis claims events were closer together than they were. */
+.ph {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s5);
+}
+
+.ph--empty {
+  align-items: flex-start;
+  gap: var(--s3);
+  max-width: 46ch;
+}
+
+.ph--empty p {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--t-meta);
+  line-height: 1.55;
+}
+
+/* Header ----------------------------------------------------------------- */
+
+.ph__bar {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--s4);
+  flex-wrap: wrap;
+}
+
+.ph__title h1 {
+  margin: 0;
+  font-size: var(--t-h1);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.ph__subtitle {
+  display: block;
+  margin-top: var(--s1);
+  font-family: var(--font-mono);
+  font-size: var(--t-micro);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--faint-aa);
+}
+
+.ph__picker {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+}
+
+.ph__picker-label {
+  font-family: var(--font-mono);
+  font-size: var(--t-micro);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--faint-aa);
+}
+
+.ph__picker select {
+  background: var(--panel-2);
+  color: var(--paper);
+  border: var(--stroke-hair) solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: var(--s1) var(--s2);
+  font-family: var(--font-body);
+  font-size: var(--t-meta);
+  min-height: 28px;
+}
+
+.ph__picker select:focus-visible {
+  outline: 2px solid var(--signal);
+  outline-offset: 2px;
+}
+
+/* Graph ------------------------------------------------------------------ */
+
+.ph__graph {
+  background: var(--panel);
+  border: var(--stroke-hair) solid var(--line-soft);
+  border-radius: var(--radius);
+  padding: var(--s4);
+}
+
+/* List ------------------------------------------------------------------- */
+
+.ph-rows {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.ph-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  border-top: var(--stroke-hair) solid var(--line-soft);
+}
+
+.ph-row:last-child {
+  border-bottom: var(--stroke-hair) solid var(--line-soft);
+}
+
+.ph-row.is-selected {
+  background: var(--panel-2);
+}
+
+.ph-row__hit {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s3);
+  padding: var(--s3) var(--s2);
+  background: none;
+  border: 0;
+  text-align: left;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+}
+
+.ph-row__hit:focus-visible {
+  outline: 2px solid var(--signal);
+  outline-offset: -2px;
+}
+
+/* The rail glyph repeats the graph's vocabulary: lane luminance for position,
+   filled for captured, dashed ring for a file Recall never watched (§7). */
+.ph-row__rail {
+  display: flex;
+  justify-content: center;
+  width: 18px;
+  padding-top: 3px;
+  flex: none;
+}
+
+.ph-row__node {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  border: var(--stroke-edge) solid;
+}
+
+.ph-row__node--hollow {
+  border-style: dashed;
+}
+
+.ph-row.is-selected .ph-row__node {
+  box-shadow: 0 0 0 3px rgba(var(--signal-rgb), 0.28);
+}
+
+.ph-row__body {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s1);
+}
+
+.ph-row__top {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  flex-wrap: wrap;
+}
+
+.ph-row__name {
+  font-size: var(--t-body);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+/* The parentage reason. Plain language, and it says outright when it guessed —
+   the one line on this surface no other screen carries. */
+.ph-row__why {
+  font-size: var(--t-meta);
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.ph-row__meta {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  flex-wrap: wrap;
+  font-family: var(--font-mono);
+  /* --t-micro is 11px, so --faint-aa is required here: --faint fails AA below
+     19px and DESIGN.md bans it on small text. */
+  font-size: var(--t-micro);
+  color: var(--faint-aa);
+  font-variant-numeric: tabular-nums;
+}
+
+.ph-row__date {
+  color: var(--faint-aa);
+}
+
+.ph-row__actions {
+  display: flex;
+  gap: var(--s2);
+  padding-right: var(--s2);
+  flex: none;
+  opacity: 0;
+}
+
+/* Actions stay hidden until the row is the one you mean, so a long history
+   reads as a list rather than a wall of buttons. Focus reveals them too, or
+   they would be unreachable from the keyboard. */
+.ph-row:hover .ph-row__actions,
+.ph-row.is-selected .ph-row__actions,
+.ph-row:focus-within .ph-row__actions {
+  opacity: 1;
+}
+
+/* Refs ------------------------------------------------------------------- */
+
+.ph-ref {
+  padding: 1px var(--s2);
+  border: var(--stroke-hair) solid var(--line);
+  border-radius: 999px;
+  background: var(--panel-3);
+  font-family: var(--font-mono);
+  font-size: var(--t-micro);
+  letter-spacing: 0.03em;
+  color: var(--paper);
+  white-space: nowrap;
+}
+
+.ph-ref--quiet {
+  color: var(--faint-aa);
+  background: transparent;
+}
+
+.ph-ref--latest {
+  border-color: rgba(var(--signal-rgb), 0.45);
+  color: var(--signal-soft);
+  background: rgba(var(--signal-rgb), 0.1);
+}
+
+/* Live is the one genuinely present-tense fact on this surface. It gets the
+   signal colour and it still does not move — §6's pulse exception belongs to
+   the connection dot alone. */
+.ph-ref--live {
+  border-color: var(--signal);
+  background: rgba(var(--signal-rgb), 0.18);
+  color: var(--signal-soft);
+}
+
+/* Arrival ---------------------------------------------------------------- */
+
+@media (prefers-reduced-motion: no-preference) {
+  .ph-row {
+    animation: ph-arrive var(--m-arrive) var(--ease-arrive) both;
+  }
+}
+
+@keyframes ph-arrive {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@media (max-width: 900px) {
+  .ph-row {
+    flex-wrap: wrap;
+  }
+
+  .ph-row__actions {
+    opacity: 1;
+    padding: 0 var(--s2) var(--s3) 40px;
+  }
+}

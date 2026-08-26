@@ -10,6 +10,7 @@ import { SettingsDialog } from "./components/SettingsDialog";
 import type { StudioTheme } from "./components/SettingsDialog";
 import { ProductionCheatSheet } from "./components/ProductionCheatSheet";
 import { SchemaTimeline } from "./components/schema/SchemaTimeline";
+import { ProjectHistoryScreen } from "./features/projects/ProjectHistoryScreen";
 import {
   NotesScreen,
   PlannerScreen,
@@ -356,8 +357,18 @@ function App() {
     };
   }, [pollInterval, reloadLibrary]);
 
+  // "Open timeline" everywhere in the app means the per-capture workspace —
+  // one sitting, its events on a ruler. That surface moved down a level when
+  // the Timeline slot became the project's version history, so these callers
+  // keep their meaning and only their destination changed.
   function handleOpenTimeline(sessionId?: string) {
     setSelectedSessionId(sessionId ?? effectiveSessionId);
+    setSurface("workspace");
+  }
+
+  // The Timeline proper: a project's whole history as a graph.
+  function handleOpenHistory(projectId: string) {
+    setSelectedProjectId(projectId);
     setSurface("timeline");
   }
 
@@ -383,7 +394,7 @@ function App() {
       await reloadLibrary();
       if (status.session_id) {
         setSelectedSessionId(status.session_id);
-        setSurface("timeline");
+        setSurface("workspace");
       }
     } catch (error) {
       console.error("Failed to open project take:", error);
@@ -398,7 +409,7 @@ function App() {
       });
       await reloadLibrary();
       setSelectedSessionId(status.session_id);
-      setSurface("timeline");
+      setSurface("workspace");
     } catch (error) {
       console.error("Failed to start capture:", error);
       throw error;
@@ -431,7 +442,7 @@ function App() {
       });
       await reloadLibrary();
       setSelectedSessionId(status.session_id);
-      setSurface("timeline");
+      setSurface("workspace");
     } catch (error) {
       console.error("Failed to start a new take:", error);
       throw error;
@@ -612,6 +623,16 @@ function App() {
         />
       }
       timeline={
+        <ProjectHistoryScreen
+          projects={savedProjects}
+          projectId={selectedProjectId ?? currentTimelineProject?.id ?? null}
+          onSelectProject={handleOpenHistory}
+          onOpenReport={handleOpenRecap}
+          onOpenWorkspace={handleOpenTimeline}
+          onOpenProjects={() => setSurface("projects")}
+        />
+      }
+      workspace={
         <SchemaTimeline
           sessionId={effectiveSessionId}
           session={currentSession}

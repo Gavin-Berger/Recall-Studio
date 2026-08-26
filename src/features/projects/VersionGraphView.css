@@ -202,3 +202,36 @@
     transform: none;
   }
 }
+
+/* Duration ---------------------------------------------------------------- */
+
+/* How long a stretch of work ran. The axis already places WHEN it started;
+   this carries it to the other end, which is the difference between a
+   seven-hour session and a thirty-second one — previously identical dots. */
+.vg__span {
+  stroke-width: 5;
+  stroke-linecap: round;
+  opacity: 0.4;
+}
+
+/* A duration too small to draw, widened to the node's diameter. Hollowed so
+   the width never reads as being to scale. */
+.vg__span--brief {
+  opacity: 0.22;
+}
+
+/* Axis -------------------------------------------------------------------- */
+
+.vg__axis {
+  fill: var(--faint-aa);
+  font-family: var(--font-mono);
+  font-size: var(--t-micro);
+  letter-spacing: 0.03em;
+  text-anchor: start;
+}
+
+/* Only the selected commit is named — see the note in CommitGraphView. It is
+   the brightest text on the graph because it answers "where am I". */
+.vg__label--selected {
+  fill: var(--paper-strong);
+}

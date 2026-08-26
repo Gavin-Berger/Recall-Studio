@@ -3,7 +3,8 @@ import "./VersionGraphView.css";
 import { layoutCommits } from "./commitLayout";
 import type { ProjectCommit } from "./projectCommits";
 import { collapseGaps } from "./versionGraphLayout";
-import { fitLabel, graphGeometry, laneColorVar, NODE_RADIUS } from "./versionGraphGeometry";
+import { graphGeometry, laneColorVar, NODE_RADIUS } from "./versionGraphGeometry";
+import { formatSessionDate } from "../sessionFormat";
 
 // The overview: the project's commits drawn against real elapsed time.
 //
@@ -26,6 +27,16 @@ function describeGap(durationMs: number): string {
   if (days >= 14) return `${Math.round(days / 7)} weeks`;
   if (days >= 7) return "1 week";
   return `${days} days`;
+}
+
+/** How long the work ran, in the unit a producer would say. */
+function describeDuration(commit: ProjectCommit): string {
+  const ms = Math.max(0, commit.endedAtMs - commit.atMs);
+  const minutes = Math.round(ms / 60_000);
+  if (minutes < 1) return "under a minute";
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  return `${hours}h ${minutes % 60}m`;
 }
 
 function commitTitle(commit: ProjectCommit): string {
@@ -58,7 +69,16 @@ export function CommitGraphView({
 
   const geometry = useMemo(() => {
     const layout = layoutCommits(commits);
-    const scale = collapseGaps(layout.placements.map((placement) => placement.atMs));
+    // Ends go into the scale too. Measuring the axis on starts alone leaves a
+    // seven-hour commit's bar running past the right edge of the graph it was
+    // scaled against.
+    const scale = collapseGaps(
+      layout.placements.flatMap((placement) =>
+        placement.endAtMs === undefined
+          ? [placement.atMs]
+          : [placement.atMs, placement.endAtMs],
+      ),
+    );
     return graphGeometry(layout, scale, { containerWidth });
   }, [commits, containerWidth]);
 
@@ -91,11 +111,26 @@ export function CommitGraphView({
         >
           {geometry.breaks.map((brk) => (
             <g key={`break-${brk.x}`} className="vg__break" aria-hidden="true">
-              <line x1={brk.x} y1={0} x2={brk.x} y2={geometry.height} />
-              <text x={brk.x + 6} y={geometry.height - 6}>
+              <line x1={brk.x} y1={0} x2={brk.x} y2={geometry.axisY - 14} />
+              <text x={brk.x + 6} y={geometry.axisY}>
                 {describeGap(brk.durationMs)}
               </text>
             </g>
+          ))}
+
+          {/* The axis is dated at the start of every stretch the scale kept at
+              full width — which is exactly where a collapsed gap has just
+              jumped the reader forward and they need telling again. */}
+          {geometry.axis.map((tick) => (
+            <text
+              key={`axis-${tick.x}`}
+              className="vg__axis"
+              x={tick.x}
+              y={geometry.axisY}
+              aria-hidden="true"
+            >
+              {formatSessionDate(tick.atMs)}
+            </text>
           ))}
 
           {geometry.lanes.map((lane) => (
@@ -107,6 +142,23 @@ export function CommitGraphView({
               x2={lane.x2}
               y2={lane.y}
               style={{ stroke: laneColorVar(lane.depth) }}
+            />
+          ))}
+
+          {/* How long each stretch of work ran. Drawn under the nodes so a dot
+              is never obscured by its own bar. A duration too small to see is
+              widened to the node's diameter and marked, so "brief" never reads
+              as "absent" and the width never claims to be to scale. */}
+          {geometry.spans.map((span) => (
+            <line
+              key={`span-${span.nodeId}`}
+              className={`vg__span${span.clamped ? " vg__span--brief" : ""}`}
+              x1={span.x1}
+              y1={span.y}
+              x2={span.x2}
+              y2={span.y}
+              style={{ stroke: laneColorVar(span.depth) }}
+              aria-hidden="true"
             />
           ))}
 
@@ -129,7 +181,14 @@ export function CommitGraphView({
             const commit = byId.get(position.id);
             if (!commit) return null;
             const selected = commit.id === selectedCommitId;
-            const label = fitLabel(commit.setName ?? "unsaved set", position.labelMaxPx);
+            // Only the selected node is named. Labelling every node is
+            // impossible once commits cluster — labelMaxPx collapses to zero
+            // and most names vanish, leaving one arbitrary label that reads as
+            // if that commit were special. The list below names them all; the
+            // graph's job is the shape and where you are in it.
+            const label = selected
+              ? `${commit.setName ?? "Unsaved set"} · ${describeDuration(commit)}`
+              : null;
 
             return (
               <g
@@ -164,9 +223,16 @@ export function CommitGraphView({
                 />
                 {label ? (
                   <text
-                    className="vg__label"
-                    x={position.x - NODE_RADIUS}
+                    className="vg__label vg__label--selected"
+                    // Flipped to the left of the node in the last stretch of
+                    // the canvas, so a name near the right edge is not clipped.
+                    x={
+                      position.x > geometry.width - 220
+                        ? position.x - NODE_RADIUS
+                        : position.x - NODE_RADIUS
+                    }
                     y={position.y - 16}
+                    textAnchor={position.x > geometry.width - 220 ? "end" : "start"}
                   >
                     {label}
                   </text>

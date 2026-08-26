@@ -10,6 +10,7 @@ import {
   LANE_HEIGHT,
   MIN_NODE_GAP,
   MIN_NODE_SEPARATION,
+  MIN_SPAN_PX,
   NODE_RADIUS,
   PAD_X,
   PAD_Y,
@@ -363,5 +364,94 @@ describe("laneColorVar", () => {
     for (let depth = 1; depth < 30; depth += 1) {
       expect(laneColorVar(depth)).not.toBe("var(--lane-0)");
     }
+  });
+});
+
+
+describe("duration spans", () => {
+  // The file-version model has no duration; the commit model does. Placements
+  // carrying `endAtMs` get a bar, and those without get none.
+  function withDurations(durations: number[], containerWidth = 900) {
+    const placements = durations.map((ms, index) => ({
+      nodeId: `c${index}`,
+      lane: 0,
+      atMs: start + index * hour * 6,
+      sittingsMs: [],
+      endAtMs: start + index * hour * 6 + ms,
+    }));
+    const layout = {
+      lanes: [{ index: 0, depth: 0, nodeIds: placements.map((p) => p.nodeId) }],
+      placements,
+      edges: [],
+    };
+    const scale = collapseGaps(placements.flatMap((p) => [p.atMs, p.endAtMs]));
+    return graphGeometry(layout, scale, { containerWidth });
+  }
+
+  it("draws a longer stretch of work as a longer bar", () => {
+    // The whole point: a seven-hour session and a thirty-second one were
+    // identical dots before this.
+    const geometry = withDurations([4 * hour, 2 * minute]);
+    const [long, brief] = geometry.spans;
+    expect(long!.x2 - long!.x1).toBeGreaterThan(brief!.x2 - brief!.x1);
+  });
+
+  it("never lets a brief stretch shrink to nothing", () => {
+    const geometry = withDurations([6 * hour, 20 * 1000]);
+    const brief = geometry.spans[1]!;
+    expect(brief.x2 - brief.x1).toBeGreaterThanOrEqual(MIN_SPAN_PX);
+  });
+
+  it("marks a widened bar so its width never claims to be to scale", () => {
+    // "Brief" must not read as "absent", and the widened width must not read
+    // as a real duration either. The flag is how the surface tells them apart.
+    const geometry = withDurations([6 * hour, 20 * 1000]);
+    expect(geometry.spans[1]!.clamped).toBe(true);
+    expect(geometry.spans[0]!.clamped).toBe(false);
+  });
+
+  it("starts every bar at its own node", () => {
+    // A node nudged right to clear a neighbour must take its bar with it, or
+    // the bar detaches from the dot it describes.
+    const geometry = withDurations([hour, hour, hour]);
+    const nodeOf = new Map(geometry.nodes.map((node) => [node.id, node]));
+    for (const span of geometry.spans) {
+      expect(span.x1).toBe(nodeOf.get(span.nodeId)!.x);
+    }
+  });
+
+  it("keeps every bar inside the canvas", () => {
+    const geometry = withDurations([9 * hour, 3 * hour]);
+    for (const span of geometry.spans) {
+      expect(span.x2).toBeLessThanOrEqual(geometry.width);
+    }
+  });
+
+  it("draws no bars for a model with no durations", () => {
+    // The file-version graph still uses this module and has no end times.
+    const { geometry } = geometryFor(["nightfall", "nightfall v2"]);
+    expect(geometry.spans).toEqual([]);
+  });
+});
+
+describe("dated axis", () => {
+  it("dates the start of every stretch the scale kept at full width", () => {
+    // One tick per segment: exactly where a collapsed gap has jumped the
+    // reader forward and they need telling again.
+    const { geometry, layout } = geometryFor(["a", "b", "c"], 1200, 30 * day);
+    const scale = collapseGaps(layout.placements.map((p) => p.atMs));
+    expect(geometry.axis).toHaveLength(scale.segments.length);
+  });
+
+  it("puts the axis below the last lane", () => {
+    const { geometry } = forkedGeometry();
+    const lowestLane = Math.max(...geometry.lanes.map((lane) => lane.y));
+    expect(geometry.axisY).toBeGreaterThan(lowestLane);
+    expect(geometry.axisY).toBeLessThanOrEqual(geometry.height);
+  });
+
+  it("leaves room for the axis rather than drawing over a lane", () => {
+    const { geometry } = geometryFor(["a"]);
+    expect(geometry.height).toBeGreaterThan(PAD_Y * 2);
   });
 });

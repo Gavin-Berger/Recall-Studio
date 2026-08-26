@@ -89,6 +89,7 @@ export function layoutCommits(commits: ProjectCommit[]): GraphLayout {
       // carries. The old model put every sitting on one file node here, which
       // is exactly the detail that is now a node of its own.
       sittingsMs: [],
+      endAtMs: commit.endedAtMs,
     })),
     edges: commits
       .filter((commit) => commit.parentId !== null && byId.has(commit.parentId))

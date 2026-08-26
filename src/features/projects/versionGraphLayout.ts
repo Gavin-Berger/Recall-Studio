@@ -56,6 +56,15 @@ export type GraphPlacement = {
   atMs: number;
   /** Sitting ticks along the lane — every capture against this version. */
   sittingsMs: number[];
+  /**
+   * When the work in this node ENDED, for models that have a duration.
+   *
+   * Optional because the file-version model does not have one — a `.als` file
+   * has no end. A commit does, and drawing it as a point threw away the most
+   * legible thing on a time axis: that one stretch of work ran seven hours and
+   * the next ran thirty seconds.
+   */
+  endAtMs?: number;
 };
 
 export type GraphEdge = {

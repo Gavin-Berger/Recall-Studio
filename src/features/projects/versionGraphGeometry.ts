@@ -39,14 +39,45 @@ export type GeometryEdge = {
 
 export type GeometryLane = { index: number; depth: number; y: number; x1: number; x2: number };
 
+/**
+ * How long a node's work ran, drawn along the axis it belongs to.
+ *
+ * A commit has a start and an end, and drawing it as a bare point threw away
+ * the most legible thing a time axis can carry: that one stretch ran seven
+ * hours and the next ran thirty seconds. This is NOT §11's banned
+ * scale-by-event-count — area is not standing in for importance. The bar is
+ * the axis reporting elapsed time, the same fact the x position already
+ * reports, extended to the other end of the work.
+ */
+export type GeometrySpan = {
+  nodeId: string;
+  x1: number;
+  x2: number;
+  y: number;
+  depth: number;
+  /** True when the real duration was too small to see and was widened. */
+  clamped: boolean;
+};
+
 export type GraphGeometry = {
   width: number;
   height: number;
   nodes: GeometryNode[];
   edges: GeometryEdge[];
   lanes: GeometryLane[];
+  spans: GeometrySpan[];
   sittings: { nodeId: string; x: number; y: number }[];
   breaks: { x: number; durationMs: number }[];
+  /**
+   * Where each stretch of real time begins, for dating the axis.
+   *
+   * One tick per segment the scale kept at full width — which is exactly the
+   * set of moments where the reader needs to be told the date again, because a
+   * collapsed gap has just jumped them forward.
+   */
+  axis: { x: number; atMs: number }[];
+  /** Baseline the axis labels sit on. */
+  axisY: number;
 };
 
 export const LANE_HEIGHT = 56;
@@ -71,6 +102,15 @@ export const LABEL_GUTTER = 10;
  * selection ring plus air.
  */
 export const MIN_NODE_SEPARATION = 26;
+/**
+ * The narrowest a duration bar may be drawn.
+ *
+ * A thirty-second commit on a two-week axis is a fraction of a pixel, which
+ * rounds to nothing and reads as "no work here". Widening it to the node's own
+ * diameter says "brief" rather than "absent" — and the span is marked
+ * `clamped` so the surface never implies the bar's width is to scale.
+ */
+export const MIN_SPAN_PX = 14;
 /** Advance width of IBM Plex Mono at --t-micro (11px). */
 export const MONO_CHAR_PX = 6.6;
 
@@ -101,10 +141,24 @@ export function graphGeometry(
   const radius = options.cornerRadius ?? CORNER_RADIUS;
 
   const laneCount = Math.max(layout.lanes.length, 1);
-  const height = padY * 2 + (laneCount - 1) * laneHeight;
+  /** Room under the last lane for the dated axis. */
+  const axisBand = 26;
+  const height = padY * 2 + (laneCount - 1) * laneHeight + axisBand;
+  const axisY = height - 8;
 
   if (layout.placements.length === 0) {
-    return { width: options.containerWidth, height, nodes: [], edges: [], lanes: [], sittings: [], breaks: [] };
+    return {
+      width: options.containerWidth,
+      height,
+      nodes: [],
+      edges: [],
+      lanes: [],
+      spans: [],
+      sittings: [],
+      breaks: [],
+      axis: [],
+      axisY,
+    };
   }
 
   // Average spacing has to stay legible, so the graph claims at least enough
@@ -176,6 +230,25 @@ export function graphGeometry(
     labelMaxPx: Math.max(0, (nextOnLane.get(entry.placement.nodeId) ?? width) - LABEL_GUTTER),
   }));
 
+  const spans: GeometrySpan[] = placed
+    .filter((entry) => entry.placement.endAtMs !== undefined)
+    .map((entry) => {
+      const trueEnd = xOf(entry.placement.endAtMs!);
+      // The node may have been nudged right to clear a neighbour; the bar
+      // starts where the node is drawn, or it would detach from its own dot.
+      const x1 = entry.x;
+      const x2 = Math.max(trueEnd, x1);
+      const clamped = x2 - x1 < MIN_SPAN_PX;
+      return {
+        nodeId: entry.placement.nodeId,
+        x1,
+        x2: clamped ? x1 + MIN_SPAN_PX : x2,
+        y: entry.y,
+        depth: depthOf.get(entry.placement.lane) ?? 0,
+        clamped,
+      };
+    });
+
   const sittings = layout.placements.flatMap((placement) =>
     placement.sittingsMs.map((atMs) => ({
       nodeId: placement.nodeId,
@@ -211,7 +284,12 @@ export function graphGeometry(
     durationMs: gap.durationMs,
   }));
 
-  return { width, height, nodes, edges, lanes, sittings, breaks };
+  const axis = scale.segments.map((segment) => ({
+    x: xOf(segment.startMs),
+    atMs: segment.startMs,
+  }));
+
+  return { width, height, nodes, edges, lanes, spans, sittings, breaks, axis, axisY };
 }
 
 /**

@@ -12,8 +12,10 @@ export type GraphGeometryOptions = {
   laneHeight?: number;
   padX?: number;
   padY?: number;
-  /** Closest two nodes may sit before the graph widens and scrolls instead. */
+  /** Average room per node the graph claims before it scrolls instead. */
   minNodeGap?: number;
+  /** Hard floor on the distance between two nodes on one lane. */
+  minNodeSeparation?: number;
   cornerRadius?: number;
 };
 
@@ -56,6 +58,19 @@ export const CORNER_RADIUS = 6;
 export const NODE_RADIUS = 7;
 /** Clear space kept between a name and the next node on the same lane. */
 export const LABEL_GUTTER = 10;
+/**
+ * The closest two nodes on one lane may be drawn.
+ *
+ * Time placement alone is not enough. Two versions first captured minutes
+ * apart land on the same pixel, and the later dot hides under the earlier one —
+ * so a project with two versions draws one node while the header says two.
+ * A graph that silently omits a version is a worse lie than one that separates
+ * two coincident nodes by a few pixels, and it is the same bounded, deliberate
+ * distortion §11 already sanctions for collapsed gaps: the axis bends where it
+ * must so the drawing stays true to what exists. Wide enough for a dot plus its
+ * selection ring plus air.
+ */
+export const MIN_NODE_SEPARATION = 26;
 /** Advance width of IBM Plex Mono at --t-micro (11px). */
 export const MONO_CHAR_PX = 6.6;
 
@@ -95,8 +110,8 @@ export function graphGeometry(
   // Average spacing has to stay legible, so the graph claims at least enough
   // width to give every node its own room. Past that the container decides.
   const floor = padX * 2 + Math.max(layout.placements.length - 1, 0) * minNodeGap;
-  const width = Math.max(options.containerWidth, floor);
-  const drawable = Math.max(width - padX * 2, 1);
+  const timeWidth = Math.max(options.containerWidth, floor);
+  const drawable = Math.max(timeWidth - padX * 2, 1);
   const pxPerMs = scale.spanMs > 0 ? drawable / scale.spanMs : 0;
 
   // Rounded at the source so a node's centre and the endpoint of the edge
@@ -106,7 +121,7 @@ export function graphGeometry(
     // A single version, or several at the same instant, has no span to scale
     // against. Centring beats pinning it to the left edge as if it were the
     // start of a history that continues off-screen.
-    round(scale.spanMs > 0 ? padX + scale.project(atMs) * pxPerMs : width / 2);
+    round(scale.spanMs > 0 ? padX + scale.project(atMs) * pxPerMs : timeWidth / 2);
   const yOf = (lane: number) => round(padY + lane * laneHeight);
 
   const depthOf = new Map(layout.lanes.map((lane) => [lane.index, lane.depth]));
@@ -116,6 +131,26 @@ export function graphGeometry(
     x: xOf(placement.atMs),
     y: yOf(placement.lane),
   }));
+
+  // Push apart anything that landed on top of something else. Per lane, because
+  // two nodes sharing an x on DIFFERENT lanes are on different rows and do not
+  // collide. Order is preserved — a node only ever moves later, never earlier,
+  // so the graph cannot reverse two versions to make room.
+  const separation = options.minNodeSeparation ?? MIN_NODE_SEPARATION;
+  for (const lane of layout.lanes) {
+    const onLane = placed
+      .filter((entry) => entry.placement.lane === lane.index)
+      .sort((a, b) => a.x - b.x);
+    for (let index = 1; index < onLane.length; index += 1) {
+      const previous = onLane[index - 1]!;
+      const current = onLane[index]!;
+      if (current.x - previous.x < separation) current.x = previous.x + separation;
+    }
+  }
+
+  // Nudging can push the last node past the width the time span asked for.
+  const rightmost = placed.reduce((max, entry) => Math.max(max, entry.x), 0);
+  const width = Math.max(timeWidth, rightmost + padX);
 
   // A name may run until the next version on its own lane. Names on other lanes
   // are on other rows and cannot collide, and the last node on a lane has the

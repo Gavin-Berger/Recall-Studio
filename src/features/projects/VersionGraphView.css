@@ -71,12 +71,18 @@
   cursor: pointer;
 }
 
+/* Left-anchored, not centred. `labelMaxPx` measures the run from a node to the
+   next one on its lane, which is the room a label has only if it grows
+   RIGHTWARDS. Centred text spends half that room growing left instead, so the
+   leftmost node — sitting at padX — pushed its name off the canvas and had it
+   clipped ("eaking Point"). Anchoring left makes the geometry and the drawing
+   agree, and it reads the way a git graph labels a branch anyway. */
 .vg__label {
   fill: var(--faint-aa);
   font-family: var(--font-mono);
   font-size: var(--t-micro);
   letter-spacing: 0.04em;
-  text-anchor: middle;
+  text-anchor: start;
   pointer-events: none;
 }
 

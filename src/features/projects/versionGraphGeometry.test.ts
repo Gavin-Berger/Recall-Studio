@@ -9,6 +9,8 @@ import {
   laneColorVar,
   LANE_HEIGHT,
   MIN_NODE_GAP,
+  MIN_NODE_SEPARATION,
+  NODE_RADIUS,
   PAD_X,
   PAD_Y,
 } from "./versionGraphGeometry";
@@ -210,6 +212,97 @@ describe("graphGeometry", () => {
     expect(geometry.nodes).toEqual([]);
     expect(geometry.edges).toEqual([]);
     expect(geometry.height).toBeGreaterThan(0);
+  });
+});
+
+describe("nodes that land on the same instant", () => {
+  // The case a real library produced: "Breaking Point" and "Breaking Point v2
+  // mixdown", both first captured within the hour but worked across weeks.
+  //
+  // The clustering comes from the SPAN, not from the two versions being close
+  // in isolation: the axis is scaled to fit every sitting, so nine sittings
+  // spread over a fortnight stretch it until an hour is worth about a pixel.
+  // Two versions an hour apart with nothing else on the axis fill the whole
+  // width and never collide, which is why a fixture has to carry the long
+  // tail of sittings to reproduce this at all.
+  function coincident(containerWidth = 940) {
+    const nodes = graphFromSittings([
+      ["breaking point v2 mixdown", 0, 1, 3, 7, 11, 14],
+      ["breaking point", 0.04],
+    ]);
+    const layout = layoutVersionGraph(nodes);
+    const scale = collapseGaps(layout.placements.flatMap((p) => [p.atMs, ...p.sittingsMs]));
+    return graphGeometry(layout, scale, { containerWidth });
+  }
+
+  it("never draws two nodes on one lane closer than the separation floor", () => {
+    const geometry = coincident();
+    const onTrunk = geometry.nodes.filter((node) => node.lane === 0).sort((a, b) => a.x - b.x);
+    expect(onTrunk.length).toBe(2);
+    expect(onTrunk[1]!.x - onTrunk[0]!.x).toBeGreaterThanOrEqual(MIN_NODE_SEPARATION);
+  });
+
+  it("leaves every node room for a name once they are separated", () => {
+    // labelMaxPx of 0 is what erased the second name: fitLabel returns "" below
+    // four characters' worth of room, so the hidden version had no dot AND no
+    // label — nothing on screen said it existed.
+    const geometry = coincident();
+    for (const node of geometry.nodes) {
+      expect(node.labelMaxPx).toBeGreaterThan(0);
+    }
+  });
+
+  it("keeps the two versions in the order they happened", () => {
+    // A node may only ever be pushed later. If separation could move one
+    // earlier, the graph would claim the wrong version came first.
+    const nodes = graphFromSittings([
+      ["breaking point v2 mixdown", 0, 1, 3, 7, 11, 14],
+      ["breaking point", 0.04],
+    ]);
+    const layout = layoutVersionGraph(nodes);
+    const scale = collapseGaps(layout.placements.flatMap((p) => [p.atMs, ...p.sittingsMs]));
+    const geometry = graphGeometry(layout, scale, { containerWidth: 940 });
+    const byId = new Map(geometry.nodes.map((node) => [node.id, node]));
+    const ordered = [...layout.placements].sort((a, b) => a.atMs - b.atMs);
+    expect(byId.get(ordered[0]!.nodeId)!.x).toBeLessThan(byId.get(ordered[1]!.nodeId)!.x);
+  });
+
+  it("leaves a well-spread graph exactly where time put it", () => {
+    // The nudge must not touch a graph that was already legible, or every
+    // spacing on a normal project would drift away from real elapsed time.
+    const nodes = graphFromNames(["nightfall v1", "nightfall v2", "nightfall v3"]);
+    const layout = layoutVersionGraph(nodes);
+    const scale = collapseGaps(layout.placements.flatMap((p) => [p.atMs, ...p.sittingsMs]));
+    const wide = graphGeometry(layout, scale, { containerWidth: 940 });
+    const tiny = graphGeometry(layout, scale, { containerWidth: 940, minNodeSeparation: 0 });
+    expect(wide.nodes.map((node) => node.x)).toEqual(tiny.nodes.map((node) => node.x));
+  });
+
+  it("grows the canvas rather than pushing a node past its right edge", () => {
+    const geometry = coincident(120);
+    for (const node of geometry.nodes) {
+      expect(node.x).toBeLessThanOrEqual(geometry.width - PAD_X);
+    }
+  });
+});
+
+describe("label placement", () => {
+  it("keeps the leftmost name inside the canvas", () => {
+    // Labels are anchored left at the dot's left edge, so the earliest node —
+    // which sits at PAD_X — starts its name at PAD_X - NODE_RADIUS and runs
+    // rightwards. Centred text put it at negative x and the name was clipped.
+    const { geometry } = geometryFor(["breaking point", "breaking point v2", "breaking point v3"]);
+    const leftmost = geometry.nodes.reduce((a, b) => (b.x < a.x ? b : a));
+    expect(leftmost.x - NODE_RADIUS).toBeGreaterThanOrEqual(0);
+  });
+
+  it("gives a name only the room to its right, which is where it grows", () => {
+    const { geometry } = geometryFor(["breaking point", "breaking point v2"]);
+    const sorted = [...geometry.nodes].sort((a, b) => a.x - b.x);
+    const gap = sorted[1]!.x - sorted[0]!.x;
+    // The run to the next node, less the gutter — never more, or two names
+    // would overlap.
+    expect(sorted[0]!.labelMaxPx).toBeLessThanOrEqual(gap);
   });
 });
 

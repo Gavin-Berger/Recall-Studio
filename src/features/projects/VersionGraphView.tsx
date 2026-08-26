@@ -186,7 +186,14 @@ export function VersionGraphView({
                   }}
                 />
                 {label ? (
-                  <text className="vg__label" x={position.x} y={position.y - 16}>
+                  // Left-anchored at the dot's left edge (see the CSS note):
+                  // the label runs rightwards into the gap measured by
+                  // labelMaxPx, so it can never overhang the canvas.
+                  <text
+                    className="vg__label"
+                    x={position.x - NODE_RADIUS}
+                    y={position.y - 16}
+                  >
                     {label}
                   </text>
                 ) : null}

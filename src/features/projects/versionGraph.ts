@@ -225,9 +225,25 @@ function filenameParent(child: Candidate, earlier: Candidate[]): ProjectVersion 
   // `nightfall v2.als`, and those are obviously the same song. Reading the
   // bare stem as ordinal 0 keeps that first hop on the filename lineage
   // instead of demoting the most obvious link in the project to a guess.
+  //
+  // The first save is also the one least likely to carry the later suffixes.
+  // A real folder held `Breaking Point.als` and `Breaking Point v2 mixdown.als`
+  // — stems `breaking point` and `breaking point mixdown`, which do not match,
+  // so the most obvious lineage in the project fell through to a guess and
+  // drew backwards. An UNNUMBERED stem that is a whole-word prefix of the
+  // child's therefore counts as the same line: the words a producer adds later
+  // ("mixdown", "master") describe what the file became, they do not rename the
+  // song. Restricted to the unnumbered case on purpose — two numbered files
+  // that disagree about their suffix are two lines, not one.
   const sameLine = earlier
     .map((other) => ({ ...other, ordinal: other.stem.ordinal ?? 0 }))
-    .filter((other) => other.stem.stem === child.stem.stem && other.ordinal < child.stem.ordinal!);
+    .filter((other) => {
+      if (other.ordinal >= child.stem.ordinal!) return false;
+      if (other.stem.stem === child.stem.stem) return true;
+      return (
+        other.stem.ordinal === null && child.stem.stem.startsWith(`${other.stem.stem} `)
+      );
+    });
   if (sameLine.length === 0) return null;
 
   // A tie — two files claiming the same number, which happens the moment

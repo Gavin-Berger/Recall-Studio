@@ -42,6 +42,18 @@ export type HistoryRow = {
   sittings: number;
   /** Recorded moves across every sitting. Zero means Recall was not running. */
   moves: number;
+  /** Row index of this version's parent, or null for a root. */
+  parentRow: number | null;
+  /** The parent edge was a guess, so its connector renders dashed. */
+  inferred: boolean;
+  /**
+   * Lanes with a line running through this row, this row's own lane included.
+   *
+   * This is what turns the list into a git graph rather than a column of dots:
+   * a lane is drawn at every row between its first and last version, so a
+   * branch stays visibly open while the trunk carries on beside it.
+   */
+  railLanes: number[];
 };
 
 /**
@@ -89,10 +101,78 @@ export function versionHistoryRows(versions: ProjectVersion[]): HistoryRow[] {
       branchPoint: (children.get(node.id)?.length ?? 0) > 1,
       sittings: node.version.sessions.length,
       moves: node.version.eventCount,
+      parentRow: null,
+      inferred: node.inferred,
+      railLanes: [],
     };
   });
 
-  return rows.sort((a, b) => b.node.version.startedAtMs - a.node.version.startedAtMs);
+  // Most recently WORKED first. Ordering by when a file first appeared put the
+  // `latest` ref halfway down the list, because going back to an older version
+  // makes it the newest thing in the project without changing when it was
+  // born — so the list disagreed with its own badge.
+  rows.sort((a, b) => b.node.version.lastUpdatedAtMs - a.node.version.lastUpdatedAtMs);
+
+  const rowOf = new Map(rows.map((row, index) => [row.node.id, index]));
+  for (const row of rows) {
+    const parentId = row.node.parentId;
+    row.parentRow = parentId !== null ? rowOf.get(parentId) ?? null : null;
+  }
+
+  // A lane runs from its earliest row to its latest, so it is drawn at every
+  // row in between even where it has no version of its own.
+  const span = new Map<number, { from: number; to: number }>();
+  rows.forEach((row, index) => {
+    const seen = span.get(row.lane);
+    if (!seen) span.set(row.lane, { from: index, to: index });
+    else span.set(row.lane, { from: Math.min(seen.from, index), to: Math.max(seen.to, index) });
+  });
+
+  rows.forEach((row, index) => {
+    row.railLanes = [...span.entries()]
+      .filter(([, range]) => index >= range.from && index <= range.to)
+      .map(([lane]) => lane)
+      .sort((a, b) => a - b);
+  });
+
+  return rows;
+}
+
+/** How many lane columns the rail needs to draw. */
+export function railWidth(rows: HistoryRow[]): number {
+  return rows.reduce((max, row) => Math.max(max, ...row.railLanes.map((lane) => lane + 1)), 1);
+}
+
+/**
+ * Everything the rail needs that is a property of the LIST, not of one row.
+ *
+ * A rail line has to be coloured by the depth of the lane it draws, not by the
+ * depth of the row it happens to pass — a trunk line running alongside a branch
+ * row is still the trunk. And a lane's line has to stop at its newest and
+ * oldest version rather than running the full height of the list.
+ */
+export type RailShape = {
+  columns: number;
+  /** Depth per lane index, for `laneColorVar`. */
+  depthOf: Map<number, number>;
+  /** Row index holding each lane's most recent version. */
+  headRow: Map<number, number>;
+  /** Row index holding each lane's oldest version. */
+  tailRow: Map<number, number>;
+};
+
+export function railShape(rows: HistoryRow[]): RailShape {
+  const depthOf = new Map<number, number>();
+  const headRow = new Map<number, number>();
+  const tailRow = new Map<number, number>();
+
+  rows.forEach((row, index) => {
+    depthOf.set(row.lane, row.depth);
+    if (!headRow.has(row.lane)) headRow.set(row.lane, index);
+    tailRow.set(row.lane, index);
+  });
+
+  return { columns: railWidth(rows), depthOf, headRow, tailRow };
 }
 
 /** The sitting a producer expects to land on when they pick a version. */

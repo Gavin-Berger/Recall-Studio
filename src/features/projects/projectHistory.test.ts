@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { SavedSessionMetadata } from "../../types/recall";
 import { projectVersions } from "./projectVersions";
-import { landingSessionId, versionHistoryRows } from "./projectHistory";
+import { landingSessionId, railShape, versionHistoryRows } from "./projectHistory";
 
 const minute = 60 * 1000;
 const day = 24 * 60 * minute;
@@ -79,15 +79,26 @@ function returned() {
 }
 
 describe("versionHistoryRows", () => {
-  it("lists newest first, the way a commit list puts HEAD on top", () => {
+  it("orders by when work last happened, not by when the file appeared", () => {
+    // v3 was returned to on day 4, after v4 was made on day 3, so v3 outranks
+    // v4 here even though v4 is the newer FILE. Ordering by first appearance
+    // put the `latest` badge halfway down the list and the surface disagreed
+    // with itself about where the song is.
     const rows = versionHistoryRows(forked());
     expect(rows.map((row) => row.node.version.name)).toEqual([
       "nightfall v5",
-      "nightfall v4",
       "nightfall v3",
+      "nightfall v4",
       "nightfall v2",
       "nightfall v1",
     ]);
+  });
+
+  it("puts the latest badge on the first row", () => {
+    // The badge and the ordering read the same fact, so they can never point
+    // at different rows.
+    const rows = versionHistoryRows(returned());
+    expect(rows[0]!.latest).toBe(true);
   });
 
   it("gives one row per file, not per sitting", () => {
@@ -156,6 +167,65 @@ describe("versionHistoryRows", () => {
 
   it("handles a project with no versions", () => {
     expect(versionHistoryRows([])).toEqual([]);
+  });
+});
+
+describe("railShape", () => {
+  it("keeps a branch line open across the rows between its versions", () => {
+    // This is what makes the list a graph rather than a column of dots: a lane
+    // is drawn at every row from its newest version to its oldest, including
+    // rows that belong to other lanes.
+    //
+    // Needs a branch carrying TWO versions. A branch with one version spans a
+    // single row and has nothing to draw across, which is correct and proves
+    // nothing.
+    const rows = versionHistoryRows(
+      projectVersions([
+        sitting("s1", "nightfall v1", 0),
+        sitting("s2", "nightfall v2", 1),
+        sitting("s3", "nightfall v3", 2),
+        sitting("s4", "nightfall v4", 3),
+        // Back to v3, then two versions onward from it.
+        sitting("s5", "nightfall v3", 4),
+        sitting("s6", "nightfall v5", 5),
+        sitting("s7", "nightfall v6", 6),
+      ]),
+    );
+    const branchLane = rows.find((row) => row.depth > 0)!.lane;
+    const drawn = rows.filter((row) => row.railLanes.includes(branchLane));
+    expect(drawn.length).toBeGreaterThan(1);
+  });
+
+  it("colours each rail line by its own lane, not by the row it passes", () => {
+    // A trunk line running alongside a branch row is still the trunk.
+    const shape = railShape(versionHistoryRows(forked()));
+    expect(shape.depthOf.get(0)).toBe(0);
+    expect([...shape.depthOf.values()].some((depth) => depth > 0)).toBe(true);
+  });
+
+  it("stops a lane at its newest and oldest version", () => {
+    const rows = versionHistoryRows(forked());
+    const shape = railShape(rows);
+    for (const [lane, head] of shape.headRow) {
+      expect(rows[head]!.lane).toBe(lane);
+      expect(rows[shape.tailRow.get(lane)!]!.lane).toBe(lane);
+    }
+  });
+
+  it("reserves a column for every lane", () => {
+    const shape = railShape(versionHistoryRows(forked()));
+    expect(shape.columns).toBeGreaterThanOrEqual(2);
+  });
+
+  it("points each row at its parent's row", () => {
+    const rows = versionHistoryRows(forked());
+    for (const row of rows) {
+      if (row.node.parentId === null) {
+        expect(row.parentRow).toBeNull();
+      } else {
+        expect(rows[row.parentRow!]!.node.id).toBe(row.node.parentId);
+      }
+    }
   });
 });
 

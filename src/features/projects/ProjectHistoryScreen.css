@@ -141,29 +141,33 @@
   outline-offset: -2px;
 }
 
-/* The rail glyph repeats the graph's vocabulary: lane luminance for position,
-   filled for captured, dashed ring for a file Recall never watched (§7). */
-.ph-row__rail {
-  display: flex;
-  justify-content: center;
-  width: 18px;
-  padding-top: 3px;
+/* The rail. Lane luminance for position, filled for captured, dashed ring for a
+   file Recall never watched (§7) — the same vocabulary the graph above uses, so
+   the two read as one idea rather than two drawings of the same data. */
+.ph-rail {
   flex: none;
+  display: block;
+  /* Bleeds into the row padding so consecutive rows' lines meet with no seam. */
+  margin: calc(var(--s3) * -1) 0;
+  align-self: stretch;
+  overflow: visible;
 }
 
-.ph-row__node {
-  width: 9px;
-  height: 9px;
-  border-radius: 50%;
-  border: var(--stroke-edge) solid;
+.ph-rail__line {
+  stroke-width: var(--stroke-edge);
 }
 
-.ph-row__node--hollow {
-  border-style: dashed;
+.ph-rail__node {
+  stroke-width: var(--stroke-edge);
 }
 
-.ph-row.is-selected .ph-row__node {
-  box-shadow: 0 0 0 3px rgba(var(--signal-rgb), 0.28);
+.ph-rail__node--hollow {
+  stroke-dasharray: 3 2;
+}
+
+.ph-row.is-selected .ph-rail__node {
+  stroke: var(--signal);
+  stroke-width: var(--stroke-trunk);
 }
 
 .ph-row__body {
@@ -287,5 +291,9 @@
   .ph-row__actions {
     opacity: 1;
     padding: 0 var(--s2) var(--s3) 40px;
+  }
+
+  .ph-rail {
+    margin: 0;
   }
 }

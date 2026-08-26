@@ -5,7 +5,13 @@ import { formatSessionDate } from "../sessionFormat";
 import { projectVersions } from "./projectVersions";
 import { VersionGraphView } from "./VersionGraphView";
 import { laneColorVar } from "./versionGraphGeometry";
-import { landingSessionId, versionHistoryRows, type HistoryRow } from "./projectHistory";
+import {
+  landingSessionId,
+  railShape,
+  versionHistoryRows,
+  type HistoryRow,
+  type RailShape,
+} from "./projectHistory";
 
 // The project's history: the shape on top, the detail underneath.
 //
@@ -44,10 +50,66 @@ function relativeTime(atMs: number, nowMs: number): string {
   return `${Math.round(days / 365)}y ago`;
 }
 
+/** Horizontal pitch between lane columns, and the row's drawn height. */
+const RAIL_COL = 14;
+const RAIL_ROW_H = 78;
+
+function Rail({ row, index, shape }: { row: HistoryRow; index: number; shape: RailShape }) {
+  const width = shape.columns * RAIL_COL;
+  const cx = row.lane * RAIL_COL + RAIL_COL / 2;
+  const cy = 22;
+  const captured = row.moves > 0;
+
+  return (
+    <svg
+      className="ph-rail"
+      width={width}
+      height={RAIL_ROW_H}
+      viewBox={`0 0 ${width} ${RAIL_ROW_H}`}
+      aria-hidden="true"
+    >
+      {row.railLanes.map((lane) => {
+        const x = lane * RAIL_COL + RAIL_COL / 2;
+        // The list runs newest-first, so "up" the page is later in time. A
+        // lane's line starts at its own newest version and ends at its oldest;
+        // in between it runs the full height, including past rows belonging to
+        // other lanes, which is what keeps a branch visibly open.
+        const top = shape.headRow.get(lane) === index ? cy : 0;
+        const bottom = shape.tailRow.get(lane) === index ? cy : RAIL_ROW_H;
+        if (top >= bottom) return null;
+        return (
+          <line
+            key={lane}
+            className="ph-rail__line"
+            x1={x}
+            y1={top}
+            x2={x}
+            y2={bottom}
+            style={{ stroke: laneColorVar(shape.depthOf.get(lane) ?? 0) }}
+          />
+        );
+      })}
+
+      <circle
+        className={`ph-rail__node${captured ? "" : " ph-rail__node--hollow"}`}
+        cx={cx}
+        cy={cy}
+        r={4.5}
+        style={{
+          fill: captured ? laneColorVar(row.depth) : "var(--panel)",
+          stroke: laneColorVar(row.depth),
+        }}
+      />
+    </svg>
+  );
+}
+
 function HistoryRowItem({
   row,
   selected,
   nowMs,
+  index,
+  shape,
   onSelect,
   onOpenReport,
   onOpenWorkspace,
@@ -55,6 +117,8 @@ function HistoryRowItem({
   row: HistoryRow;
   selected: boolean;
   nowMs: number;
+  index: number;
+  shape: RailShape;
   onSelect: () => void;
   onOpenReport: () => void;
   onOpenWorkspace: () => void;
@@ -70,18 +134,13 @@ function HistoryRowItem({
         onClick={onSelect}
         aria-current={selected ? "true" : undefined}
       >
-        {/* The rail glyph repeats the graph's own vocabulary so the two
-            surfaces read as one idea: lane colour for position, filled for
-            captured, hollow for a file Recall never watched (§7). */}
-        <span className="ph-row__rail" aria-hidden="true">
-          <span
-            className={`ph-row__node${captured ? "" : " ph-row__node--hollow"}`}
-            style={{
-              background: captured ? laneColorVar(row.depth) : "transparent",
-              borderColor: laneColorVar(row.depth),
-            }}
-          />
-        </span>
+        {/* The rail. Every lane alive at this row is drawn as a vertical run,
+            so a branch stays visibly open beside the trunk instead of the list
+            collapsing into a column of unrelated dots — this is the part that
+            makes it read as a git graph. The node repeats the graph's own
+            vocabulary: lane colour for position, filled for captured, dashed
+            ring for a file Recall never watched (§7). */}
+        <Rail row={row} index={index} shape={shape} />
 
         <span className="ph-row__body">
           <span className="ph-row__top">
@@ -153,6 +212,7 @@ export function ProjectHistoryScreen({
 
   const versions = useMemo(() => projectVersions(project?.captures ?? []), [project]);
   const rows = useMemo(() => versionHistoryRows(versions), [versions]);
+  const shape = useMemo(() => railShape(rows), [rows]);
 
   // Selecting the newest version on arrival, and again whenever the project
   // changes, so the surface is never showing a graph with nothing chosen.
@@ -216,11 +276,13 @@ export function ProjectHistoryScreen({
       {rows.length > 0 && (
         <section className="ph__list" aria-label="Version history">
           <ol className="ph-rows">
-            {rows.map((row) => (
+            {rows.map((row, index) => (
               <HistoryRowItem
                 key={row.node.id}
                 row={row}
                 nowMs={nowMs}
+                index={index}
+                shape={shape}
                 selected={row.node.id === selectedRow?.node.id}
                 onSelect={() => setSelectedVersionId(row.node.id)}
                 onOpenReport={() => {

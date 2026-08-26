@@ -371,6 +371,39 @@ describe("versionGraph", () => {
     expect(nodes[1]!.basis).toBe("filename");
   });
 
+  it("links a first save to a later one that grew extra words", () => {
+    // The real folder: "Breaking Point.als" and "Breaking Point v2 mixdown.als".
+    // Stems are "breaking point" and "breaking point mixdown", which do not
+    // match, so the most obvious lineage in the project fell through to a guess
+    // and drew backwards. An unnumbered stem that is a whole-word prefix of the
+    // child's is the same song — the words added later say what the file
+    // became, they do not rename it.
+    const nodes = versionGraph(
+      versionsFromNames(["breaking point", "breaking point v2 mixdown"]),
+    );
+    expect(parentNames(nodes)).toEqual({
+      "breaking point": null,
+      "breaking point v2 mixdown": "breaking point",
+    });
+    expect(nodes[1]!.basis).toBe("filename");
+  });
+
+  it("does not join two different songs that merely share a first word", () => {
+    // The prefix rule has to stop at a word boundary, or every set beginning
+    // "drums" becomes one lineage.
+    const nodes = versionGraph(versionsFromNames(["drums", "drumstep v2"]));
+    expect(nodes[1]!.basis).not.toBe("filename");
+  });
+
+  it("keeps two numbered files with different suffixes apart", () => {
+    // The prefix rule is for the UNNUMBERED first save only. Two numbered
+    // files that disagree about their suffix are two lines.
+    const nodes = versionGraph(
+      versionsFromNames(["nightfall v1 rough", "nightfall v2 mixdown"]),
+    );
+    expect(nodes[1]!.basis).not.toBe("filename");
+  });
+
   it("gives an unanchored capture a parent instead of stranding it", () => {
     // An unsaved set has no file to key on. It still happened, and it still
     // happened after something, so the clock carries it.

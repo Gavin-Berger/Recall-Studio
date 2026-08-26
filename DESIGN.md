@@ -340,9 +340,25 @@ draws first-parent as the trunk because git is told which parent is first; nothi
 Recall. Taking the eldest child gets the ordinary case backwards — open `v3`, try
 something weird and save it as `v3 alt`, sleep on it, carry on in `v4`. The alt is older,
 so "eldest wins" puts the abandoned experiment on the mainline and pushes the song onto a
-branch. An observed edge outranks a filename edge, which outranks a chronological one;
-ties go to the eldest. The trunk is brightest; each fork step away from it is one step
-dimmer. Four levels, then cycle.
+branch.
+
+Edges rank **observed > filename > activity > chronological**. Ties go to whichever
+child's descendants were worked on most recently — in a project whose files carry no
+version numbers every edge is `activity` and therefore ties, so "eldest wins" would hand
+the trunk to whichever fork was opened first and then abandoned. The line the song is
+still alive on is the mainline, which is what `--lane-0` claims to be.
+
+**Where the forks come from.** Not the file names — most producers do not number their
+sets, and a graph inferred from names alone is a straight ladder. A fork is evidence that
+two lineages were alive at once, and the strongest available evidence is that the producer
+*went back*: worked `v3`, saved `v4`, then returned to `v3` and kept pushing it. That is
+already provable from sitting timestamps, with no naming convention and no new capture.
+A version's parent is therefore the file the producer had open when it appeared, and the
+name only wins when it agrees — because when the two disagree, the disagreement IS the
+branch.
+
+The trunk is brightest; each fork step away from it is one step dimmer. Four levels, then
+cycle.
 
 | Token | Value | Means |
 |---|---|---|

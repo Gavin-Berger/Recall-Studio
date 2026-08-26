@@ -41,10 +41,23 @@ import type { ProjectVersion } from "./projectVersions";
  *   not need changing when it lands.
  * - `filename` — the names carry version numbers off a shared stem, so `v4`
  *   follows `v3`. A good guess, and the one producers would make themselves.
- * - `chronological` — nothing in the name to go on, so the most recent earlier
- *   version is assumed to be the parent. A weak guess, and it is labelled as one.
+ * - `activity` — the producer was working in this version when the new one
+ *   appeared. Weaker than a name they chose, but stronger than the clock,
+ *   because it is evidence about what was actually in front of them.
+ * - `chronological` — nothing to go on but the order files appeared. The
+ *   weakest link in the system, and it is labelled as a guess.
  */
-export type ParentageBasis = "observed" | "filename" | "chronological";
+export type ParentageBasis = "observed" | "filename" | "activity" | "chronological";
+
+/**
+ * How long a version stays "the one you are working in" after its last sitting.
+ *
+ * Past this, coming back to the project is a fresh start rather than a
+ * continuation, and what you had open last week says nothing about what you
+ * branched from today. Matches the idle threshold the timeline collapses on, so
+ * the two surfaces agree about when a working stretch ended.
+ */
+export const ACTIVE_WINDOW_MS = 1000 * 60 * 60 * 24 * 3;
 
 export type VersionNode = {
   /** Same id as the underlying version: the normalized `.als` path. */
@@ -112,25 +125,96 @@ function reasonFor(basis: ParentageBasis, child: ProjectVersion, parent: Project
       return `Saved from ${parent.name} while Recall was capturing.`;
     case "filename":
       return `${child.name} follows ${parent.name} — read from the file names, not observed.`;
+    case "activity":
+      return `You were working in ${parent.name} when ${child.name} appeared — inferred from when each was open, not observed.`;
     case "chronological":
-      return `Opened after ${parent.name}. No version number to follow, so this link is a guess.`;
+      return `Opened after ${parent.name}. Nothing to follow but the order they appeared, so this link is a guess.`;
   }
 }
 
 type Candidate = { version: ProjectVersion; stem: VersionStem };
 
 /**
+ * The last time work happened in this version at or before some moment.
+ *
+ * Not `lastUpdatedAtMs`, which is the version's whole life. The question is
+ * what the producer had open *then*, so sittings after that moment are exactly
+ * the ones that must not count.
+ */
+function lastWorkedAtOrBefore(version: ProjectVersion, atMs: number): number | null {
+  let latest: number | null = null;
+  for (const session of version.sessions) {
+    if (session.started_at_ms > atMs) continue;
+    if (latest === null || session.started_at_ms > latest) latest = session.started_at_ms;
+  }
+  return latest;
+}
+
+/**
+ * Which version the producer was working in when this one appeared.
+ *
+ * THIS IS WHERE BRANCHES COME FROM. Everything else in this file produces a
+ * chain, because "the newest file" is always the one just before you, so every
+ * version descends from the previous one and the graph is a ladder.
+ *
+ * Work does not go in a line. You take `v3` somewhere, save `v4`, then go back
+ * to `v3` and keep pushing it. When `v5` appears, the newest file is `v4` — but
+ * you were in `v3`, and `v5` came off `v3`. That is a genuine fork, it is the
+ * shape a producer would draw themselves, and it is provable from sitting
+ * timestamps that are already in the database. No naming convention, no new
+ * capture, and it works on every project already recorded.
+ */
+function recentlyWorked(child: Candidate, earlier: Candidate[]): ProjectVersion | null {
+  const bornAt = child.version.startedAtMs;
+  let best: { version: ProjectVersion; workedAt: number } | null = null;
+
+  for (const other of earlier) {
+    const workedAt = lastWorkedAtOrBefore(other.version, bornAt);
+    if (workedAt === null) continue;
+    // Cold return: what you had open a month ago says nothing about what you
+    // branched from today.
+    if (bornAt - workedAt > ACTIVE_WINDOW_MS) continue;
+    if (!best || workedAt > best.workedAt) best = { version: other.version, workedAt };
+  }
+
+  return best?.version ?? null;
+}
+
+/** Among earlier versions on the same stem, the highest number below ours. */
+function filenameParent(child: Candidate, earlier: Candidate[]): ProjectVersion | null {
+  if (child.stem.ordinal === null) return null;
+
+  // An unnumbered file is version one of its own stem. Producers do not name
+  // the first save `v1` — the folder holds `nightfall.als` and then
+  // `nightfall v2.als`, and those are obviously the same song. Reading the
+  // bare stem as ordinal 0 keeps that first hop on the filename lineage
+  // instead of demoting the most obvious link in the project to a guess.
+  const sameLine = earlier
+    .map((other) => ({ ...other, ordinal: other.stem.ordinal ?? 0 }))
+    .filter((other) => other.stem.stem === child.stem.stem && other.ordinal < child.stem.ordinal!);
+  if (sameLine.length === 0) return null;
+
+  // A tie — two files claiming the same number, which happens the moment
+  // someone saves `v3` twice — breaks to the one worked on most recently.
+  return sameLine.reduce((a, b) => {
+    if (b.ordinal !== a.ordinal) return b.ordinal > a.ordinal ? b : a;
+    return b.version.startedAtMs > a.version.startedAtMs ? b : a;
+  }).version;
+}
+
+/**
  * Pick the parent for one version out of everything that came before it.
  *
- * Filename lineage wins when it exists: among earlier versions sharing a stem,
- * the one with the highest number below ours. A tie — two files claiming the
- * same number, which happens the moment someone saves `v3` twice — breaks to
- * the one worked on most recently, because that is the one that was in front
- * of the producer.
+ * The names a producer chose and the file they actually had open usually agree,
+ * and when they do the name is the better label to show. When they DISAGREE,
+ * behaviour wins: a numbering scheme is a convention, but having `v3` open when
+ * `v5` appeared is evidence. That disagreement is precisely the branch case —
+ * it only happens when you went back to something older — so deferring to the
+ * name there would erase the fork the graph exists to show.
  *
- * Otherwise fall back to the clock. It is a weak guess and it is labelled as
- * one, but it is better than a root: five disconnected roots is not a history,
- * and the producer can see the dashed line and correct it later.
+ * With neither, fall back to the clock. It is a weak guess and it is labelled
+ * as one, but it beats a root: five disconnected roots is not a history, and
+ * the producer can see the dashed line and correct it.
  */
 function pickParent(
   child: Candidate,
@@ -138,23 +222,16 @@ function pickParent(
 ): { parent: ProjectVersion; basis: ParentageBasis } | null {
   if (earlier.length === 0) return null;
 
-  if (child.stem.ordinal !== null) {
-    // An unnumbered file is version one of its own stem. Producers do not name
-    // the first save `v1` — the folder holds `nightfall.als` and then
-    // `nightfall v2.als`, and those are obviously the same song. Reading the
-    // bare stem as ordinal 0 keeps that first hop on the filename lineage
-    // instead of demoting the most obvious link in the project to a guess.
-    const sameLine = earlier
-      .map((other) => ({ ...other, ordinal: other.stem.ordinal ?? 0 }))
-      .filter((other) => other.stem.stem === child.stem.stem && other.ordinal < child.stem.ordinal!);
-    if (sameLine.length > 0) {
-      const best = sameLine.reduce((a, b) => {
-        if (b.ordinal !== a.ordinal) return b.ordinal > a.ordinal ? b : a;
-        return b.version.startedAtMs > a.version.startedAtMs ? b : a;
-      });
-      return { parent: best.version, basis: "filename" };
-    }
+  const worked = recentlyWorked(child, earlier);
+  const named = filenameParent(child, earlier);
+
+  if (named && worked) {
+    return named.id === worked.id
+      ? { parent: named, basis: "filename" }
+      : { parent: worked, basis: "activity" };
   }
+  if (named) return { parent: named, basis: "filename" };
+  if (worked) return { parent: worked, basis: "activity" };
 
   const mostRecent = earlier.reduce((a, b) =>
     b.version.startedAtMs > a.version.startedAtMs ? b : a,
@@ -210,8 +287,10 @@ export function versionGraph(versions: ProjectVersion[]): VersionNode[] {
 export function parentageStrength(basis: ParentageBasis | null): number {
   switch (basis) {
     case "observed":
-      return 2;
+      return 3;
     case "filename":
+      return 2;
+    case "activity":
       return 1;
     default:
       return 0;

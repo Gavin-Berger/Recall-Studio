@@ -55,6 +55,37 @@ function graphFromNames(names: string[], gapMs = day): VersionNode[] {
   );
 }
 
+/** Versions with explicit sittings: `[name, ...dayOffsets]`. A fork needs them. */
+function graphFromSittings(specs: [string, ...number[]][]): VersionNode[] {
+  const captures: SavedSessionMetadata[] = [];
+  specs.forEach(([name, ...days], versionIndex) => {
+    days.forEach((offset, sittingIndex) => {
+      captures.push(
+        capture({
+          id: `s${versionIndex}-${sittingIndex}`,
+          als_path: `C:\\Music\\nightfall\\${name}.als`,
+          started_at_ms: start + offset * day,
+          last_updated_at_ms: start + offset * day + minute,
+        }),
+      );
+    });
+  });
+  return versionGraph(projectVersions(captures));
+}
+
+/** A trunk with one branch off it, which is the shape most of these assert on. */
+function forkedGeometry(containerWidth = 1200) {
+  const nodes = graphFromSittings([
+    ["nightfall", 0],
+    ["nightfall v2", 1, 4],
+    ["nightfall alt", 2],
+    ["nightfall v3", 5],
+  ]);
+  const layout = layoutVersionGraph(nodes);
+  const scale = collapseGaps(layout.placements.flatMap((p) => [p.atMs, ...p.sittingsMs]));
+  return { geometry: graphGeometry(layout, scale, { containerWidth }), nodes, layout };
+}
+
 function geometryFor(names: string[], containerWidth = 1200, gapMs = day) {
   const nodes = graphFromNames(names, gapMs);
   const layout = layoutVersionGraph(nodes);
@@ -64,9 +95,11 @@ function geometryFor(names: string[], containerWidth = 1200, gapMs = day) {
 
 describe("graphGeometry", () => {
   it("places lanes down the page at a fixed rhythm", () => {
-    const { geometry } = geometryFor(["nightfall", "nightfall v2", "nightfall alt", "nightfall v3"]);
+    const { geometry } = forkedGeometry();
     const trunk = geometry.nodes.filter((node) => node.lane === 0);
     const branch = geometry.nodes.filter((node) => node.lane === 1);
+    expect(trunk).toHaveLength(3);
+    expect(branch).toHaveLength(1);
     expect(trunk.every((node) => node.y === PAD_Y)).toBe(true);
     expect(branch.every((node) => node.y === PAD_Y + LANE_HEIGHT)).toBe(true);
   });
@@ -93,12 +126,7 @@ describe("graphGeometry", () => {
 
   it("grows taller with each lane", () => {
     const flat = geometryFor(["nightfall", "nightfall v2"]).geometry;
-    const forked = geometryFor([
-      "nightfall",
-      "nightfall v2",
-      "nightfall alt",
-      "nightfall v3",
-    ]).geometry;
+    const forked = forkedGeometry().geometry;
     expect(forked.height).toBe(flat.height + LANE_HEIGHT);
   });
 
@@ -115,23 +143,13 @@ describe("graphGeometry", () => {
 
   it("draws a fork as one vertical drop, one corner, then the child lane", () => {
     // §11: orthogonal with a single rounded corner. Never a bezier between lanes.
-    const { geometry } = geometryFor([
-      "nightfall",
-      "nightfall v2",
-      "nightfall alt",
-      "nightfall v3",
-    ]);
+    const { geometry } = forkedGeometry();
     const fork = geometry.edges.find((edge) => /V/.test(edge.d))!;
     expect(fork.d).toMatch(/^M [\d.]+ [\d.]+ V [\d.]+ Q [\d.]+ [\d.]+ [\d.]+ [\d.]+ H [\d.]+$/);
   });
 
   it("starts a fork at the parent and ends it at the child", () => {
-    const { geometry } = geometryFor([
-      "nightfall",
-      "nightfall v2",
-      "nightfall alt",
-      "nightfall v3",
-    ]);
+    const { geometry } = forkedGeometry();
     const fork = geometry.edges.find((edge) => /V/.test(edge.d))!;
     const parent = geometry.nodes.find((node) => node.id === fork.fromId)!;
     const child = geometry.nodes.find((node) => node.id === fork.toId)!;
@@ -142,11 +160,7 @@ describe("graphGeometry", () => {
   it("never lets the corner overshoot a tight fork", () => {
     // Two versions moments apart: the corner radius must shrink rather than
     // curving past the child and doubling back.
-    const { geometry } = geometryFor(
-      ["nightfall", "nightfall v2", "nightfall alt", "nightfall v3"],
-      1200,
-      minute,
-    );
+    const { geometry } = forkedGeometry(1200);
     for (const edge of geometry.edges) {
       const child = geometry.nodes.find((node) => node.id === edge.toId)!;
       const parent = geometry.nodes.find((node) => node.id === edge.fromId)!;

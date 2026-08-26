@@ -42,6 +42,31 @@ function versionsFromNames(names: string[], gapMs = day): ProjectVersion[] {
   );
 }
 
+
+/**
+ * Versions with explicit sittings: `[name, ...dayOffsets]`.
+ *
+ * One sitting per version cannot express the case overlap detection exists for
+ * — going back to an older file after a newer one appeared — because the
+ * "going back" IS a second sitting.
+ */
+function versionsFromSittings(specs: [string, ...number[]][]): ProjectVersion[] {
+  const captures: SavedSessionMetadata[] = [];
+  specs.forEach(([name, ...days], versionIndex) => {
+    days.forEach((offset, sittingIndex) => {
+      captures.push(
+        capture({
+          id: `s${versionIndex}-${sittingIndex}`,
+          als_path: `C:\\Music\\nightfall\\${name}.als`,
+          started_at_ms: start + offset * day,
+          last_updated_at_ms: start + offset * day + 60_000,
+        }),
+      );
+    });
+  });
+  return projectVersions(captures);
+}
+
 function parentNames(nodes: ReturnType<typeof versionGraph>): Record<string, string | null> {
   const nameOf = new Map(nodes.map((node) => [node.id, node.version.name]));
   return Object.fromEntries(
@@ -130,12 +155,23 @@ describe("versionGraph", () => {
     // `nightfall v1` just because the numbers happen to line up.
     const nodes = versionGraph(versionsFromNames(["nightfall v1", "daybreak v2"]));
     expect(parentNames(nodes)["daybreak v2"]).toBe("nightfall v1");
-    expect(nodes[1]!.basis).toBe("chronological");
+    expect(nodes[1]!.basis).toBe("activity");
   });
 
-  it("falls back to the clock when there is nothing in the name, and says so", () => {
+  it("falls back to what you had open when the name says nothing, and admits it", () => {
     const nodes = versionGraph(versionsFromNames(["nightfall", "nightfall final"]));
     expect(parentNames(nodes)["nightfall final"]).toBe("nightfall");
+    expect(nodes[1]!.basis).toBe("activity");
+    expect(nodes[1]!.reason).toContain("not observed");
+  });
+
+  it("falls back to the clock only after a cold return, and calls it a guess", () => {
+    // Three weeks away. What you had open last month says nothing about what
+    // you branched from today, so the activity link has no claim.
+    const nodes = versionGraph(versionsFromSittings([
+      ["nightfall", 0],
+      ["nightfall final", 21],
+    ]));
     expect(nodes[1]!.basis).toBe("chronological");
     expect(nodes[1]!.reason).toContain("guess");
   });
@@ -155,15 +191,14 @@ describe("versionGraph", () => {
   });
 
   it("forks when two versions share a parent", () => {
-    // The shape this whole feature exists to show: a trunk to v3, a named
-    // branch off it, and the trunk carrying on to v4.
+    // The shape this whole feature exists to show. v3 is worked on day 0, an
+    // alt is branched off it on day 1, then v3 is picked up AGAIN on day 3 and
+    // v4 comes off it on day 4 — so v3 has two children and the song forks.
     const nodes = versionGraph(
-      versionsFromNames([
-        "pers ep nightfall",
-        "pers ep nightfall v2",
-        "pers ep nightfall v3",
-        "pers ep nightfall v3 alt",
-        "pers ep nightfall v4",
+      versionsFromSittings([
+        ["pers ep nightfall v3", 0, 3],
+        ["pers ep nightfall v3 alt", 1],
+        ["pers ep nightfall v4", 4],
       ]),
     );
     const parents = parentNames(nodes);
@@ -176,6 +211,51 @@ describe("versionGraph", () => {
       "pers ep nightfall v3 alt",
       "pers ep nightfall v4",
     ]);
+  });
+
+  it("forks with no version numbers at all", () => {
+    // The case that matters for real projects: names carry nothing, so every
+    // link is activity-based. The fork still appears, because it comes from
+    // going BACK to the first file on day 3 before branching again on day 4.
+    const nodes = versionGraph(
+      versionsFromSittings([
+        ["new 90 bpm drums", 0, 3],
+        ["new 90 bpm drums take", 1],
+        ["new 90 bpm drums final", 4],
+      ]),
+    );
+    const parents = parentNames(nodes);
+    expect(parents["new 90 bpm drums take"]).toBe("new 90 bpm drums");
+    expect(parents["new 90 bpm drums final"]).toBe("new 90 bpm drums");
+    expect(nodes.slice(1).every((node) => node.basis === "activity")).toBe(true);
+  });
+
+  it("prefers the file you had open over the numbering when they disagree", () => {
+    // v5 appears while you are back in v3. The name says it follows v4; the
+    // sittings say it came off v3. Behaviour wins — a numbering scheme is a
+    // convention, having v3 open is evidence, and deferring to the name here
+    // would erase the fork.
+    const nodes = versionGraph(
+      versionsFromSittings([
+        ["nightfall v3", 0, 4],
+        ["nightfall v4", 1],
+        ["nightfall v5", 5],
+      ]),
+    );
+    expect(parentNames(nodes)["nightfall v5"]).toBe("nightfall v3");
+    expect(nodes[2]!.basis).toBe("activity");
+  });
+
+  it("keeps the name when the name and the open file agree", () => {
+    // The ordinary linear case: the newest file IS the one you were in, so the
+    // producer's own numbering is the better thing to show.
+    const nodes = versionGraph(
+      versionsFromSittings([
+        ["nightfall v3", 0],
+        ["nightfall v4", 1],
+      ]),
+    );
+    expect(nodes[1]!.basis).toBe("filename");
   });
 
   it("breaks a duplicate number toward the version worked on most recently", () => {
@@ -201,7 +281,7 @@ describe("versionGraph", () => {
     const nodes = versionGraph(versions);
     const unsaved = nodes.find((node) => node.id === "session:unsaved")!;
     expect(unsaved.parentId).toBe("c:/a/nightfall.als");
-    expect(unsaved.basis).toBe("chronological");
+    expect(unsaved.basis).toBe("activity");
   });
 
   it("returns one node per version and no cycles", () => {

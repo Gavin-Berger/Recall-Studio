@@ -51,6 +51,30 @@ function graphFromNames(names: string[], gapMs = day): VersionNode[] {
   );
 }
 
+/**
+ * Versions with explicit sittings: `[name, ...dayOffsets]`.
+ *
+ * A fork only exists when the producer went BACK to an older file, and "going
+ * back" is a second sitting — so one sitting per version cannot express any of
+ * the shapes this file is about.
+ */
+function graphFromSittings(specs: [string, ...number[]][]): VersionNode[] {
+  const captures: SavedSessionMetadata[] = [];
+  specs.forEach(([name, ...days], versionIndex) => {
+    days.forEach((offset, sittingIndex) => {
+      captures.push(
+        capture({
+          id: `s${versionIndex}-${sittingIndex}`,
+          als_path: `C:\\Music\\nightfall\\${name}.als`,
+          started_at_ms: start + offset * day,
+          last_updated_at_ms: start + offset * day + minute,
+        }),
+      );
+    });
+  });
+  return versionGraph(projectVersions(captures));
+}
+
 function laneNames(nodes: VersionNode[]): string[][] {
   const nameOf = new Map(nodes.map((node) => [node.id, node.version.name]));
   return layoutVersionGraph(nodes).lanes.map((lane) =>
@@ -63,16 +87,42 @@ describe("layoutVersionGraph", () => {
     // The case that decides the whole lane rule: the alt is OLDER than v4, so
     // "eldest child keeps the trunk" would put the abandoned experiment on the
     // mainline and push the song onto a branch.
-    const nodes = graphFromNames([
-      "nightfall v2",
-      "nightfall v3",
-      "nightfall v3 alt",
-      "nightfall v4",
+    const nodes = graphFromSittings([
+      ["nightfall v3", 0, 3],
+      ["nightfall v3 alt", 1],
+      ["nightfall v4", 4],
     ]);
     expect(laneNames(nodes)).toEqual([
-      ["nightfall v2", "nightfall v3", "nightfall v4"],
+      ["nightfall v3", "nightfall v4"],
       ["nightfall v3 alt"],
     ]);
+  });
+
+  it("forks a project whose files carry no version numbers", () => {
+    // The real-world case. Nothing in these names says lineage, so every edge
+    // is activity-based and ties on strength — the trunk is decided by which
+    // branch the song is still alive on.
+    const nodes = graphFromSittings([
+      ["new 90 bpm drums", 0, 3],
+      ["new 90 bpm drums take", 1],
+      ["new 90 bpm drums final", 4],
+    ]);
+    expect(laneNames(nodes)).toEqual([
+      ["new 90 bpm drums", "new 90 bpm drums final"],
+      ["new 90 bpm drums take"],
+    ]);
+  });
+
+  it("gives the trunk to the branch still being worked, not the older one", () => {
+    // Both children are activity edges, so strength cannot separate them. The
+    // abandoned one is older; handing it the trunk would claim the song lives
+    // there. --lane-0 means the line the song is actually on (§11).
+    const nodes = graphFromSittings([
+      ["drums", 0, 2],
+      ["drums idea", 1],
+      ["drums keep", 3, 9],
+    ]);
+    expect(laneNames(nodes)[0]).toEqual(["drums", "drums keep"]);
   });
 
   it("keeps a straight history on one lane", () => {
@@ -87,12 +137,12 @@ describe("layoutVersionGraph", () => {
   });
 
   it("opens a lane only on a second child", () => {
-    const nodes = graphFromNames([
-      "nightfall",
-      "nightfall v2",
-      "nightfall v3",
-      "nightfall v3 alt",
-      "nightfall v4",
+    const nodes = graphFromSittings([
+      ["nightfall", 0],
+      ["nightfall v2", 1],
+      ["nightfall v3", 2, 5],
+      ["nightfall v3 alt", 3],
+      ["nightfall v4", 6],
     ]);
     expect(laneNames(nodes)).toEqual([
       ["nightfall", "nightfall v2", "nightfall v3", "nightfall v4"],
@@ -103,12 +153,12 @@ describe("layoutVersionGraph", () => {
   it("keeps a renamed continuation on its branch instead of forking again", () => {
     // `alt` forks off the trunk, then `alt take` continues it. One fork, two
     // lanes — a lineage that keeps going is still one line, whatever it is called.
-    const nodes = graphFromNames([
-      "nightfall",
-      "nightfall v2",
-      "nightfall alt",
-      "nightfall alt take",
-      "nightfall v3",
+    const nodes = graphFromSittings([
+      ["nightfall", 0],
+      ["nightfall v2", 1, 6],
+      ["nightfall alt", 2],
+      ["nightfall alt take", 3],
+      ["nightfall v3", 7],
     ]);
     expect(laneNames(nodes)).toEqual([
       ["nightfall", "nightfall v2", "nightfall v3"],
@@ -120,13 +170,13 @@ describe("layoutVersionGraph", () => {
     // `alt` forks off the trunk; `alt bounce` and `alt v2` both come off `alt`,
     // so the named one carries that branch and the other forks a third time.
     // Depth drives --lane-0..3; it is distance from the trunk, never importance.
-    const nodes = graphFromNames([
-      "nightfall",
-      "nightfall v2",
-      "nightfall alt",
-      "nightfall alt bounce",
-      "nightfall alt v2",
-      "nightfall v3",
+    const nodes = graphFromSittings([
+      ["nightfall", 0],
+      ["nightfall v2", 1, 8],
+      ["nightfall alt", 2, 5],
+      ["nightfall alt bounce", 3],
+      ["nightfall alt v2", 6],
+      ["nightfall v3", 9],
     ]);
     const layout = layoutVersionGraph(nodes);
     expect(layout.lanes.map((lane) => lane.depth)).toEqual([0, 1, 2]);
@@ -151,11 +201,11 @@ describe("layoutVersionGraph", () => {
   });
 
   it("draws one edge per parent link, carrying the lanes it spans", () => {
-    const nodes = graphFromNames([
-      "nightfall",
-      "nightfall v2",
-      "nightfall alt",
-      "nightfall v3",
+    const nodes = graphFromSittings([
+      ["nightfall", 0],
+      ["nightfall v2", 1, 4],
+      ["nightfall alt", 2],
+      ["nightfall v3", 5],
     ]);
     const layout = layoutVersionGraph(nodes);
     expect(layout.edges).toHaveLength(3);

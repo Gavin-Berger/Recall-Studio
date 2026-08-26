@@ -25,7 +25,13 @@
 //
 // So the trunk follows the *strongest* edge, not the earliest: a child whose
 // name follows its parent continues the lineage, and one that merely happened
-// next is the branch. Ties go to the eldest.
+// next is the branch.
+//
+// Ties go to whichever child's descendants were worked on most recently. In a
+// project with no version numbers every edge has the same strength, so the tie
+// IS the common case, and "eldest" would hand the trunk to whichever fork was
+// opened first and then abandoned. The line the song is still alive on is the
+// mainline — which is what --lane-0 claims to be (§11).
 
 import { childrenByParent, parentageStrength, type VersionNode } from "./versionGraph";
 
@@ -85,6 +91,19 @@ export function layoutVersionGraph(nodes: VersionNode[]): GraphLayout {
   const lanes: GraphLane[] = [];
   const laneOf = new Map<string, number>();
 
+  // The most recent work anywhere below a node, memoised because the heir test
+  // asks for it at every fork on the way down.
+  const liveliness = new Map<string, number>();
+  function latestWorkUnder(node: VersionNode): number {
+    const cached = liveliness.get(node.id);
+    if (cached !== undefined) return cached;
+    const own = node.version.lastUpdatedAtMs;
+    const under = (children.get(node.id) ?? []).map(latestWorkUnder);
+    const latest = Math.max(own, ...under);
+    liveliness.set(node.id, latest);
+    return latest;
+  }
+
   function openLane(depth: number): number {
     const lane: GraphLane = { index: lanes.length, depth, nodeIds: [] };
     lanes.push(lane);
@@ -101,6 +120,8 @@ export function layoutVersionGraph(nodes: VersionNode[]): GraphLayout {
     const heir = kids.reduce((a, b) => {
       const strength = parentageStrength(b.basis) - parentageStrength(a.basis);
       if (strength !== 0) return strength > 0 ? b : a;
+      const liveliness = latestWorkUnder(b) - latestWorkUnder(a);
+      if (liveliness !== 0) return liveliness > 0 ? b : a;
       return b.version.startedAtMs < a.version.startedAtMs ? b : a;
     });
 

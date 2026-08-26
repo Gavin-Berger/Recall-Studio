@@ -286,14 +286,89 @@ describe("versionGraph", () => {
   it("breaks a duplicate number toward the version worked on most recently", () => {
     // Two files both called v3 — someone saved it twice into different folders.
     // v4 descends from the one that was actually in front of the producer.
+    //
+    // Two things have to be true for this test to be about the tie-break at
+    // all, and both are easy to get wrong.
+    //
+    // 1. The two folders must disagree about which kind of recency you mean.
+    //    `a` was opened FIRST but worked LAST; `b` was opened second and
+    //    dropped. Ranking by first sitting picks `b`, ranking by last sitting
+    //    picks `a`. A fixture giving each version ONE sitting collapses the
+    //    two readings and proves nothing.
+    //
+    // 2. Both v3s must be COLD — more than ACTIVE_WINDOW_MS before v4. The
+    //    activity rule outranks the name and would otherwise reach `a` on its
+    //    own, so the assertion would hold no matter what this tie-break did.
+    //    Cold is the only window where the filename tie-break decides, which
+    //    is exactly why it needs its own test.
     const versions = projectVersions([
-      capture({ id: "a", als_path: "C:\\a\\nightfall v3.als", started_at_ms: start }),
-      capture({ id: "b", als_path: "C:\\b\\nightfall v3.als", started_at_ms: start + day }),
-      capture({ id: "c", als_path: "C:\\a\\nightfall v4.als", started_at_ms: start + 2 * day }),
+      capture({ id: "a1", als_path: "C:\\a\\nightfall v3.als", started_at_ms: start }),
+      capture({ id: "b1", als_path: "C:\\b\\nightfall v3.als", started_at_ms: start + 5 * day }),
+      // Back into `a`, after `b` had already been made.
+      capture({
+        id: "a2",
+        als_path: "C:\\a\\nightfall v3.als",
+        started_at_ms: start + 10 * day,
+        last_updated_at_ms: start + 10 * day + 60_000,
+      }),
+      capture({ id: "c", als_path: "C:\\a\\nightfall v4.als", started_at_ms: start + 20 * day }),
     ]);
     const nodes = versionGraph(versions);
     const v4 = nodes.find((node) => node.version.id.includes("v4"))!;
-    expect(v4.parentId).toBe("c:/b/nightfall v3.als");
+    expect(v4.parentId).toBe("c:/a/nightfall v3.als");
+    // Proves the name decided it. If this reads "activity" the fixture went
+    // warm again and the test has stopped covering the tie-break.
+    expect(v4.basis).toBe("filename");
+  });
+
+  it("does not read a scanned file's timestamp as time the producer spent", () => {
+    // A connected folder writes one row per `.als` with the file's modified
+    // time and no events (storage.rs::add_scanned_takes). Recall was not
+    // running, so nothing here may claim to know what was open: the honest
+    // fallback is the clock, labelled as the guess it is.
+    const scanned = (file: string, offsetDays: number) =>
+      capture({
+        id: `scan-${file}`,
+        als_path: `C:\\Music\\nightfall\\${file}.als`,
+        take_origin: "scanned",
+        capture_status: "scanned",
+        started_at_ms: start + offsetDays * day,
+        ended_at_ms: start + offsetDays * day,
+        last_updated_at_ms: start + offsetDays * day,
+        event_count: 0,
+        creative_event_count: 0,
+      });
+
+    // Unnumbered names, so filename lineage cannot rescue this either.
+    const nodes = versionGraph(
+      projectVersions([scanned("new 90 bpm drums", 0), scanned("drum bounce final", 1)]),
+    );
+
+    expect(nodes[1]!.basis).toBe("chronological");
+    expect(nodes[1]!.reason).not.toMatch(/You were working in/);
+  });
+
+  it("still reads lineage from the names of scanned files", () => {
+    // Withdrawing the behavioural claim must not cost the naming claim: the
+    // names are real evidence even when Recall watched nothing.
+    const scanned = (file: string, offsetDays: number) =>
+      capture({
+        id: `scan-${file}`,
+        als_path: `C:\\Music\\nightfall\\${file}.als`,
+        take_origin: "scanned",
+        capture_status: "scanned",
+        started_at_ms: start + offsetDays * day,
+        ended_at_ms: start + offsetDays * day,
+        last_updated_at_ms: start + offsetDays * day,
+        event_count: 0,
+        creative_event_count: 0,
+      });
+
+    const nodes = versionGraph(
+      projectVersions([scanned("nightfall v2", 0), scanned("nightfall v3", 1)]),
+    );
+
+    expect(nodes[1]!.basis).toBe("filename");
   });
 
   it("gives an unanchored capture a parent instead of stranding it", () => {

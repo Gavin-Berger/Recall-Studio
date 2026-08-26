@@ -54,8 +54,15 @@ export type ParentageBasis = "observed" | "filename" | "activity" | "chronologic
  *
  * Past this, coming back to the project is a fresh start rather than a
  * continuation, and what you had open last week says nothing about what you
- * branched from today. Matches the idle threshold the timeline collapses on, so
- * the two surfaces agree about when a working stretch ended.
+ * branched from today.
+ *
+ * Deliberately the same three days as `DEFAULT_GAP_MS` in the layout, so the
+ * span the axis collapses as dead air is the same span that stops counting as
+ * a continuation — a gap the graph draws as a break should not still be
+ * producing parent edges. They are separate constants because they answer
+ * different questions; if you tune one, look at the other. The timeline's own
+ * thresholds are unrelated and much shorter (`SESSION_SITTING_GAP_MS` is four
+ * hours).
  */
 export const ACTIVE_WINDOW_MS = 1000 * 60 * 60 * 24 * 3;
 
@@ -158,10 +165,21 @@ type Candidate = { version: ProjectVersion; stem: VersionStem };
  * Not `lastUpdatedAtMs`, which is the version's whole life. The question is
  * what the producer had open *then*, so sittings after that moment are exactly
  * the ones that must not count.
+ *
+ * A SCANNED TAKE IS NOT A SITTING. When a folder is connected, the backend
+ * writes one row per `.als` with `started_at_ms` set to the file's modified
+ * time and no events (`storage.rs::add_scanned_takes`). That is a fact about
+ * the filesystem, not about the producer — Recall was not running. Counting it
+ * here made the `activity` rule fire on projects nobody ever captured, and the
+ * graph then said "You were working in X when Y appeared" beside a node drawn
+ * hollow precisely because it knows it watched nothing. §1: Recall never
+ * pretends. Names still carry lineage on scanned files, so `filename` is
+ * unaffected; what is withdrawn is only the claim about behaviour.
  */
 function lastWorkedAtOrBefore(version: ProjectVersion, atMs: number): number | null {
   let latest: number | null = null;
   for (const session of version.sessions) {
+    if (session.take_origin === "scanned") continue;
     if (session.started_at_ms > atMs) continue;
     if (latest === null || session.started_at_ms > latest) latest = session.started_at_ms;
   }
@@ -213,9 +231,19 @@ function filenameParent(child: Candidate, earlier: Candidate[]): ProjectVersion 
   if (sameLine.length === 0) return null;
 
   // A tie — two files claiming the same number, which happens the moment
-  // someone saves `v3` twice — breaks to the one worked on most recently.
+  // someone saves `v3` twice — breaks to the one worked on most recently
+  // BEFORE this version appeared. Recency here means the last sitting, not the
+  // first: a file opened in January and pushed hard all March is the one the
+  // producer was living in, and `startedAtMs` would rank it behind a file
+  // touched once in February. Same definition `recentlyWorked` uses above and
+  // `latestWorkUnder` uses in the layout, so all three tie-breaks in this
+  // feature agree on what "recent" means.
+  const bornAt = child.version.startedAtMs;
   return sameLine.reduce((a, b) => {
     if (b.ordinal !== a.ordinal) return b.ordinal > a.ordinal ? b : a;
+    const workedA = lastWorkedAtOrBefore(a.version, bornAt) ?? a.version.startedAtMs;
+    const workedB = lastWorkedAtOrBefore(b.version, bornAt) ?? b.version.startedAtMs;
+    if (workedA !== workedB) return workedB > workedA ? b : a;
     return b.version.startedAtMs > a.version.startedAtMs ? b : a;
   }).version;
 }

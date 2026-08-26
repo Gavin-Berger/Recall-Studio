@@ -33,6 +33,36 @@
   --radius-sm: 6px;
   --shadow: 0 24px 70px rgba(0, 0, 0, 0.34);
 
+  /* Spacing scale (DESIGN.md §4). Documented since v1 but never declared here,
+     so components reached for raw px. New components must use the scale: if a
+     value is not on it, either the scale is wrong or the component is. */
+  --s1: 4px;
+  --s2: 8px;
+  --s3: 12px;
+  --s4: 16px;
+  --s5: 24px;
+  --s6: 32px;
+  --s7: 48px;
+  --s8: 64px;
+
+  /* Stroke (DESIGN.md v2.1 §5) — chrome vs. geometry. A line that SEPARATES is
+     always a hairline; a line that IS the content needs weight to carry
+     hierarchy. Trunk weight is a structural claim, never emphasis. */
+  --stroke-hair: 1px;
+  --stroke-edge: 1.5px;
+  --stroke-trunk: 2.5px;
+
+  /* Lane depth (DESIGN.md v2.1 §11) — the version graph's only differentiator.
+     Luminance, not hue: a lane is a position in a structure, not an entity, so
+     this is not the retired entity-color system coming back. Dimmer means
+     further from the trunk, NEVER less important — an abandoned experiment can
+     hold the best sound in the song. Cycles back to --lane-1 past --lane-3. */
+  --lane-0: #d6dae4;
+  --lane-1: #98a0b1;
+  --lane-2: #6f7686;
+  --lane-3: #4d5462;
+  --radius-node: 7px;
+
   /* Motion (DESIGN.md Â§6) â€” unchanged. Two registers only: arrival and recognition.
      linear easing is banned; --ease-arrive is the default. */
   --m-settle: 120ms;

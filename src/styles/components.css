@@ -7487,3 +7487,9 @@
 .settings-versions__verdict--action strong {
   color: var(--signal);
 }
+
+/* The version graph sits above the per-capture rail: lineage first, then the
+   detail for whichever version is selected (DESIGN.md §11). */
+.versions__graph {
+  padding: var(--s4) var(--s5) 0;
+}

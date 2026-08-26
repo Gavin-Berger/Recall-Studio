@@ -9,6 +9,8 @@ import type { ConnectionStatus, SavedProject, SavedSessionMetadata } from "../..
 import { formatSessionDate, formatSessionDuration, preferredCaptureTitle } from "../sessionFormat";
 import { RelinkDialog, type AlsFileChoice } from "./RelinkDialog";
 import { compareSchemas, countDevices, diffIsEmpty, type VersionDiff } from "./versionDiff";
+import { projectVersions, versionForSession } from "./projectVersions";
+import { VersionGraphView } from "./VersionGraphView";
 
 // The version-memory view for one project: every `.als` take on a chronological
 // rail, and a detail pane that answers "what changed, what was recorded, which
@@ -78,6 +80,14 @@ export function ProjectVersionsScreen({
     () => takes.find((take) => take.id === selectedTakeId) ?? takes[0] ?? null,
     [takes, selectedTakeId],
   );
+  // The same captures rolled up into the .als files they belong to, so the
+  // graph can show lineage while the rail below stays per-capture.
+  const versions = useMemo(() => projectVersions(project?.captures ?? []), [project]);
+  const selectedVersionId = useMemo(
+    () => versionForSession(versions, selected?.id ?? null)?.id ?? null,
+    [versions, selected],
+  );
+
   const selectedIndex = selected ? takes.indexOf(selected) : -1;
   // "Previous" is the next-older version on the rail.
   const previous = selectedIndex >= 0 ? takes[selectedIndex + 1] ?? null : null;
@@ -270,6 +280,20 @@ export function ProjectVersionsScreen({
           </button>
         </div>
       ) : (
+        <>
+        <section className="versions__graph" aria-label="Version lineage">
+          <VersionGraphView
+            versions={versions}
+            selectedVersionId={selectedVersionId}
+            onSelectVersion={(versionId) => {
+              const version = versions.find((candidate) => candidate.id === versionId);
+              // Selecting a version means selecting the sitting a producer would
+              // expect to land on: the most recent one against that file.
+              const latest = version?.sessions[version.sessions.length - 1];
+              if (latest) setSelectedTakeId(latest.id);
+            }}
+          />
+        </section>
         <div className="versions__body">
           <nav className="version-rail" aria-label="Project versions">
             {takes.map((take, index) => (
@@ -313,6 +337,7 @@ export function ProjectVersionsScreen({
             />
           )}
         </div>
+        </>
       )}
 
       {relinkOpen && selected && (

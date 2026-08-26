@@ -1,0 +1,198 @@
+/* Version graph (DESIGN.md v2.1 §11).
+   Monochrome: lanes differ by luminance depth, never by hue. --signal appears
+   only on selection and on a live capture; --moment is reserved for a mark the
+   producer made themselves and is not drawn here yet. */
+
+.vg {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s3);
+}
+
+/* §8: a graph is a drawing, not a column. It fills the width it is given and
+   scrolls past that rather than compressing — a squeezed graph claims events
+   were closer together than they were. */
+.vg__scroll {
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding-bottom: var(--s2);
+}
+
+.vg__canvas {
+  display: block;
+}
+
+/* Lanes and edges ------------------------------------------------------- */
+
+.vg__lane,
+.vg__edge {
+  stroke-width: var(--stroke-edge);
+  stroke-linecap: round;
+}
+
+.vg__lane--trunk,
+.vg__edge--trunk {
+  stroke-width: var(--stroke-trunk);
+}
+
+/* A guess must never be drawn the way a fact is drawn (§11). When Recall
+   observes a save-as directly, the edge loses this class and goes solid. */
+.vg__edge--inferred {
+  stroke-dasharray: 4 2;
+}
+
+.vg__sitting {
+  stroke: var(--faint-aa);
+  stroke-width: var(--stroke-hair);
+}
+
+/* Nodes ----------------------------------------------------------------- */
+
+.vg__dot {
+  r: var(--radius-node);
+  stroke-width: var(--stroke-edge);
+  transition: r var(--m-settle) var(--ease-arrive);
+}
+
+/* The file exists; the work inside it is not something Recall can claim to
+   know, because it was never capturing. Honest degradation (§7). */
+.vg__dot--hollow {
+  stroke-dasharray: 3 2;
+}
+
+.vg__hit {
+  fill: transparent;
+  /* Widens the pointer target to the 24px minimum in §9 without changing what
+     is drawn. The 7px dot stays 7px. */
+  pointer-events: all;
+}
+
+.vg__node {
+  cursor: pointer;
+}
+
+.vg__label {
+  fill: var(--faint-aa);
+  font-family: var(--font-mono);
+  font-size: var(--t-micro);
+  letter-spacing: 0.04em;
+  text-anchor: middle;
+  pointer-events: none;
+}
+
+.vg__node:hover .vg__label {
+  fill: var(--paper);
+}
+
+.vg__node--selected .vg__label {
+  fill: var(--paper-strong);
+}
+
+/* Selection and focus are one visual idea (§11), so they share a ring. */
+.vg__node--selected .vg__dot,
+.vg__node:focus-visible .vg__dot {
+  stroke: var(--signal);
+  paint-order: stroke;
+  outline: none;
+}
+
+.vg__node:focus-visible {
+  outline: none;
+}
+
+.vg__node--selected .vg__hit,
+.vg__node:focus-visible .vg__hit {
+  fill: none;
+  stroke: var(--signal);
+  stroke-width: 2px;
+  /* --radius-node plus the 3px offset in §11. pointer-events stays `all`, so
+     shrinking the drawn circle does not shrink the hit target. */
+  r: 10;
+}
+
+/* The one genuinely live fact on this surface — and it is still static. Only
+   the connection-status dot may pulse (§6). */
+.vg__node--live .vg__dot {
+  fill: var(--signal);
+  stroke: var(--signal);
+}
+
+/* Collapsed idle stretches ---------------------------------------------- */
+
+.vg__break line {
+  stroke: var(--line);
+  stroke-width: var(--stroke-hair);
+  stroke-dasharray: 2 4;
+}
+
+/* The break names what it removed. Silently rescaling the axis would not. */
+.vg__break text {
+  fill: var(--faint-aa);
+  font-family: var(--font-mono);
+  font-size: var(--t-micro);
+  letter-spacing: 0.08em;
+}
+
+/* Legend and empty state ------------------------------------------------ */
+
+.vg__legend {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  margin: 0;
+  color: var(--faint-aa);
+  font-size: var(--t-micro);
+  letter-spacing: 0.02em;
+}
+
+.vg__legend-swatch {
+  width: 18px;
+  height: 0;
+  border-top: var(--stroke-edge) dashed var(--lane-1);
+  flex: none;
+}
+
+.vg--empty {
+  padding: var(--s7) var(--s5);
+  border: var(--stroke-hair) solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel);
+  text-align: center;
+}
+
+.vg__empty-title {
+  margin: 0 0 var(--s2);
+  color: var(--paper-strong);
+  font-size: var(--t-h2);
+  font-weight: 600;
+}
+
+.vg__empty-body {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--t-meta);
+}
+
+.vg__empty-body code {
+  font-family: var(--font-mono);
+}
+
+/* Motion (§6) — arrival only. The graph resolves once and holds. Edges must
+   never animate along their own path: that is `travel`, and it would make a
+   two-year-old branch look like it is happening now. */
+@media (prefers-reduced-motion: no-preference) {
+  .vg__canvas {
+    animation: vg-arrive var(--m-develop) var(--ease-arrive) both;
+  }
+}
+
+@keyframes vg-arrive {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}

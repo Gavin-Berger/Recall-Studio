@@ -452,6 +452,37 @@ def _heartbeat_due(now, last_sent_at, interval=None):
 # producer still remembers making it.
 GESTURE_SETTLE_SEC = 0.35
 
+# How long after a mixer-listener rebuild the channel strip is still ARRIVING
+# rather than being played.
+#
+# Live drives every track's volume, pan and routing to the loaded set's values
+# AFTER the listeners are attached, so those callbacks are genuine — they are
+# just not the producer. Measured on a real library: 103 mixer events inside a
+# single second at session start, then 58 more in one second at +7s and again
+# at +44s when tracks changed, with nothing but heartbeats in between. Nobody
+# moves 103 faders in a second.
+#
+# Suppressed rather than reclassified because volume and pan ARE creative when
+# a human does them; the problem is only ever the arrival burst. Seeds are still
+# updated while settling, so the first real move afterwards reports a true
+# "before" instead of a pre-load reading.
+MIXER_SETTLE_SEC = 2.5
+
+# One Live operation touching every channel at once is not seven decisions.
+#
+# The settle window above only covers bursts that follow a listener rebuild.
+# The real library also produced 58 `track_routing_changed` inside TEN
+# MILLISECONDS at +44.7s of a session, with no rebuild in front of it — Live
+# cascading one change across every track. A producer cannot generate that.
+#
+# Emissions are already coalesced per settled gesture, so a fader sweep is ONE
+# emission, not many: rapid consecutive emissions of the same mixer family
+# therefore mean a cascade rather than fast hands. The run resets whenever a
+# quarter-second of quiet passes, so ordinary quick work never accumulates
+# toward the threshold.
+CASCADE_WINDOW_SEC = 0.25
+CASCADE_THRESHOLD = 6
+
 # The same idea for note edits, but slower. A notes listener fires on every
 # single change — each drawn note, each nudge, and continuously through a record
 # pass — so a four-bar take would otherwise emit a hundred rows describing one
@@ -544,7 +575,7 @@ ROUTING_PROPERTIES = (
 # 0.7.2 ignores transient Python identities for routing-channel objects. A
 # listener refresh must not turn an unchanged set-wide routing snapshot into
 # dozens of claimed producer actions.
-SCRIPT_VERSION = "0.7.3"
+SCRIPT_VERSION = "0.8.0"
 
 
 class Recall(ControlSurface):
@@ -1458,6 +1489,8 @@ class Recall(ControlSurface):
             if previous == current:
                 return
             self._routing_values[key] = current
+            if self._is_mixer_settling() or self._is_cascade("track_routing_changed"):
+                return
             changed = [name for name in ROUTING_PROPERTIES if previous.get(name) != current.get(name)]
             payload = {
                 "track_name": self._safe_name(track),
@@ -1746,6 +1779,10 @@ class Recall(ControlSurface):
             for index, track in enumerate(self.song.return_tracks)
         ]
 
+        # Everything Live sends in the next couple of seconds is the set
+        # arriving, not the producer playing the channel strip.
+        self._mixer_settling_until = time.time() + MIXER_SETTLE_SEC
+
         for track in self._mixer_tracks():
             try:
                 mixer = track.mixer_device
@@ -1793,6 +1830,31 @@ class Recall(ControlSurface):
             return
         self._watch_value_parameter(track, parameter, event_type, "Mixer", None, label)
 
+    def _is_mixer_settling(self):
+        """True while the channel strip is still arriving from a set load."""
+        return time.time() < getattr(self, "_mixer_settling_until", 0.0)
+
+    def _is_cascade(self, kind):
+        """True once one Live operation is clearly fanning out across tracks.
+
+        Counts consecutive emissions of one family with less than
+        CASCADE_WINDOW_SEC between them. A quiet gap resets the run, so this
+        only ever fires on a genuine fan-out and never accumulates across
+        ordinary work.
+        """
+        now = time.time()
+        runs = getattr(self, "_cascade_runs", None)
+        if runs is None:
+            runs = {}
+            self._cascade_runs = runs
+        run = runs.get(kind)
+        if run is None or now - run[0] > CASCADE_WINDOW_SEC:
+            runs[kind] = [now, 1]
+            return False
+        run[0] = now
+        run[1] += 1
+        return run[1] > CASCADE_THRESHOLD
+
     def _watch_mixer_property(self, track, mixer, name, event_type):
         key = (id(mixer), name)
         try:
@@ -1812,6 +1874,8 @@ class Recall(ControlSurface):
             previous = self._mixer_property_values.get(key)
             self._mixer_property_values[key] = current
             if previous == current:
+                return
+            if self._is_mixer_settling() or self._is_cascade(event_type):
                 return
             self._emit(
                 event_type,
@@ -1834,7 +1898,17 @@ class Recall(ControlSurface):
         try:
             self._last_values[key] = parameter.value
             listener = self._make_value_listener(
-                track, parameter, event_type, device_name, device_id, parameter_name
+                track,
+                parameter,
+                event_type,
+                device_name,
+                device_id,
+                parameter_name,
+                # Volume, pan and sends ride the same settle path as device
+                # parameters, so the mixer-ness has to travel into the closure:
+                # a mixer rebuild must never silence a plugin the producer is
+                # actually turning.
+                settles_with_mixer=True,
             )
             parameter.add_value_listener(listener)
             self._mixer_parameter_listeners.append((parameter, listener))
@@ -3631,7 +3705,14 @@ class Recall(ControlSurface):
         )
 
     def _make_value_listener(
-        self, track, parameter, event_type, device_name, device_id, parameter_name
+        self,
+        track,
+        parameter,
+        event_type,
+        device_name,
+        device_id,
+        parameter_name,
+        settles_with_mixer=False,
     ):
         # Closure per parameter: Live's listener callbacks take no arguments, so
         # identity has to be captured here rather than looked up on fire. Mixer
@@ -3643,6 +3724,18 @@ class Recall(ControlSurface):
             # it. Checked before _moves_seen so the counter reported in
             # bridge_stopped stays a count of real moves.
             key = id(parameter)
+
+            # The channel strip arriving from a set load. Keep the seed current
+            # so the producer's first real move reports a true "before", and
+            # emit nothing. Checked before _moves_seen so the counter stays a
+            # count of real moves.
+            if settles_with_mixer and self._is_mixer_settling():
+                try:
+                    self._last_values[key] = parameter.value
+                except Exception:  # noqa: BLE001 - channel gone mid-load
+                    pass
+                return
+
             just_changed_automation = (
                 time.time() - self._automation_recently_changed.get(key, 0.0)
             ) < GESTURE_SETTLE_SEC

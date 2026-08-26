@@ -133,12 +133,13 @@ function nodeFor(name: string): HTMLElement {
   return graph().getByRole("button", { name: new RegExp(`^${name}\\.`) });
 }
 
-function railRowFor(name: string): HTMLElement {
-  const row = screen
-    .getAllByRole("button", { name: new RegExp(name) })
-    .find((element) => element.classList.contains("vr-item"));
-  if (!row) throw new Error(`no rail row for ${name}`);
-  return row;
+/** The sittings rail for whichever version is selected. */
+function rail() {
+  return within(screen.getByRole("navigation", { name: /^Sittings in / }));
+}
+
+function railRows(): HTMLElement[] {
+  return rail().getAllByRole("button");
 }
 
 describe("ProjectVersionsScreen · version graph wiring", () => {
@@ -159,11 +160,41 @@ describe("ProjectVersionsScreen · version graph wiring", () => {
     // v3 was worked twice: one node on the graph, two rows on the rail. That
     // difference is the whole reason there are two surfaces.
     expect(nodeFor("nightfall v3")).toBeInTheDocument();
-    expect(
-      screen
-        .getAllByRole("button", { name: /nightfall v3/ })
-        .filter((element) => element.classList.contains("vr-item")),
-    ).toHaveLength(2);
+    expect(railRows()).toHaveLength(2);
+  });
+
+  it("scopes the rail to the selected version rather than the whole project", async () => {
+    const user = userEvent.setup();
+    renderScreen();
+    // Opens on v3, which was sat with twice.
+    expect(screen.getByRole("navigation", { name: "Sittings in nightfall v3" })).toBeInTheDocument();
+    expect(railRows()).toHaveLength(2);
+
+    await user.click(nodeFor("nightfall v1"));
+
+    // v1 was sat with once. If the rail still listed every capture in the
+    // project it would show five rows here regardless of what is selected —
+    // which is exactly the duplication of the graph this split removed.
+    expect(screen.getByRole("navigation", { name: "Sittings in nightfall v1" })).toBeInTheDocument();
+    expect(railRows()).toHaveLength(1);
+  });
+
+  it("picks a sitting within the version without moving off the node", async () => {
+    const user = userEvent.setup();
+    const { onOpenTimeline } = renderScreen();
+    // Rail is newest first, so the second row is v3's first pass (s3).
+    await user.click(railRows()[1]!);
+
+    expect(nodeFor("nightfall v3")).toHaveAttribute("aria-pressed", "true");
+    await user.click(screen.getByRole("button", { name: "Open timeline" }));
+    expect(onOpenTimeline).toHaveBeenCalledWith("s3");
+  });
+
+  it("counts versions in the header, not captures", () => {
+    renderScreen();
+    // Five captures across four files. Counting captures here read as "5
+    // versions" for a project that has four.
+    expect(screen.getByText(/4 versions/)).toBeInTheDocument();
   });
 
   it("moves the detail pane to the version picked on the graph", async () => {
@@ -191,15 +222,15 @@ describe("ProjectVersionsScreen · version graph wiring", () => {
     expect(onOpenTimeline).toHaveBeenCalledWith("s5");
   });
 
-  it("moves the graph selection when the version is picked from the rail", async () => {
+  it("moves the graph selection as the version changes", async () => {
     const user = userEvent.setup();
     renderScreen();
     expect(nodeFor("nightfall v3")).toHaveAttribute("aria-pressed", "true");
 
-    await user.click(railRowFor("nightfall v2"));
+    await user.click(nodeFor("nightfall v2"));
 
-    // The return trip: the rail selects a capture, the screen maps it back to
-    // the file it belongs to, and that node lights up.
+    // The selected node and the selected capture are two views of one piece of
+    // state, mapped through versionForSession. Only one node is ever pressed.
     expect(nodeFor("nightfall v2")).toHaveAttribute("aria-pressed", "true");
     expect(nodeFor("nightfall v3")).toHaveAttribute("aria-pressed", "false");
   });

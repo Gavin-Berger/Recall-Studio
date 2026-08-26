@@ -7,6 +7,7 @@ import {
 import type { ProjectSchema } from "../../types/schema";
 import type { ConnectionStatus, SavedProject, SavedSessionMetadata } from "../../types/recall";
 import { formatSessionDate, formatSessionDuration, preferredCaptureTitle } from "../sessionFormat";
+import { formatClock } from "../../components/schema/timeline/format";
 import { RelinkDialog, type AlsFileChoice } from "./RelinkDialog";
 import { compareSchemas, countDevices, diffIsEmpty, type VersionDiff } from "./versionDiff";
 import { projectVersions, versionForSession } from "./projectVersions";
@@ -69,7 +70,7 @@ export function ProjectVersionsScreen({
 
   const busy = busyLabel !== null;
 
-  // Newest first — the top of the rail is where the song is now.
+  // Newest first — the top of the project is where the song is now.
   const takes = useMemo(
     () =>
       project ? [...project.captures].sort((a, b) => b.started_at_ms - a.started_at_ms) : [],
@@ -80,16 +81,30 @@ export function ProjectVersionsScreen({
     () => takes.find((take) => take.id === selectedTakeId) ?? takes[0] ?? null,
     [takes, selectedTakeId],
   );
-  // The same captures rolled up into the .als files they belong to, so the
-  // graph can show lineage while the rail below stays per-capture.
+  // The same captures rolled up into the .als files they belong to. This is the
+  // graph's unit, and it is the one a producer thinks in: a version is a file
+  // you can open, not a login session.
   const versions = useMemo(() => projectVersions(project?.captures ?? []), [project]);
-  const selectedVersionId = useMemo(
-    () => versionForSession(versions, selected?.id ?? null)?.id ?? null,
+  const selectedVersion = useMemo(
+    () => versionForSession(versions, selected?.id ?? null),
     [versions, selected],
+  );
+  const selectedVersionId = selectedVersion?.id ?? null;
+
+  // The rail is the sittings of the SELECTED version, not every capture in the
+  // project. Listing them all made the rail a second, worse copy of the graph —
+  // the same files, in the same order, without the lineage. Split by unit
+  // instead: the graph answers "which file", the rail answers "which time I sat
+  // down with it". Every capture is still one click from the graph.
+  const sittings = useMemo(
+    () => (selectedVersion ? [...selectedVersion.sessions].reverse() : []),
+    [selectedVersion],
   );
 
   const selectedIndex = selected ? takes.indexOf(selected) : -1;
-  // "Previous" is the next-older version on the rail.
+  // "Previous" is the next-older capture in the project — deliberately NOT
+  // scoped to the selected version, because the comparison a producer wants is
+  // with the work before this, wherever it happened.
   const previous = selectedIndex >= 0 ? takes[selectedIndex + 1] ?? null : null;
 
   const loadSchema = useCallback((take: SavedSessionMetadata) => {
@@ -203,7 +218,9 @@ export function ProjectVersionsScreen({
           <div className="versions__title">
             <h1>{project.display_name}</h1>
             <span className="versions__subtitle">
-              {takes.length} {takes.length === 1 ? "version" : "versions"}
+              {/* Versions, not captures. This counted captures and called them
+                  versions, so a file opened five times read as five versions. */}
+              {versions.length} {versions.length === 1 ? "version" : "versions"}
               {hasFolder && project.ableton_path ? (
                 <span className="versions__folder" title={project.ableton_path}>
                   {" · "}
@@ -295,8 +312,16 @@ export function ProjectVersionsScreen({
           />
         </section>
         <div className="versions__body">
-          <nav className="version-rail" aria-label="Project versions">
-            {takes.map((take, index) => (
+          <nav
+            className="version-rail"
+            aria-label={
+              selectedVersion ? `Sittings in ${selectedVersion.name}` : "Sittings"
+            }
+          >
+            <p className="version-rail__head">
+              {sittings.length} {sittings.length === 1 ? "sitting" : "sittings"}
+            </p>
+            {sittings.map((take, index) => (
               <VersionRailItem
                 key={take.id}
                 take={take}
@@ -378,13 +403,25 @@ function VersionRailItem({
       <span className="vr-item__node" aria-hidden="true" />
       <span className="vr-item__body">
         <span className="vr-item__top">
-          <span className="vr-item__name" title={takeName(take)}>
-            {takeName(take)}
+          {/* Every row here is the same file, so the name would be five copies
+              of one word. What tells two sittings apart is when they happened —
+              and it needs the clock, because going back to a set the same
+              afternoon is the ordinary case, not the rare one. */}
+          <span className="vr-item__name">
+            {formatSessionDate(take.started_at_ms)}
+            {take.take_origin !== "scanned" && (
+              <>
+                {" · "}
+                {formatClock(take.started_at_ms)}
+              </>
+            )}
           </span>
           <StatusBadge status={status} />
         </span>
         <span className="vr-item__meta">
-          {formatSessionDate(take.started_at_ms)}
+          {take.take_origin === "scanned"
+            ? "found on disk"
+            : formatSessionDuration(take)}
           {take.take_origin !== "scanned" && take.creative_event_count > 0 && (
             <>
               {" · "}

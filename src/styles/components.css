@@ -3153,10 +3153,26 @@
   overflow-y: auto;
 }
 
+/* What the rail is now: the sittings of the version picked on the graph. The
+   count is the heading because it is the one fact the list as a whole states —
+   how many times this file was opened. --faint-aa, not --faint: this is 11px
+   and DESIGN.md bans --faint under 19px. */
+.version-rail__head {
+  margin: 0 0 4px;
+  padding: 0 10px 0 6px;
+  font-family: var(--font-mono);
+  font-size: var(--t-micro);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--faint-aa);
+}
+
 .version-rail::before {
   content: "";
   position: absolute;
-  top: 20px;
+  /* Starts below the heading so the spine threads the sitting dots and does
+     not run up past the first one. */
+  top: 46px;
   bottom: 20px;
   left: 21px;
   width: 1px;

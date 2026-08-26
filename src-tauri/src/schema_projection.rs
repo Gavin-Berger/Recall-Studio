@@ -106,6 +106,50 @@ pub struct ParsedDevice {
     pub class_name: Option<String>,
     pub preset_name: Option<String>,
     pub params: Vec<ParsedParam>,
+    /// What is inside this device, when it is a rack. `None` for a plain one.
+    pub rack: Option<ParsedRack>,
+}
+
+/// The inside of a Drum, Instrument or Audio Effect Rack.
+///
+/// The control surface has been sending this all along — `_serialize_device`
+/// walks `chains` and `visible_drum_pads` — and nothing here ever read it, so
+/// a producer whose drums live in a Drum Rack saw the rack and nothing under
+/// it. Parsed from the stored `live_set_snapshot` payload, which means every
+/// capture already taken gets its racks back without a re-capture.
+///
+/// Structure only, and deliberately so: the listener path
+/// (`_attach_to_focused_device`) iterates `track.devices` and never descends
+/// into chains, so parameter MOVES inside a rack are not observed. Recording
+/// the contents here while pretending their knobs were watched would be the
+/// exact kind of overclaim §1 forbids — the surface says which is which.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct ParsedRack {
+    pub chains: Vec<ParsedRackChain>,
+    pub drum_pads: Vec<ParsedDrumPad>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ParsedRackChain {
+    pub ableton_id: Option<String>,
+    pub name: Option<String>,
+    pub index: i64,
+    pub devices: Vec<ParsedRackDevice>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ParsedRackDevice {
+    pub ableton_id: Option<String>,
+    pub name: Option<String>,
+    pub class_name: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ParsedDrumPad {
+    pub ableton_id: Option<String>,
+    pub name: Option<String>,
+    /// MIDI note the pad sits on, when Live reports it.
+    pub note: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -158,6 +202,9 @@ pub struct DeviceObj {
     pub class_name: Option<String>,
     pub preset_name: Option<String>,
     pub parameters: Vec<ParameterObj>,
+    /// Rack contents, when this device is a rack. Structure only — see
+    /// `ParsedRack` for why the knobs inside are not observed.
+    pub rack: Option<ParsedRack>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -452,7 +499,72 @@ fn parse_device(device: &Value) -> ParsedDevice {
             .or_else(|| read_string(device.get("class_name"))),
         preset_name: read_string(device.get("preset_name")),
         params,
+        rack: parse_rack(device),
     }
+}
+
+/// Read a rack's insides, or `None` when this device is not a rack.
+///
+/// A rack with an empty chain list is still a rack — an empty Drum Rack is a
+/// real thing a producer has just dropped in — so the presence of the KEY is
+/// what decides, not whether it has contents.
+fn parse_rack(device: &Value) -> Option<ParsedRack> {
+    let chains_value = device.get("chains");
+    let pads_value = device.get("drum_pads");
+    if chains_value.is_none() && pads_value.is_none() {
+        return None;
+    }
+
+    let chains = chains_value
+        .and_then(Value::as_array)
+        .map(|array| {
+            array
+                .iter()
+                .enumerate()
+                .map(|(position, chain)| ParsedRackChain {
+                    ableton_id: read_id(chain.get("id")),
+                    name: read_string(chain.get("name")),
+                    // Live's own index when it sent one; otherwise position in
+                    // the list, so a chain always has a stable place.
+                    index: chain
+                        .get("index")
+                        .and_then(Value::as_i64)
+                        .unwrap_or(position as i64),
+                    devices: chain
+                        .get("devices")
+                        .and_then(Value::as_array)
+                        .map(|devices| {
+                            devices
+                                .iter()
+                                .map(|child| ParsedRackDevice {
+                                    ableton_id: read_id(child.get("id")),
+                                    name: read_string(child.get("name")),
+                                    class_name: read_string(child.get("class_display_name"))
+                                        .or_else(|| read_string(child.get("class_name"))),
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default(),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let drum_pads = pads_value
+        .and_then(Value::as_array)
+        .map(|array| {
+            array
+                .iter()
+                .map(|pad| ParsedDrumPad {
+                    ableton_id: read_id(pad.get("id")),
+                    name: read_string(pad.get("name")),
+                    note: pad.get("note").and_then(Value::as_i64),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    Some(ParsedRack { chains, drum_pads })
 }
 
 fn parse_param(param: &Value) -> ParsedParam {
@@ -978,6 +1090,107 @@ mod tests {
         let track = &parse_session_tree(&payload)[0];
         assert_eq!(track.track_type, TrackType::Midi);
         assert_eq!(track.devices[0].role, DeviceRole::Instrument);
+    }
+
+    #[test]
+    fn a_drum_rack_reports_its_pads_and_chain_contents() {
+        // The control surface has always sent this; nothing read it, so a
+        // producer whose drums live in a Drum Rack saw the rack and nothing
+        // under it.
+        let snapshot = json!({
+            "tracks": [{
+                "index": 0,
+                "id": "t1",
+                "name": "13-Drum Rack",
+                "devices": [{
+                    "id": "d1",
+                    "name": "Drum Rack",
+                    "chains": [
+                        {"id": "c1", "name": "Kick", "index": 0,
+                         "devices": [{"id": "n1", "name": "Simpler", "class_name": "OriginalSimpler"}]},
+                        {"id": "c2", "name": "Snare", "index": 1,
+                         "devices": [
+                            {"id": "n2", "name": "Simpler"},
+                            {"id": "n3", "name": "Saturator"}
+                         ]}
+                    ],
+                    "drum_pads": [
+                        {"id": "p1", "name": "Kick", "note": 36},
+                        {"id": "p2", "name": "Snare", "note": 38}
+                    ]
+                }]
+            }]
+        });
+
+        let parsed = parse_session_tree(&snapshot);
+        let rack = parsed[0].devices[0].rack.as_ref().expect("rack parsed");
+
+        assert_eq!(rack.chains.len(), 2);
+        assert_eq!(rack.chains[0].name.as_deref(), Some("Kick"));
+        assert_eq!(rack.chains[0].devices[0].name.as_deref(), Some("Simpler"));
+        assert_eq!(rack.chains[1].devices.len(), 2);
+        assert_eq!(rack.drum_pads.len(), 2);
+        assert_eq!(rack.drum_pads[0].note, Some(36));
+    }
+
+    #[test]
+    fn a_plain_device_has_no_rack() {
+        // Absence must be distinguishable from an empty rack, or the surface
+        // cannot tell "not a rack" from "a rack you have not filled yet".
+        let snapshot = json!({
+            "tracks": [{ "index": 0, "id": "t1", "devices": [{ "id": "d1", "name": "Serum" }] }]
+        });
+        let parsed = parse_session_tree(&snapshot);
+        assert!(parsed[0].devices[0].rack.is_none());
+    }
+
+    #[test]
+    fn an_empty_rack_is_still_a_rack() {
+        // A Drum Rack just dropped in has no chains yet and is still a rack.
+        let snapshot = json!({
+            "tracks": [{
+                "index": 0, "id": "t1",
+                "devices": [{ "id": "d1", "name": "Drum Rack", "chains": [] }]
+            }]
+        });
+        let parsed = parse_session_tree(&snapshot);
+        let rack = parsed[0].devices[0].rack.as_ref().expect("rack parsed");
+        assert!(rack.chains.is_empty());
+        assert!(rack.drum_pads.is_empty());
+    }
+
+    #[test]
+    fn a_chain_without_an_index_falls_back_to_its_position() {
+        // Older payloads omit `index`. A chain still needs a stable place.
+        let snapshot = json!({
+            "tracks": [{
+                "index": 0, "id": "t1",
+                "devices": [{
+                    "id": "d1", "name": "Instrument Rack",
+                    "chains": [{ "id": "c1", "name": "A" }, { "id": "c2", "name": "B" }]
+                }]
+            }]
+        });
+        let parsed = parse_session_tree(&snapshot);
+        let rack = parsed[0].devices[0].rack.as_ref().unwrap();
+        assert_eq!(rack.chains[0].index, 0);
+        assert_eq!(rack.chains[1].index, 1);
+    }
+
+    #[test]
+    fn a_rack_survives_a_chain_with_no_devices_in_it() {
+        let snapshot = json!({
+            "tracks": [{
+                "index": 0, "id": "t1",
+                "devices": [{
+                    "id": "d1", "name": "Audio Effect Rack",
+                    "chains": [{ "id": "c1", "name": "Empty", "index": 0 }]
+                }]
+            }]
+        });
+        let parsed = parse_session_tree(&snapshot);
+        let rack = parsed[0].devices[0].rack.as_ref().unwrap();
+        assert!(rack.chains[0].devices.is_empty());
     }
 
     #[test]

@@ -2346,8 +2346,8 @@ impl StorageState {
                         "INSERT OR IGNORE INTO devices
                          (id, session_id, track_id, ableton_id, name, role, vendor,
                           plugin_format, preset_name, class_name, chain_index, enabled,
-                          initial_enabled, host_parameter_count)
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, NULL, ?7, ?8, ?9, ?10, ?11, ?12)",
+                          initial_enabled, host_parameter_count, rack_json)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, NULL, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
                         params![
                             device_id,
                             session_id,
@@ -2361,6 +2361,14 @@ impl StorageState {
                             device.enabled as i64,
                             device.initial_enabled as i64,
                             device.host_parameter_count as i64,
+                            // Serialization failing must not lose the device —
+                            // a rack we cannot encode is still a device that
+                            // existed, so this degrades to "no rack contents"
+                            // rather than aborting the materialization.
+                            device
+                                .rack
+                                .as_ref()
+                                .and_then(|rack| serde_json::to_string(rack).ok()),
                         ],
                     )
                     .map_err(|error| format!("Failed to insert device: {}", error))?;
@@ -3508,7 +3516,8 @@ fn load_devices_by_track(
     let mut statement = connection
         .prepare(
             "SELECT id, track_id, ableton_id, name, role, chain_index, enabled,
-                    initial_enabled, host_parameter_count, class_name, preset_name
+                    initial_enabled, host_parameter_count, class_name, preset_name,
+                    rack_json
              FROM devices WHERE session_id = ?1
              ORDER BY chain_index ASC, id ASC",
         )
@@ -3531,6 +3540,12 @@ fn load_devices_by_track(
                 host_parameter_count: row.get::<_, i64>(8)?.max(0) as usize,
                 class_name: row.get(9)?,
                 preset_name: row.get(10)?,
+                // A row written before this column existed, or one whose JSON
+                // no longer parses, reads as "not a rack" rather than failing
+                // the whole schema load.
+                rack: row
+                    .get::<_, Option<String>>(11)?
+                    .and_then(|json| serde_json::from_str(&json).ok()),
             })
         })
         .map_err(|error| format!("Failed to read devices: {}", error))?;
@@ -3732,6 +3747,10 @@ pub fn initialize_database(db_path: &Path) -> rusqlite::Result<()> {
             enabled INTEGER NOT NULL DEFAULT 1,
             initial_enabled INTEGER NOT NULL DEFAULT 1,
             host_parameter_count INTEGER NOT NULL DEFAULT 0,
+            -- A rack's contents (chains, drum pads) as JSON. NULL for a device
+            -- that is not a rack. Stored whole rather than in child tables: it
+            -- is read as one blob for display and never queried across.
+            rack_json TEXT,
             FOREIGN KEY(session_id) REFERENCES sessions(id)
         );
 
@@ -4119,6 +4138,7 @@ fn migrate_device_state_columns(connection: &Connection) -> rusqlite::Result<()>
         ("class_name", "TEXT"),
         ("initial_enabled", "INTEGER NOT NULL DEFAULT 1"),
         ("host_parameter_count", "INTEGER NOT NULL DEFAULT 0"),
+        ("rack_json", "TEXT"),
     ];
     for (name, sql_type) in COLUMNS {
         if !existing.contains(*name) {

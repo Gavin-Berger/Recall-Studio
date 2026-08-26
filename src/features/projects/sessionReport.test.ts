@@ -380,6 +380,7 @@ describe("session report data integrity", () => {
             class_name: name,
             preset_name: null,
             parameters: [],
+            rack: null,
           })),
         }],
       },
@@ -946,7 +947,7 @@ describe("two devices of the same name on one chain", () => {
       id, track_id: "track-1", ableton_id: id, name,
       role: "audio_effect" as const, chain_index: index,
       enabled: true, initial_enabled: true, host_parameter_count: 8,
-      class_name: name, preset_name: null, parameters: [],
+      class_name: name, preset_name: null, parameters: [], rack: null,
     });
     return {
       ...base,

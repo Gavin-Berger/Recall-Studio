@@ -60,6 +60,7 @@ function device(id: string, trackId: string, name: string, chainIndex: number): 
     host_parameter_count: 16,
     class_name: name,
     preset_name: null,
+    rack: null,
     parameters: [],
   };
 }

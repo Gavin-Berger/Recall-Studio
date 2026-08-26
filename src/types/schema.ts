@@ -45,6 +45,35 @@ export type ParameterObj = {
   children: ParameterObj[];
 };
 
+/**
+ * What is inside a Drum, Instrument or Audio Effect Rack.
+ *
+ * STRUCTURE ONLY, and the distinction matters. The control surface walks a
+ * rack's chains and drum pads when it snapshots the set, so Recall knows what
+ * is in there — but `_attach_to_focused_device` iterates `track.devices` and
+ * never descends into chains, so parameter MOVES on a device inside a rack are
+ * not observed. Showing the contents while implying their knobs were watched
+ * would be exactly the overclaim DESIGN.md §1 forbids.
+ */
+export type RackChain = {
+  ableton_id: string | null;
+  name: string | null;
+  index: number;
+  devices: { ableton_id: string | null; name: string | null; class_name: string | null }[];
+};
+
+export type DrumPad = {
+  ableton_id: string | null;
+  name: string | null;
+  /** MIDI note the pad sits on, when Live reports it. */
+  note: number | null;
+};
+
+export type RackObj = {
+  chains: RackChain[];
+  drum_pads: DrumPad[];
+};
+
 export type DeviceObj = {
   id: string;
   track_id: string;
@@ -58,6 +87,8 @@ export type DeviceObj = {
   class_name: string | null;
   preset_name: string | null;
   parameters: ParameterObj[];
+  /** Rack contents, or null when this device is not a rack. Structure only. */
+  rack: RackObj | null;
 };
 
 export type TrackObj = {

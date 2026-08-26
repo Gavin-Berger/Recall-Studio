@@ -6,7 +6,7 @@ import { buildBuildSteps, buildRecipe, buildReconstructionEvents, parseMusicalPo
 const track: TrackObj = {
   id: "bass", ableton_id: "1", name: "Bass", number: 1, type: "midi", color: null,
   group_id: null, chain_index: 0,
-  devices: [{ id: "serum", track_id: "bass", ableton_id: "2", name: "Serum 2", role: "instrument", chain_index: 0, enabled: true, initial_enabled: true, host_parameter_count: 0, class_name: "PluginDevice", preset_name: null, parameters: [] }],
+  devices: [{ id: "serum", track_id: "bass", ableton_id: "2", name: "Serum 2", role: "instrument", chain_index: 0, enabled: true, initial_enabled: true, host_parameter_count: 0, class_name: "PluginDevice", preset_name: null, parameters: [], rack: null }],
 };
 
 const move = (id: string, atMs: number): Activity => ({

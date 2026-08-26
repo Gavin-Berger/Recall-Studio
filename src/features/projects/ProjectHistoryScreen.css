@@ -546,3 +546,58 @@
   font-size: inherit;
   text-align: center;
 }
+
+/* Racks -------------------------------------------------------------------- */
+
+/* Set apart from the groups above on purpose: everything up there is work
+   Recall WATCHED, this is structure it read from a snapshot. A dashed edge and
+   a stated limit keep the two from reading as one list. */
+.ph-racks {
+  margin-top: var(--s4);
+  padding-top: var(--s3);
+  border-top: var(--stroke-hair) dashed var(--line);
+}
+
+.ph-racks__note {
+  margin: 0 0 var(--s3);
+  max-width: 68ch;
+  color: var(--muted);
+  font-size: var(--t-meta);
+  line-height: 1.5;
+}
+
+.ph-racks__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: var(--s4);
+}
+
+.ph-racks__name {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s2);
+  font-size: var(--t-meta);
+  font-weight: 600;
+  color: var(--paper);
+}
+
+.ph-racks__inner {
+  list-style: none;
+  margin: var(--s2) 0 0;
+  padding: 0 0 0 var(--s3);
+  border-left: var(--stroke-hair) solid var(--line-soft);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s1);
+}
+
+.ph-racks__inner li {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s2);
+  min-width: 0;
+  font-size: var(--t-meta);
+}

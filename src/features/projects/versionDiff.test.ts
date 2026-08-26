@@ -15,6 +15,7 @@ function device(name: string, index = 0): DeviceObj {
     host_parameter_count: 0,
     class_name: null,
     preset_name: null,
+    rack: null,
     parameters: [],
   };
 }

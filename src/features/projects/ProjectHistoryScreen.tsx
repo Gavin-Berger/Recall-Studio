@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { LoadingSpinner } from "../../components/LoadingSpinner";
 import "./ProjectHistoryScreen.css";
 import type { SavedProject } from "../../types/recall";
 import { formatSessionDate, formatSessionDuration } from "../sessionFormat";
@@ -23,8 +24,10 @@ import { historyKeyAction } from "./historyKeys";
 import {
   getNoteEdits,
   getParameterChanges,
+  getProjectSchema,
   getTimelineClipEvents,
 } from "../../lib/schema/api";
+import { commitRacks, RACK_CONTENTS_LIMIT, type CommitRack } from "./commitRacks";
 import { commitHeadline, summarizeCommit, type CommitContents } from "./commitContents";
 
 // The Timeline: one project's history, as commits.
@@ -124,8 +127,52 @@ function Rail({ row, index, shape }: { row: HistoryRow; index: number; shape: Ra
 
 type ContentsState =
   | { status: "loading" }
-  | { status: "ready"; contents: CommitContents }
+  | { status: "ready"; contents: CommitContents; racks: CommitRack[] }
   | { status: "error" };
+
+/**
+ * Racks the commit touched, and what is inside them.
+ *
+ * Set apart from the other groups and labelled, because it is a different KIND
+ * of fact. Everything above it is work Recall watched happen; this is
+ * structure Recall read from a snapshot. The note says so rather than letting
+ * the two read as one list.
+ */
+function Racks({ racks }: { racks: CommitRack[] }) {
+  return (
+    <section className="ph-racks" aria-label="Racks on the tracks you worked">
+      <h3 className="ph-contents__head">
+        Inside the racks
+        <span className="ph-contents__count">{racks.length}</span>
+      </h3>
+      <p className="ph-racks__note">
+        Recall reads what a rack contains, but it does not watch the controls
+        inside one — moves on these are not captured.
+      </p>
+      <ul className="ph-racks__list">
+        {racks.map((rack) => (
+          <li key={rack.key}>
+            <span className="ph-racks__name">
+              {rack.name}
+              {rack.track && <span className="ph-contents__ctx">{rack.track}</span>}
+            </span>
+            <ul className="ph-racks__inner">
+              {rack.contents.map((entry) => (
+                <li key={entry.key}>
+                  <span className="ph-contents__label">{entry.label}</span>
+                  {entry.detail && <span className="ph-contents__ctx">{entry.detail}</span>}
+                </li>
+              ))}
+            </ul>
+            {rack.total > RACK_CONTENTS_LIMIT && (
+              <p className="ph-contents__more">+{rack.total - RACK_CONTENTS_LIMIT} more</p>
+            )}
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
 
 /**
  * What a commit contains, shown for the one that is selected.
@@ -135,7 +182,7 @@ type ContentsState =
  */
 function Contents({ state }: { state: ContentsState }) {
   if (state.status === "loading") {
-    return <p className="ph-contents__quiet">Reading what changed…</p>;
+    return <p className="ph-contents__quiet px-loading-inline" role="status"><LoadingSpinner />Reading what changed…</p>;
   }
   if (state.status === "error") {
     return <p className="ph-contents__quiet">Couldn&rsquo;t read what changed in this one.</p>;
@@ -167,6 +214,7 @@ function Contents({ state }: { state: ContentsState }) {
   ].filter((group) => group.rows.length > 0 || group.total > 0);
 
   return (
+    <>
     <div className="ph-contents">
       {groups.map((group) => (
         <section key={group.title} className="ph-contents__group">
@@ -200,7 +248,9 @@ function Contents({ state }: { state: ContentsState }) {
           )}
         </section>
       ))}
-    </div>
+      </div>
+      {state.racks.length > 0 && <Racks racks={state.racks} />}
+    </>
   );
 }
 
@@ -412,14 +462,34 @@ export function ProjectHistoryScreen({
     setContents((current) => ({ ...current, [sessionId]: { status: "loading" } }));
     void (async () => {
       try {
-        const [changes, notes, clips] = await Promise.all([
+        const [changes, notes, clips, schema] = await Promise.all([
           getParameterChanges(sessionId),
           getNoteEdits(sessionId),
           getTimelineClipEvents(sessionId),
+          // A rack's contents come from the snapshot, not from the change log.
+          // Failing to read it must not cost the rest of the breakdown, so it
+          // degrades to "no racks" rather than taking the panel down.
+          getProjectSchema(sessionId).catch(() => null),
         ]);
+        const summary = summarizeCommit(changes, notes, clips);
+        // Only racks on tracks this commit actually touched. A set can hold
+        // dozens; a commit that never went near them should not list them.
+        const touched = new Set(
+          [
+            ...changes.map((change) => change.track_name),
+            ...notes.map((note) => note.track_name),
+            ...clips.map((clip) => clip.track_name),
+          ]
+            .map((name) => name?.trim())
+            .filter((name): name is string => Boolean(name)),
+        );
         setContents((current) => ({
           ...current,
-          [sessionId]: { status: "ready", contents: summarizeCommit(changes, notes, clips) },
+          [sessionId]: {
+            status: "ready",
+            contents: summary,
+            racks: commitRacks(schema?.has_snapshot ? schema : null, touched),
+          },
         }));
       } catch {
         setContents((current) => ({ ...current, [sessionId]: { status: "error" } }));

@@ -520,3 +520,29 @@
   font-family: var(--font-mono);
   font-size: var(--t-micro);
 }
+
+/* Keyboard hint ------------------------------------------------------------ */
+
+.ph__keys {
+  margin: var(--s2) 0 0;
+  display: flex;
+  align-items: center;
+  gap: var(--s1);
+  flex-wrap: wrap;
+  font-family: var(--font-mono);
+  font-size: var(--t-micro);
+  color: var(--faint-aa);
+}
+
+.ph__keys kbd {
+  display: inline-block;
+  min-width: 16px;
+  padding: 1px 4px;
+  border: var(--stroke-hair) solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--panel-2);
+  color: var(--paper);
+  font-family: inherit;
+  font-size: inherit;
+  text-align: center;
+}

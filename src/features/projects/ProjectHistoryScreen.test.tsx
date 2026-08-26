@@ -255,6 +255,85 @@ describe("ProjectHistoryScreen", () => {
     expect(onSelectProject).toHaveBeenCalledWith("breaking");
   });
 
+  it("moves the selection with the arrow keys", async () => {
+    const user = userEvent.setup();
+    renderScreen();
+
+    const first = commitRows()[0]!.querySelector(".ph-row__hit") as HTMLElement;
+    first.focus();
+    await user.keyboard("{ArrowDown}");
+
+    const selected = commitRows().filter((row) => row.className.includes("is-selected"));
+    expect(selected).toHaveLength(1);
+    expect(selected[0]).toBe(commitRows()[1]);
+  });
+
+  it("moves with j and k as well as the arrows", async () => {
+    const user = userEvent.setup();
+    renderScreen();
+
+    (commitRows()[0]!.querySelector(".ph-row__hit") as HTMLElement).focus();
+    await user.keyboard("jj");
+    expect(commitRows()[2]!.className).toContain("is-selected");
+
+    await user.keyboard("k");
+    expect(commitRows()[1]!.className).toContain("is-selected");
+  });
+
+  it("follows the lineage with p instead of stepping down the page", async () => {
+    const user = userEvent.setup();
+    renderScreen();
+
+    // Rows run c5, c4, c3, c2, c1. Row 1 is c4, which continued c1 — four rows
+    // down — while c3 and c2 (the v2 branch) are printed in between. Stepping
+    // down from row 1 lands on c3, a different lineage entirely. This is the
+    // move a flat list cannot offer.
+    await user.click(commitRows()[1]!.querySelector(".ph-row__hit") as HTMLElement);
+    await user.keyboard("p");
+
+    const rows = commitRows();
+    const selectedIndex = rows.findIndex((row) => row.className.includes("is-selected"));
+    expect(selectedIndex).toBe(4);
+  });
+
+  it("does nothing on p at a root", async () => {
+    const user = userEvent.setup();
+    renderScreen();
+
+    // The last row is the first work Recall captured; it has no parent, and
+    // silence beats moving somewhere arbitrary.
+    await user.click(commitRows()[4]!.querySelector(".ph-row__hit") as HTMLElement);
+    await user.keyboard("p");
+
+    expect(commitRows()[4]!.className).toContain("is-selected");
+  });
+
+  it("opens the Report on Enter and the workspace on Shift+Enter", async () => {
+    const user = userEvent.setup();
+    const { onOpenReport, onOpenWorkspace } = renderScreen();
+
+    (commitRows()[0]!.querySelector(".ph-row__hit") as HTMLElement).focus();
+    await user.keyboard("{Enter}");
+    expect(onOpenReport).toHaveBeenCalledWith("c5");
+
+    await user.keyboard("{Shift>}{Enter}{/Shift}");
+    expect(onOpenWorkspace).toHaveBeenCalledWith("c5");
+  });
+
+  it("keeps the list to a single tab stop", async () => {
+    // A month of work must not cost sixty tab presses to step over.
+    renderScreen();
+    const reachable = commitRows()
+      .map((row) => row.querySelector(".ph-row__hit") as HTMLElement)
+      .filter((hit) => hit.tabIndex === 0);
+    expect(reachable).toHaveLength(1);
+  });
+
+  it("tells the reader the shortcuts exist", () => {
+    renderScreen();
+    expect(screen.getByText(/parent/)).toBeInTheDocument();
+  });
+
   it("says what to do when there are no projects at all", () => {
     renderScreen([], "nothing");
     expect(screen.getByText(/No projects yet/)).toBeInTheDocument();

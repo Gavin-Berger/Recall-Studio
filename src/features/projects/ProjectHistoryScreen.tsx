@@ -19,6 +19,7 @@ import {
   type RailShape,
 } from "./projectHistory";
 import type { ProjectArtifact } from "./projectCommits";
+import { historyKeyAction } from "./historyKeys";
 import {
   getNoteEdits,
   getParameterChanges,
@@ -278,6 +279,11 @@ function CommitRow({
         className="ph-row__hit"
         onClick={onSelect}
         aria-current={selected ? "true" : undefined}
+        // Roving tabindex: the list is one stop on the tab order, not one per
+        // commit. A month of work would otherwise cost sixty tab presses to
+        // step over.
+        tabIndex={selected ? 0 : -1}
+        data-commit-row={selected ? "selected" : undefined}
       >
         <Rail row={row} index={index} shape={shape} />
 
@@ -373,6 +379,9 @@ export function ProjectHistoryScreen({
   onOpenProjects,
 }: ProjectHistoryScreenProps) {
   const [selectedCommitId, setSelectedCommitId] = useState<string | null>(null);
+  // Set only by a keyboard move, so arriving on the surface or clicking a row
+  // never yanks focus somewhere the user did not ask for.
+  const [moveFocus, setMoveFocus] = useState(false);
   // Cached by session id so re-selecting a commit does not refetch. The ref
   // guards against duplicate fetches when an effect re-runs before state lands.
   const [contents, setContents] = useState<Record<string, ContentsState>>({});
@@ -423,6 +432,20 @@ export function ProjectHistoryScreen({
   useEffect(() => {
     if (selectedRow) loadContents(selectedRow.commit.id);
   }, [selectedRow, loadContents]);
+
+  useEffect(() => {
+    if (!moveFocus) return;
+    setMoveFocus(false);
+    const target = document.querySelector<HTMLElement>('[data-commit-row="selected"]');
+    target?.focus();
+    // `block: "nearest"` keeps a step from scrolling the whole page when the
+    // next row is already on screen. Guarded because jsdom has no
+    // scrollIntoView and older webviews may not either — focus is the part
+    // that matters, scrolling is the courtesy.
+    if (typeof target?.scrollIntoView === "function") {
+      target.scrollIntoView({ block: "nearest" });
+    }
+  }, [moveFocus, selectedCommitId]);
   const branches = new Set(rows.filter((row) => row.depth > 0).map((row) => row.lane)).size;
 
   if (projects.length === 0) {
@@ -450,6 +473,15 @@ export function ProjectHistoryScreen({
             {branches > 0 && ` · ${branches} ${branches === 1 ? "branch" : "branches"}`}
             {emptyCheckpoints > 0 && ` · ${emptyCheckpoints} empty`}
           </span>
+          {/* A shortcut nobody knows about is not a feature. Stated once, in
+              the quietest type on the surface, next to what it acts on. */}
+          {rows.length > 1 && (
+            <p className="ph__keys">
+              <kbd>↑</kbd>
+              <kbd>↓</kbd> move · <kbd>p</kbd> parent · <kbd>↵</kbd> report ·{" "}
+              <kbd>⇧↵</kbd> workspace
+            </p>
+          )}
         </div>
 
         {projects.length > 1 && (
@@ -478,7 +510,32 @@ export function ProjectHistoryScreen({
       </section>
 
       {rows.length > 0 && (
-        <section className="ph__list" aria-label="Commits">
+        <section
+          className="ph__list"
+          aria-label="Commits"
+          onKeyDown={(event) => {
+            const index = rows.findIndex((row) => row.commit.id === selectedRow?.commit.id);
+            const action = historyKeyAction(event, {
+              index,
+              count: rows.length,
+              parentRows: rows.map((row) => row.parentRow),
+            });
+            if (action.kind === "none") return;
+            event.preventDefault();
+            const target = rows[action.index];
+            if (!target) return;
+            if (action.kind === "select") {
+              setSelectedCommitId(target.commit.id);
+              // Follow the selection with focus, or the next key would be
+              // resolved against a row the user can no longer see.
+              setMoveFocus(true);
+            } else if (action.kind === "openReport") {
+              onOpenReport(landingSessionId(target));
+            } else {
+              onOpenWorkspace(landingSessionId(target));
+            }
+          }}
+        >
           <ol className="ph-rows">
             {days.map((day) => (
               <li key={day.key} className="ph-day-group">

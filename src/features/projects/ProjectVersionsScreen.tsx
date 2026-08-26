@@ -6,7 +6,7 @@ import {
 } from "../../lib/schema/api";
 import type { ProjectSchema } from "../../types/schema";
 import type { ConnectionStatus, SavedProject, SavedSessionMetadata } from "../../types/recall";
-import { formatSessionDate, formatSessionDuration } from "../sessionFormat";
+import { formatSessionDate, formatSessionDuration, preferredCaptureTitle } from "../sessionFormat";
 import { RelinkDialog, type AlsFileChoice } from "./RelinkDialog";
 import { compareSchemas, countDevices, diffIsEmpty, type VersionDiff } from "./versionDiff";
 
@@ -723,7 +723,7 @@ function StatusBadge({ status }: { status: TakeStatus }) {
 }
 
 function takeName(take: SavedSessionMetadata): string {
-  return take.capture_name ?? take.name;
+  return preferredCaptureTitle(take) ?? "Untitled capture";
 }
 
 function fileName(path: string): string {

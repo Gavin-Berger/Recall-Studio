@@ -584,6 +584,7 @@ function App() {
           onBack={() => setSurface("projects")}
           onOpenAllVersions={() => setSurface("versions")}
           onOpenTimeline={handleOpenTimeline}
+          onOpenRecap={handleOpenRecap}
         />
       }
       versions={

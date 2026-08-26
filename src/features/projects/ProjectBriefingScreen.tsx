@@ -11,8 +11,14 @@ import type {
   TrackObj,
   TrackType,
 } from "../../types/schema";
-import type { SavedProject, SavedSessionMetadata } from "../../types/recall";
-import { abletonSetName, alsSetName, formatSessionDate } from "../sessionFormat";
+import type { SavedProject } from "../../types/recall";
+import {
+  abletonSetName,
+  alsSetName,
+  formatSessionDate,
+  preferredProjectReportSession,
+} from "../sessionFormat";
+import { ReportIcon } from "./ReportIcons";
 import {
   buildSittings,
   groupByTrack,
@@ -27,19 +33,10 @@ type ProjectBriefingScreenProps = {
   onBack: () => void;
   onOpenAllVersions: () => void;
   onOpenTimeline: (sessionId: string) => void;
+  onOpenRecap: (sessionId: string) => void;
 };
 
 type LoadState = "idle" | "loading" | "ready" | "error";
-
-// The take whose snapshot stands for the project's current shape: the most
-// recently updated capture that actually has activity. A freshly scanned .als
-// version (take_origin "scanned", no moves yet) is skipped so the board reflects
-// real work, not an empty baseline — unless that's all there is.
-function pickLatestTake(captures: SavedSessionMetadata[]): SavedSessionMetadata | null {
-  if (captures.length === 0) return null;
-  const byRecency = [...captures].sort((a, b) => b.last_updated_at_ms - a.last_updated_at_ms);
-  return byRecency.find((take) => take.creative_event_count > 0) ?? byRecency[0];
-}
 
 // Rough, human "when" for the orientation line — precise enough to place a
 // session in memory ("3 days ago"), not a clock.
@@ -107,6 +104,7 @@ export function ProjectBriefingScreen({
   onBack,
   onOpenAllVersions,
   onOpenTimeline,
+  onOpenRecap,
 }: ProjectBriefingScreenProps) {
   const [schema, setSchema] = useState<ProjectSchema | null>(null);
   const [changes, setChanges] = useState<ParameterChange[]>([]);
@@ -115,7 +113,7 @@ export function ProjectBriefingScreen({
   const [error, setError] = useState<string | null>(null);
 
   const captures = useMemo(() => project?.captures ?? [], [project]);
-  const latestTake = useMemo(() => pickLatestTake(captures), [captures]);
+  const latestTake = useMemo(() => preferredProjectReportSession(captures), [captures]);
   const latestTakeId = latestTake?.id ?? null;
 
   useEffect(() => {
@@ -349,6 +347,17 @@ export function ProjectBriefingScreen({
           >
             <VersionHistoryIcon />
           </button>
+          {latestTakeId && (
+            <button
+              type="button"
+              className="brief__btn brief__btn--report brief__btn--with-icon"
+              onClick={() => onOpenRecap(latestTakeId)}
+              title="Read the latest saved project report"
+            >
+              <ReportIcon name="overview" />
+              Read report
+            </button>
+          )}
           {latestTakeId && (
             <button
               type="button"

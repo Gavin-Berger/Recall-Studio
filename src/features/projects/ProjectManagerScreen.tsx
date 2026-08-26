@@ -6,7 +6,14 @@ import {
   useState,
 } from "react";
 import { RecallMark } from "../../components/RecallMark";
-import { abletonSetName, describeBridgeSet, formatSessionDate, formatSessionDuration } from "../sessionFormat";
+import {
+  abletonSetName,
+  describeBridgeSet,
+  formatSessionDate,
+  formatSessionDuration,
+  preferredCaptureTitle,
+  preferredProjectReportSession,
+} from "../sessionFormat";
 import { RelinkDialog, type AlsFileChoice } from "./RelinkDialog";
 import { ReportIcon } from "./ReportIcons";
 import { detectTakeMismatch } from "./takeMismatch";
@@ -103,14 +110,29 @@ export function ProjectManagerScreen({
     [projects, unassignedSessions],
   );
   const reportSession = useMemo(() => {
-    if (activeSession) return activeSession;
+    if (activeSession?.event_count) return activeSession;
+
+    // A restart creates a fresh live take before the producer makes the next
+    // move. Do not let that empty row hide the work recovered from the take that
+    // ended at the crash; prefer the newest meaningful take in the same project.
+    if (activeSession?.project_id) {
+      const activeProject = projects.find((project) => project.id === activeSession.project_id);
+      const recovered = activeProject?.captures
+        .filter((session) => session.id !== activeSession.id && session.event_count > 0)
+        .reduce<SavedSessionMetadata | null>(
+          (latest, session) => !latest || session.last_updated_at_ms > latest.last_updated_at_ms ? session : latest,
+          null,
+        );
+      if (recovered) return recovered;
+    }
+
     const selected = allCaptures.find((session) => session.id === selectedSessionId);
-    if (selected) return selected;
+    if (selected?.event_count) return selected;
     return allCaptures.reduce<SavedSessionMetadata | null>(
       (latest, session) => !latest || session.last_updated_at_ms > latest.last_updated_at_ms ? session : latest,
-      null,
+      activeSession ?? selected ?? null,
     );
-  }, [activeSession, allCaptures, selectedSessionId]);
+  }, [activeSession, allCaptures, projects, selectedSessionId]);
   const totalMoments = allCaptures.reduce((total, session) => total + session.creative_event_count, 0);
 
   const trimmedQuery = query.trim().toLowerCase();
@@ -635,6 +657,7 @@ function ProjectRow({
     () => [...project.captures].sort((a, b) => b.started_at_ms - a.started_at_ms),
     [project.captures],
   );
+  const reportTake = preferredProjectReportSession(project.captures);
 
   function handleArchive() {
     const confirmed = window.confirm(
@@ -707,6 +730,19 @@ function ProjectRow({
         </span>
 
         <span className="px-cell px-actions" role="group" aria-label="Project actions">
+          {reportTake && (
+            <button
+              type="button"
+              className="px-btn px-btn--report"
+              disabled={busy}
+              aria-label={`Read ${project.display_name}'s report`}
+              title={`Read the saved report for ${captureName(reportTake)}`}
+              onClick={() => onOpenRecap(reportTake.id)}
+            >
+              <ReportIcon name="overview" />
+              Report
+            </button>
+          )}
           <button
             type="button"
             className="px-icon-btn"
@@ -1180,7 +1216,7 @@ function compareProjects(a: SavedProject, b: SavedProject, key: SortKey, dir: So
 }
 
 function captureName(session: SavedSessionMetadata): string {
-  return session.capture_name ?? session.name;
+  return preferredCaptureTitle(session) ?? "Untitled capture";
 }
 
 function formatFileSize(bytes: number): string {

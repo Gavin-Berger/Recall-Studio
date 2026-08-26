@@ -26,6 +26,21 @@ export type CaptureCoverage = {
   unwatchedParameterCount: number;
   /** True when at least one device was only partially watched. */
   partial: boolean;
+  /**
+   * Lower-cased names of every track the bridge ever attached device listeners
+   * to, in the order it first saw them.
+   *
+   * This is the second kind of blind spot, and until now the report had no
+   * word for it. `_attach_to_focused_device` binds parameter listeners to
+   * `song.view.selected_track` only — mixer controls are the documented
+   * exception — so a track the producer never selected in Live publishes
+   * nothing, reports no truncation, and is indistinguishable from a track they
+   * simply did not work on. Every `focus_changed` names the track it attached
+   * to, including the no-devices path, so the set costs nothing to collect.
+   */
+  watchedTrackNames: string[];
+  /** True when at least one `focus_changed` was recorded at all. */
+  observed: boolean;
 };
 
 function payloadOf(event: SavedSessionEvent): Record<string, unknown> {
@@ -58,10 +73,19 @@ export function captureCoverage(events: SavedSessionEvent[]): CaptureCoverage {
   // re-reported every time the producer selects its track, and the honest
   // statement about the whole capture is the largest gap that ever existed.
   const worstByDevice = new Map<string, TruncatedDevice>();
+  const watchedTracks = new Set<string>();
+  let observed = false;
 
   for (const event of events) {
     if (event.type !== "focus_changed") continue;
+    observed = true;
     const payload = payloadOf(event);
+    // Read the track before the truncation guard below. A focus_changed with no
+    // devices still proves the bridge was watching that track, and it is the
+    // path that reports an empty `truncated_devices` — skipping it here would
+    // mean an empty track never counted as watched.
+    const watched = cleanName(payload.track_name) ?? cleanName(event.track);
+    if (watched) watchedTracks.add(watched.toLocaleLowerCase());
     const devices = payload.truncated_devices;
     if (!Array.isArray(devices)) continue;
     for (const entry of devices) {
@@ -90,7 +114,24 @@ export function captureCoverage(events: SavedSessionEvent[]): CaptureCoverage {
     truncatedDevices,
     unwatchedParameterCount,
     partial: truncatedDevices.length > 0,
+    watchedTrackNames: [...watchedTracks],
+    observed,
   };
+}
+
+/**
+ * Was this track ever in view?
+ *
+ * Answers with `null` rather than `false` when the capture recorded no
+ * `focus_changed` at all — a scanned take knows nothing about what was
+ * watched, and saying "not watched" there would be as much of an invention as
+ * saying "untouched".
+ */
+export function trackWasWatched(coverage: CaptureCoverage, trackName: string | null): boolean | null {
+  if (!coverage.observed) return null;
+  const name = trackName?.trim().toLocaleLowerCase();
+  if (!name) return null;
+  return coverage.watchedTrackNames.includes(name);
 }
 
 /** One plain sentence for the coverage footer, or null when coverage was full. */

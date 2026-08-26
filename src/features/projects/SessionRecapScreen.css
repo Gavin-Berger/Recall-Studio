@@ -16,6 +16,11 @@
 }
 
 .session-report {
+  /* DESIGN.md §3 makes tabular numerals non-negotiable for values, and §1 calls
+     this surface a logbook — so it is set once at the root rather than per
+     component. 16 of the report's 20 visible numbers were rendering proportional
+     before this, which is why counts in a column did not line up. */
+  font-variant-numeric: tabular-nums;
   width: 100%;
   max-width: 1420px;
   display: flex;
@@ -234,7 +239,7 @@
   border-radius: 50%;
   color: var(--faint-aa);
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: var(--t-micro);
   font-style: normal;
   font-weight: 600;
   line-height: 1;
@@ -277,6 +282,37 @@
   animation: report-arrive var(--m-arrive) var(--ease-arrive) both;
 }
 
+/* The report no longer rebuilds on every poll tick, so it can legitimately lag
+   an active capture. Saying so is the price of not writing to disk once a
+   second — a stale page that looks current would be worse than either. */
+.session-report__pending {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s3);
+  padding: var(--s2) var(--s4);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-sm);
+  background: var(--panel);
+  color: var(--muted);
+  font-size: var(--t-meta);
+}
+
+.session-report__pending button {
+  padding: var(--s1) var(--s3);
+  border: 1px solid var(--signal);
+  border-radius: var(--radius-sm);
+  color: var(--signal);
+  background: transparent;
+  font-size: var(--t-meta);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.session-report__pending button:hover {
+  background: rgb(var(--signal-rgb) / 0.1);
+}
+
 /* Every step opens by naming the question it answers. Without this the panels
    are six walls of numbers with no stated purpose. */
 .session-report__question {
@@ -298,21 +334,102 @@
   text-transform: uppercase;
 }
 
-/* The sentence that reconciles the number strip above it. */
+/* A compact audit of what the capture total means. */
 .report-ledger-note {
+  display: grid;
   margin: calc(var(--s3) * -1) 0 0;
-  padding: var(--s3) var(--s4);
+  padding: 0 var(--s4);
+  grid-template-columns: minmax(176px, 0.72fr) minmax(0, 1.24fr) minmax(230px, 0.9fr);
+  align-items: stretch;
   border: 1px solid var(--line-soft);
   border-radius: var(--radius-sm);
   background: var(--panel);
-  color: var(--muted);
-  font-size: var(--t-meta);
-  line-height: 1.65;
 }
 
-.report-ledger-note b {
+.report-ledger-note__heading,
+.report-ledger-note__rules {
+  display: flex;
+  justify-content: center;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.report-ledger-note__heading {
+  min-width: 0;
+  padding: var(--s3) var(--s4) var(--s3) 0;
+  border-right: 1px solid var(--line-soft);
+}
+
+.report-ledger-note__heading > span,
+.report-ledger-note__breakdown small,
+.report-ledger-note__rules {
+  color: var(--faint-aa);
+  font-family: var(--font-mono);
+  font-size: var(--t-micro);
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.report-ledger-note__heading strong {
+  color: var(--paper);
+  font-size: var(--t-meta);
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.report-ledger-note__breakdown {
+  display: grid;
+  min-width: 0;
+  grid-auto-columns: minmax(0, 1fr);
+  grid-auto-flow: column;
+}
+
+.report-ledger-note__breakdown > span {
+  display: flex;
+  min-width: 0;
+  padding: var(--s3) var(--s4);
+  /* Number over label, matching the metric cards directly above. Set side by
+     side the label got only the leftover width and every one of them ellipsed
+     away — "LIVE OBSE…" hides the very thing the number counts, which §1's
+     "never pretends" rule does not allow. */
+  flex-direction: column;
+  gap: var(--s1);
+  border-right: 1px solid var(--line-soft);
+}
+
+.report-ledger-note__breakdown b {
   color: var(--paper-strong);
   font-family: var(--font-mono);
+  font-size: clamp(18px, 1.45vw, 26px);
+  font-weight: 500;
+  line-height: 1;
+}
+
+.report-ledger-note__breakdown small {
+  /* These are fixed labels, not user content, so there is nothing legitimate to
+     truncate — at the ~900px target "Live observed" needed 97px of an 82px cell
+     and simply vanished. Stacked under the number they have room to wrap. */
+  line-height: 1.25;
+  text-wrap: balance;
+}
+
+.report-ledger-note__breakdown .is-hands-on b { color: var(--signal-soft); }
+.report-ledger-note__breakdown .is-reported b { color: #aebbd7; }
+.report-ledger-note__breakdown .is-moment b { color: var(--moment); }
+
+.report-ledger-note__rules {
+  padding: var(--s3) 0 var(--s3) var(--s4);
+  letter-spacing: 0.025em;
+  text-transform: none;
+}
+
+.report-ledger-note__rules span {
+  line-height: 1.35;
+}
+
+.report-ledger-note__rules b {
+  color: var(--paper);
   font-weight: 600;
 }
 
@@ -385,7 +502,7 @@
   color: var(--moment);
 }
 
-.report-story,
+.report-score,
 .report-work-map,
 .report-learning,
 .report-card,
@@ -402,7 +519,7 @@
   background: var(--panel);
 }
 
-.report-story,
+.report-score,
 .report-work-map,
 .report-learning,
 .report-card,
@@ -563,69 +680,477 @@
   font-variant-numeric: tabular-nums;
 }
 
-.report-story > p {
-  max-width: 78ch;
-  margin: var(--s5) 0;
-  color: var(--paper);
-  font-size: 17px;
-  line-height: 1.65;
+/* --- Session score -------------------------------------------------------
+
+   The lead panel of the report. It was previously drawn as a HUD: a bloom
+   behind the panel, an empty 310px ring behind the sentence, a corner bracket,
+   a vertical "01 SESSION SCORE" rail repeating the eyebrow above it, three
+   concentric rings around the figure, and a glow on every accent. None of that
+   chrome carried a number, and together it spent the page's only accent colour
+   on decoration — which left nothing to emphasise the data with.
+
+   So the accent is now reserved: on this panel, blue means "this is the
+   measurement". Everything structural is graphite, grouped by hairline and
+   space rather than by nested cards. */
+
+.report-score {
+  padding: var(--s6);
 }
 
-.report-story__path {
+.report-score__head {
   display: flex;
-  align-items: stretch;
-  gap: 2px;
-  min-height: 76px;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--s4);
 }
 
-.report-story__step {
-  display: grid;
-  flex: var(--step-weight) 1 100px;
-  grid-template-columns: auto minmax(0, 1fr);
-  grid-template-rows: auto auto;
-  gap: var(--s1) var(--s2);
-  min-width: 92px;
-  padding: var(--s3);
+.report-score__head h2 {
+  margin: var(--s1) 0 0;
+  color: var(--paper-strong);
+  font-size: var(--t-h2);
+  font-weight: 600;
+  text-wrap: balance;
+}
+
+.report-score__stamp {
+  display: inline-flex;
+  align-items: center;
+  min-height: 30px;
+  padding: 0 var(--s3);
   border: 1px solid var(--line-soft);
+  border-radius: 999px;
   color: var(--paper);
   background: var(--panel-2);
-  text-align: left;
-  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: var(--t-micro);
+  white-space: nowrap;
 }
 
-.report-story__step:first-child {
-  border-radius: var(--radius-sm) 0 0 var(--radius-sm);
+.report-score__caption {
+  display: block;
+  margin: 0;
+  color: var(--faint-aa);
+  font-family: var(--font-mono);
+  font-size: var(--t-micro);
+  font-weight: 500;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
 }
 
-.report-story__step:last-child {
-  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+/* Asymmetric on purpose: the field is an object to look at, the column beside
+   it is prose to read, and they are not the same weight of thing. A symmetric
+   split would claim they were. */
+.report-score__body {
+  display: grid;
+  margin-top: var(--s5);
+  grid-template-columns: minmax(260px, 430px) minmax(300px, 1fr);
+  align-items: start;
+  gap: var(--s6);
 }
 
-.report-story__step:hover {
-  border-color: rgb(var(--signal-rgb) / 0.45);
-  background: var(--panel-3);
+/* A rounded rectangle, not a circle. The circular frame clipped the field's own
+   caption — "Drag to orbit. Select a node to inspect it." lost its first
+   characters to the curve at every width — and it framed a sphere inside a
+   circle inside a circle. */
+.report-score__frame {
+  position: relative;
+  overflow: hidden;
+  min-width: 0;
+  min-height: 260px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  aspect-ratio: 5 / 4;
+  background: rgb(255 255 255 / 0.012);
 }
 
-.report-story__step > span {
-  grid-row: 1 / 3;
-  color: var(--signal);
+.report-score__frame-loading {
+  display: grid;
+  height: 100%;
+  place-items: center;
+  color: var(--faint-aa);
   font-family: var(--font-mono);
   font-size: var(--t-micro);
 }
 
-.report-story__step strong {
-  overflow: hidden;
+.report-score__read {
+  min-width: 0;
+}
+
+.report-score__lead {
+  max-width: 26ch;
+  margin: var(--s3) 0 0;
+  color: var(--paper-strong);
+  font-size: clamp(23px, 1.9vw, 31px);
+  font-weight: 600;
+  line-height: 1.18;
+  letter-spacing: -0.03em;
+  text-wrap: balance;
+}
+
+.report-score__detail {
+  max-width: 56ch;
+  margin: var(--s3) 0 0;
+  color: var(--paper);
   font-size: var(--t-meta);
+  line-height: 1.58;
+}
+
+/* Figures sit on a rule, not in boxes. Two bordered cards beside a bordered
+   panel inside a bordered page is three frames deep for two numbers. */
+.report-score__figures {
+  display: flex;
+  margin: var(--s5) 0 0;
+  padding-top: var(--s4);
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: var(--s3) var(--s6);
+  border-top: 1px solid var(--line-soft);
+}
+
+.report-score__figures > div {
+  min-width: 0;
+}
+
+.report-score__figures dt {
+  color: var(--faint-aa);
+  font-family: var(--font-mono);
+  font-size: var(--t-micro);
+  font-weight: 500;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.report-score__figures dd {
+  margin: var(--s2) 0 0;
+}
+
+/* The one figure the view leads with: the page sans, no outline, no stroke, no
+   glow. It used to be a 92px mono numeral filled at 10% alpha with a 1px stroke
+   and a 24px halo — a shape rather than a number. Proportional numerals because
+   .session-report sets tabular-nums globally, and equal-width digits make a
+   standalone figure this size read loose. */
+.report-score__hero {
+  color: var(--paper-strong);
+  font-size: clamp(40px, 3.4vw, 54px);
+  font-weight: 600;
+  font-variant-numeric: proportional-nums;
+  letter-spacing: -0.04em;
+  line-height: 0.96;
+}
+
+.report-score__hero-note {
+  margin-top: var(--s1);
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: var(--t-micro);
+}
+
+.report-score__focus {
+  overflow: hidden;
+  max-width: 26ch;
+  color: var(--paper-strong);
+  font-size: var(--t-body);
   font-weight: 600;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.report-story__step small {
+/* --- The work that carried it ------------------------------------------- */
+
+.report-score__work {
+  margin-top: var(--s5);
+  padding-top: var(--s4);
+  border-top: 1px solid var(--line-soft);
+}
+
+.report-score__work ol {
+  display: grid;
+  margin: var(--s3) 0 0;
+  padding: 0;
+  gap: 2px;
+  list-style: none;
+}
+
+.report-score__work button {
+  position: relative;
+  display: grid;
+  width: 100%;
+  min-height: 40px;
+  padding: var(--s2) var(--s3);
+  align-items: center;
+  isolation: isolate;
+  grid-template-columns: minmax(90px, 170px) minmax(0, 1fr) minmax(72px, auto);
+  gap: var(--s4);
+  border: 0;
+  border-radius: var(--radius-sm);
+  color: inherit;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+}
+
+/* Hover and focus move opacity only — a tinted plate fades in behind the row.
+   The donuts animated box-shadow, which is not a compositable property. */
+.report-score__work button::before {
+  position: absolute;
+  z-index: -1;
+  inset: 0;
+  border-radius: inherit;
+  background: rgb(255 255 255 / 0.045);
+  content: "";
+  opacity: 0;
+  transition: opacity var(--m-settle) var(--ease-arrive);
+}
+
+.report-score__work button:hover::before,
+.report-score__work button:focus-visible::before {
+  opacity: 1;
+}
+
+.report-score__work-name {
+  overflow: hidden;
+  color: var(--paper);
+  font-size: var(--t-meta);
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Rank is carried by order and by ink weight. It is never carried by hue: the
+   old rings took their colour from the area's kind, so the smallest area could
+   be the most saturated thing in the panel while the largest sat in grey. */
+.report-score__work li:first-child .report-score__work-name {
+  color: var(--paper-strong);
+  font-weight: 600;
+}
+
+/* One hue for every bar, with the unfilled track a lighter step of the same
+   ramp so the whole row reads as one scale. */
+.report-score__work-track {
+  position: relative;
+  display: block;
+  height: 8px;
+  border-radius: 4px;
+  background: rgb(var(--signal-rgb) / 0.13);
+}
+
+.report-score__work-track i {
+  position: absolute;
+  display: block;
+  inset: 0 auto 0 0;
+  width: var(--score-share, 0%);
+  min-width: 6px;
+  border-radius: 4px;
+  background: var(--signal);
+}
+
+.report-score__work-value {
+  display: flex;
+  align-items: baseline;
+  justify-content: flex-end;
+  gap: var(--s2);
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.report-score__work-value b {
+  color: var(--paper-strong);
+  font-size: var(--t-meta);
+  font-weight: 600;
+}
+
+.report-score__work-value em {
+  color: var(--faint-aa);
+  font-size: var(--t-micro);
+  font-style: normal;
+}
+
+.report-score__empty {
+  margin: var(--s3) 0 0;
+  color: var(--faint-aa);
+  font-size: var(--t-meta);
+  line-height: 1.55;
+}
+
+@media (max-width: 860px) {
+  .report-score {
+    padding: var(--s5);
+  }
+
+  .report-score__body {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--s5);
+  }
+
+  .report-score__frame {
+    aspect-ratio: 4 / 3;
+  }
+
+  .report-score__work button {
+    grid-template-columns: minmax(0, 1fr) minmax(64px, auto);
+    gap: var(--s2) var(--s3);
+  }
+
+  .report-score__work-track {
+    grid-column: 1 / -1;
+  }
+}
+
+@keyframes reportScoreSettle {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.report-score__frame,
+.report-score__read,
+.report-score__work {
+  animation: reportScoreSettle var(--m-develop) var(--ease-arrive) both;
+}
+
+.report-score__read { animation-delay: 60ms; }
+.report-score__work { animation-delay: 120ms; }
+
+@media (prefers-reduced-motion: reduce) {
+  .report-score__frame,
+  .report-score__read,
+  .report-score__work {
+    animation: none;
+  }
+
+  .report-score__work button::before {
+    transition: none;
+  }
+}
+
+.track-constellation {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  height: 100%;
+  /* One wash, one hue. The second gradient was a leftover from the retired
+     entity palette — a teal that no longer names anything. */
+  background:
+    radial-gradient(circle at 50% 48%, rgb(var(--signal-rgb) / 0.1), transparent 46%),
+    linear-gradient(145deg, rgb(8 12 20 / 0.18), rgb(255 255 255 / 0.015));
+}
+
+.track-constellation canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  touch-action: none;
+}
+
+.track-constellation__hud {
+  position: absolute;
+  z-index: 3;
+  inset: var(--s3) var(--s3) auto;
+  display: flex;
+  justify-content: space-between;
+  gap: var(--s3);
   color: var(--faint-aa);
   font-family: var(--font-mono);
   font-size: var(--t-micro);
-  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.1em;
+  pointer-events: none;
+  text-transform: uppercase;
+}
+
+.track-constellation__hint {
+  position: absolute;
+  z-index: 3;
+  bottom: var(--s3);
+  left: var(--s3);
+  color: rgb(207 216 237 / 0.68);
+  font-family: var(--font-mono);
+  font-size: var(--t-micro);
+  line-height: 1.35;
+  pointer-events: none;
+}
+
+.track-constellation__readout {
+  position: absolute;
+  z-index: 4;
+  right: var(--s3);
+  bottom: var(--s3);
+  display: flex;
+  max-width: calc(100% - var(--s6));
+  padding: var(--s2) var(--s3);
+  flex-direction: column;
+  gap: 2px;
+  border: 1px solid rgb(var(--signal-rgb) / 0.36);
+  border-radius: var(--radius-sm);
+  color: var(--paper);
+  background: rgb(14 19 30 / 0.88);
+  box-shadow: 0 12px 30px rgb(0 0 0 / 0.22);
+  text-align: left;
+  cursor: pointer;
+}
+
+.track-constellation__readout span,
+.track-constellation__readout small,
+.track-constellation__fallback > span {
+  color: var(--faint-aa);
+  font-family: var(--font-mono);
+  font-size: var(--t-micro);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.track-constellation__readout strong {
+  overflow: hidden;
+  max-width: 26ch;
+  color: var(--paper-strong);
+  font-size: var(--t-meta);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.track-constellation__readout small {
+  color: var(--signal-soft);
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.track-constellation__fallback,
+.track-constellation--empty {
+  display: flex;
+  height: 100%;
+  min-height: 180px;
+  padding: var(--s4);
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: var(--s2);
+  color: var(--faint-aa);
+  font-size: var(--t-meta);
+  text-align: center;
+}
+
+.track-constellation__fallback button {
+  border: 0;
+  color: var(--signal-soft);
+  background: transparent;
+  font: inherit;
+  cursor: pointer;
+}
+
+.track-constellation__access-list {
+  position: absolute;
+  overflow: hidden;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
 }
 
 .report-learning {
@@ -1559,7 +2084,7 @@
   margin-top: 4px;
   color: var(--faint-aa);
   font-family: var(--font-mono);
-  font-size: 9px;
+  font-size: var(--t-micro);
   letter-spacing: 0.08em;
   text-transform: uppercase;
 }
@@ -1628,7 +2153,7 @@
   margin-top: 2px;
   color: var(--faint-aa);
   font-family: var(--font-mono);
-  font-size: 9px;
+  font-size: var(--t-micro);
   font-weight: 400;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1743,7 +2268,7 @@
 .report-interactive-chart__canvas .recharts-brush-texts text {
   fill: var(--faint-aa);
   font-family: var(--font-mono);
-  font-size: 9px;
+  font-size: var(--t-micro);
 }
 
 .report-chart-tooltip {
@@ -1817,7 +2342,7 @@
   margin-top: var(--s3);
   color: var(--faint-aa);
   font-family: var(--font-mono);
-  font-size: 9px;
+  font-size: var(--t-micro);
 }
 
 .report-graph-data {
@@ -2065,6 +2590,14 @@
   background: var(--ink);
   box-shadow: var(--shadow);
   animation: report-drawer-in var(--m-arrive) var(--ease-arrive) both;
+  transition: width var(--m-arrive) var(--ease-arrive);
+  /* Without this the page behind the drawer scrolls once the drawer's own
+     content reaches its end. */
+  overscroll-behavior: contain;
+}
+
+.report-evidence.is-expanded {
+  width: min(820px, 100vw);
 }
 
 @keyframes report-drawer-in {
@@ -2094,18 +2627,43 @@
   font-size: var(--t-meta);
 }
 
-.report-evidence header > button {
-  display: grid;
+.report-evidence__controls {
+  display: flex;
   flex: 0 0 auto;
-  width: 34px;
-  height: 34px;
+  gap: var(--s2);
+}
+
+.report-evidence__controls button {
+  display: grid;
+  box-sizing: border-box;
+  width: 36px;
+  height: 36px;
   place-items: center;
+  padding: 0;
   border: 1px solid var(--line);
-  border-radius: var(--radius-sm);
+  border-radius: 9px;
   color: var(--paper);
   background: var(--panel);
-  font-size: 20px;
   cursor: pointer;
+  transition: border-color 160ms ease, background 160ms ease, color 160ms ease;
+}
+
+.report-evidence__controls button:hover {
+  border-color: rgb(var(--signal-rgb) / 0.52);
+  background: rgb(var(--signal-rgb) / 0.11);
+  color: var(--signal-soft);
+}
+
+.report-evidence__controls svg {
+  display: block;
+  width: 17px;
+  height: 17px;
+  overflow: visible;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.7;
 }
 
 .report-evidence__trust {
@@ -2133,7 +2691,7 @@
 
 .report-evidence li {
   display: grid;
-  grid-template-columns: 70px 10px minmax(0, 1fr);
+  grid-template-columns: 70px 34px minmax(0, 1fr);
   gap: var(--s3);
   align-items: start;
   padding: var(--s3) 0;
@@ -2148,41 +2706,117 @@
 }
 
 .report-evidence__mark {
-  width: 7px;
-  height: 7px;
-  margin-top: 4px;
-  border-radius: 50%;
-  background: var(--signal);
+  display: grid;
+  box-sizing: border-box;
+  width: 34px;
+  height: 34px;
+  min-width: 34px;
+  min-height: 34px;
+  margin: 0;
+  place-items: center;
+  border: 1px solid rgb(var(--signal-rgb) / 0.3);
+  border-radius: 9px;
+  color: var(--signal-soft);
+  background: rgb(var(--signal-rgb) / 0.07);
 }
 
-.report-evidence__mark.is-structure { background: var(--faint-aa); }
-.report-evidence__mark.is-moment { background: var(--moment); }
+.report-evidence__mark.is-structure {
+  color: var(--faint-aa);
+  border-color: rgb(156 169 189 / 0.3);
+  background: rgb(156 169 189 / 0.07);
+}
 
-.report-evidence li strong,
-.report-evidence li span,
-.report-evidence li small {
+.report-evidence__mark.is-moment {
+  color: var(--moment);
+  border-color: rgb(211 165 82 / 0.3);
+  background: rgb(211 165 82 / 0.07);
+}
+
+.report-evidence__mark svg {
+  display: block;
+  width: 16px;
+  height: 16px;
+  overflow: visible;
+  flex: 0 0 16px;
+}
+
+.report-evidence__toggle {
+  display: grid;
+  width: 100%;
+  padding: 0;
+  grid-template-columns: minmax(0, 1fr) 18px;
+  gap: var(--s3);
+  align-items: center;
+  border: 0;
+  color: inherit;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+}
+
+.report-evidence__toggle:hover strong,
+.report-evidence__toggle:focus-visible strong {
+  color: var(--signal-soft);
+}
+
+.report-evidence__summary strong,
+.report-evidence__summary small {
   display: block;
 }
 
-.report-evidence li strong {
+.report-evidence__summary strong {
   color: var(--paper-strong);
   font-size: var(--t-meta);
+  transition: color 160ms ease;
 }
 
-.report-evidence li div > span {
-  margin-top: var(--s1);
-  color: var(--paper);
-  font-family: var(--font-mono);
-  font-size: var(--t-meta);
-  line-height: 1.45;
-}
-
-.report-evidence li small {
+.report-evidence__summary small {
   margin-top: var(--s2);
   color: var(--faint-aa);
   font-family: var(--font-mono);
   font-size: var(--t-micro);
   overflow-wrap: anywhere;
+}
+
+.report-evidence__chevron {
+  display: block;
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: var(--faint-aa);
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.7;
+  transition: transform 180ms var(--ease-arrive), stroke 180ms ease;
+}
+
+.report-evidence__toggle:hover .report-evidence__chevron,
+.report-evidence__toggle:focus-visible .report-evidence__chevron {
+  stroke: var(--signal-soft);
+}
+
+.report-evidence__chevron.is-open {
+  transform: rotate(180deg);
+}
+
+.report-evidence__detail {
+  display: grid;
+  grid-column: 3;
+  margin-top: calc(var(--s1) * -1);
+  padding: var(--s3);
+  border-left: 1px solid rgb(var(--signal-rgb) / 0.36);
+  border-radius: 0 10px 10px 0;
+  color: var(--paper);
+  background: rgb(var(--signal-rgb) / 0.045);
+  font-family: var(--font-mono);
+  font-size: var(--t-meta);
+  line-height: 1.5;
+  animation: report-evidence-detail-in var(--m-settle) var(--ease-arrive) both;
+}
+
+@keyframes report-evidence-detail-in {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
 }
 
 /* Shared visual language for the report's producer-facing readouts. */
@@ -2286,7 +2920,7 @@
   margin-top: 5px;
   color: var(--faint-aa);
   font-family: var(--font-mono);
-  font-size: 9px;
+  font-size: var(--t-micro);
   letter-spacing: 0.08em;
   text-transform: uppercase;
 }
@@ -2346,7 +2980,7 @@
 .report-work-card .report-work-card__body small {
   margin-top: 3px;
   color: var(--faint-aa);
-  font-size: 9px;
+  font-size: var(--t-micro);
   line-height: 1.2;
 }
 
@@ -2371,7 +3005,7 @@
 .report-work-card .report-work-card__count small {
   color: var(--faint-aa);
   font-family: var(--font-mono);
-  font-size: 9px;
+  font-size: var(--t-micro);
 }
 
 .report-work-card__meter {
@@ -2390,28 +3024,28 @@
   background: var(--work-accent);
 }
 
-.report-story__step {
-  border-top: 2px solid var(--work-accent, var(--signal));
+/* What this kind of work actually counts. Previously a `title` tooltip, which
+   DESIGN §9 bans as a hover-only affordance and which no keyboard user could
+   reach at all. It sits below the meter so the card's numbers stay scannable
+   and the definition reads as a footnote rather than competing with them. */
+.report-work-card__rule {
+  grid-column: 1 / -1;
+  grid-row: 3;
+  color: var(--faint-aa);
+  font-size: var(--t-micro);
+  line-height: 1.45;
+  text-wrap: pretty;
 }
 
-.report-story__step .report-story__step-icon {
-  display: flex;
-  width: 24px;
-  grid-row: 1 / 3;
-  flex-direction: column;
-  gap: 5px;
-  color: var(--work-accent, var(--signal));
+.report-work-card {
+  grid-template-rows: 1fr auto auto;
+  min-height: 148px;
 }
 
-.report-story__step-icon svg {
-  width: 18px;
-  height: 18px;
-}
-
-.report-story__step-icon i {
-  font-family: var(--font-mono);
-  font-size: 8px;
-  font-style: normal;
+/* An unseen kind is still readable and still focusable — it explains what would
+   have to happen for it to appear. Only its numbers recede. */
+.report-work-card.is-empty .report-work-card__rule {
+  color: var(--faint-aa);
 }
 
 .report-learning__icon {
@@ -2555,15 +3189,16 @@
   right: -5px;
   bottom: -5px;
   display: grid;
-  width: 17px;
-  height: 17px;
+  /* 17px could not hold a legible glyph; --t-micro needs the extra 3px. */
+  width: 20px;
+  height: 20px;
   place-items: center;
   border: 1px solid var(--line);
   border-radius: 50%;
   color: var(--faint-aa);
   background: var(--panel-2);
   font-family: var(--font-mono);
-  font-size: 7px;
+  font-size: var(--t-micro);
   font-style: normal;
 }
 
@@ -2792,35 +3427,6 @@
   height: 16px;
 }
 
-.report-evidence li {
-  grid-template-columns: 70px 30px minmax(0, 1fr);
-}
-
-.report-evidence__mark,
-.report-evidence__mark.is-structure,
-.report-evidence__mark.is-moment {
-  display: grid;
-  width: 28px;
-  height: 28px;
-  margin-top: 0;
-  place-items: center;
-  border: 1px solid rgb(var(--signal-rgb) / 0.28);
-  border-radius: 7px;
-  color: var(--signal-soft);
-  background: rgb(var(--signal-rgb) / 0.07);
-}
-
-.report-evidence__mark.is-moment {
-  color: var(--moment);
-  border-color: rgb(211 165 82 / 0.3);
-  background: rgb(211 165 82 / 0.07);
-}
-
-.report-evidence__mark svg {
-  width: 16px;
-  height: 16px;
-}
-
 .report-compare__metrics {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -2898,7 +3504,7 @@
 .report-compare__values small {
   color: var(--faint-aa);
   font-family: var(--font-mono);
-  font-size: 9px;
+  font-size: var(--t-micro);
   letter-spacing: 0.07em;
   text-transform: uppercase;
 }
@@ -3006,16 +3612,20 @@
     grid-template-columns: 1fr;
   }
 
+  .report-ledger-note {
+    grid-template-columns: minmax(154px, 0.7fr) minmax(0, 1.3fr);
+  }
+
+  .report-ledger-note__rules {
+    grid-column: 1 / -1;
+    padding: var(--s2) 0;
+    flex-direction: row;
+    flex-wrap: wrap;
+    border-top: 1px solid var(--line-soft);
+  }
+
   .report-work-map__grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .report-story__path {
-    overflow-x: auto;
-  }
-
-  .report-story__step {
-    flex: 0 0 180px;
   }
 
   .report-decision-table {
@@ -3108,20 +3718,6 @@
     grid-template-columns: 1fr;
   }
 
-  .session-report__header,
-  .report-story,
-  .report-work-map,
-  .report-learning,
-  .report-card,
-  .report-path__passages,
-  .report-ledger,
-  .report-chart,
-  .report-focus-graph,
-  .report-interactive-chart,
-  .report-structural-diff {
-    padding: var(--s4);
-  }
-
   .session-report__header-tools,
   .session-report__take-picker,
   .session-report__take-picker select {
@@ -3156,10 +3752,38 @@
     border-bottom: 1px solid var(--line-soft);
   }
 
+  .report-ledger-note {
+    padding: 0 var(--s3);
+    grid-template-columns: 1fr;
+  }
+
+  .report-ledger-note__heading {
+    padding: var(--s3) 0;
+    border-right: 0;
+    border-bottom: 1px solid var(--line-soft);
+  }
+
+  .report-ledger-note__breakdown > span {
+    padding: var(--s3) var(--s2) var(--s3) 0;
+  }
+
+  .report-ledger-note__breakdown > span:last-child {
+    border-right: 0;
+  }
+
+  .report-ledger-note__rules {
+    padding: var(--s3) 0;
+    flex-direction: column;
+  }
+
   .report-section-heading,
   .report-ledger__toolbar {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .track-constellation {
+    height: 100%;
   }
 
   .report-ledger__toolbar label,
@@ -3265,7 +3889,11 @@
 
 @media (prefers-reduced-motion: reduce) {
   .session-report__panel,
-  .report-evidence {
+  .report-evidence,
+  /* The drawer's detail pane animated straight through this block until now —
+     opening evidence still slid even when the reader had asked it not to. */
+  .report-evidence__detail {
     animation: none;
   }
 }
+

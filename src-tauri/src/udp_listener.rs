@@ -320,6 +320,9 @@ fn normalize_udp_json(mut value: Value) -> Result<Value, String> {
     // snapshot's `ableton_id`. See protocol.rs::RecallEvent::track_id.
     let track_id = find_string(object, payload_obj, &["track_id", "trackId"]);
     let track_type = find_string(object, payload_obj, &["track_type", "trackType"]);
+    // Device names are labels, not identities. Two EQ Eights on one track are
+    // distinct only by this Live pointer, which matches DeviceObj.ableton_id.
+    let device_id = find_string(object, payload_obj, &["device_id", "deviceId"]);
     let device_name = find_string(
         object,
         payload_obj,
@@ -430,6 +433,10 @@ fn normalize_udp_json(mut value: Value) -> Result<Value, String> {
     match track_type {
         Some(v) => object.insert("track_type".to_string(), Value::String(v)),
         None => object.insert("track_type".to_string(), Value::Null),
+    };
+    match device_id {
+        Some(v) => object.insert("device_id".to_string(), Value::String(v)),
+        None => object.insert("device_id".to_string(), Value::Null),
     };
     match device_name {
         Some(v) => object.insert("device_name".to_string(), Value::String(v)),
@@ -739,9 +746,24 @@ fn rotate_session_if_project_changed(
                 metrics.set_last_error(error);
             }
         }
-        // project_id is None: an auto-captured take is not yet filed under a
-        // user-created project. The producer can assign it later in the UI.
-        storage.activate_take_for_open_file(None, Some(&open_als))
+        let activated = storage.activate_take_for_open_file(None, Some(&open_als));
+
+        // Creative events do not repeat project_path; the heartbeat is the
+        // authoritative source for the open .als file. File the activated take
+        // immediately instead of waiting for an event field that never arrives.
+        // Without this, events are durable in SQLite but invisible in Projects.
+        if let Ok(status) = activated.as_ref() {
+            if let Some(session_id) = status.session_id.as_deref() {
+                if let Err(error) =
+                    storage.remember_ableton_project(session_id, None, Some(&open_als))
+                {
+                    log::error!("AUTO-ROTATE: failed to file detected take -> {}", error);
+                    metrics.set_last_error(error);
+                }
+            }
+        }
+
+        activated
     };
 
     let status = match activated {
@@ -1950,6 +1972,16 @@ mod tests {
     }
 
     #[test]
+    fn normalize_passes_device_id_through() {
+        let obj = normalized(json!({
+            "event_type": "parameter_changed",
+            "device_name": "EQ Eight",
+            "payload": { "device_id": "140312043829220" }
+        }));
+        assert_eq!(obj["device_id"], json!("140312043829220"));
+    }
+
+    #[test]
     fn normalize_sets_absent_canonical_fields_to_null() {
         // The frontend relies on a flat, predictable shape — every canonical field
         // is always present, even when null, so it never has to dig through payload.
@@ -1959,6 +1991,7 @@ mod tests {
         assert!(obj["track_id"].is_null());
         assert!(obj["track_type"].is_null());
         assert!(obj["sample_name"].is_null());
+        assert!(obj["device_id"].is_null());
         assert!(obj["device_name"].is_null());
     }
 

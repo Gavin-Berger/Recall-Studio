@@ -144,6 +144,17 @@
   background: linear-gradient(#30355f, #272c4c);
 }
 
+.brief__btn--report {
+  border-color: rgb(var(--signal-rgb) / 0.4);
+  background: rgb(var(--signal-rgb) / 0.08);
+  color: var(--signal-soft);
+}
+
+.brief__btn--report:hover {
+  border-color: rgb(var(--signal-rgb) / 0.65);
+  background: rgb(var(--signal-rgb) / 0.16);
+}
+
 .brief__error {
   margin-top: 16px;
   padding: 10px 12px;

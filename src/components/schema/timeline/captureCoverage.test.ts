@@ -80,7 +80,10 @@ describe("capture coverage", () => {
 
   it("survives an old payload that carries no coverage fields at all", () => {
     const coverage = captureCoverage([focusEvent({ parameter_count: 40 })]);
-    expect(coverage).toEqual({ truncatedDevices: [], unwatchedParameterCount: 0, partial: false });
+    expect(coverage).toMatchObject({ truncatedDevices: [], unwatchedParameterCount: 0, partial: false });
+    // The event still proves the bridge was watching, even with no truncation
+    // fields — that is what separates "no gaps" from "no idea".
+    expect(coverage.observed).toBe(true);
   });
 
   it("ignores unparseable payloads and non-focus events", () => {

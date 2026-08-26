@@ -104,6 +104,37 @@ describe("producerMemoryEvent", () => {
     });
   });
 
+  it("hides routing observations that do not prove a route actually changed", () => {
+    const snapshot = producerMemoryEvent(savedEvent({
+      type: "track_routing_changed",
+      track: "A-Reverb",
+      payload: JSON.stringify({
+        output_routing_type: "Main",
+        output_routing_channel: "<Track.RoutingChannel object at 0x19fca60>",
+        previous_output_routing_channel: "<Track.RoutingChannel object at 0x2b01060>",
+      }),
+    }));
+
+    expect(snapshot).toBeNull();
+  });
+
+  it("describes verified routing edits in producer language", () => {
+    const routed = producerMemoryEvent(savedEvent({
+      type: "track_routing_changed",
+      track: "Hats",
+      payload: JSON.stringify({
+        output_routing_channel: "Drums",
+        previous_output_routing_type: "Main",
+      }),
+    }));
+
+    expect(routed).toMatchObject({
+      title: "Signal path updated",
+      summary: "Hats now feeds Drums instead of Main",
+      category: "structure",
+    });
+  });
+
   it("hides duplicated projections, navigation, transport, mute/solo, and arm noise", () => {
     const hidden = [
       "parameter_changed",

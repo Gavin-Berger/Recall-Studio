@@ -48,6 +48,19 @@
   --font-display: var(--font-sans);
   --font-mono: "IBM Plex Mono", "Cascadia Code", "JetBrains Mono", "SFMono-Regular", Consolas, monospace;
 
+  /* Type scale (DESIGN.md §3). Documented since v2.0 but never tokenised, so
+     surfaces reached for raw px and drifted below the floor — the report page
+     had labels at 9px. --t-micro is the smallest size in the system: below it
+     text stops being readable on a dim desk at 1am, which is the whole use case.
+     Body is never below --t-meta, and --t-meta only for dense rows in --muted
+     or lighter. */
+  --t-display: 28px;
+  --t-h1: 20px;
+  --t-h2: 15px;
+  --t-body: 15px;
+  --t-meta: 13px;
+  --t-micro: 11px;
+
   color: var(--paper);
   background: var(--ink);
   font-family: var(--font-body);

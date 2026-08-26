@@ -196,6 +196,10 @@ pub struct ParameterChange {
     // actually key on when present. None for events captured before the bridge
     // sent it; those fall back to track_name.
     pub track_id: Option<String>,
+    /// Live's stable device pointer. Device names are display labels and can
+    /// repeat in one chain, so all joins use this when it is available.
+    #[serde(default)]
+    pub device_id: Option<String>,
     pub device_name: Option<String>,
     pub parameter_name: Option<String>,
     pub before_value: Option<f64>,
@@ -660,6 +664,7 @@ pub struct ChangeEvent {
     pub timestamp_ms: u64,
     pub track_name: Option<String>,
     pub track_id: Option<String>,
+    pub device_id: Option<String>,
     pub device_name: Option<String>,
     pub parameter_name: Option<String>,
     pub value: Option<f64>,
@@ -693,15 +698,28 @@ pub fn track_identity_key(track_id: Option<&str>, track_name: Option<&str>) -> S
         .to_string()
 }
 
+/// The string a change's device is grouped by: the stable Live pointer first,
+/// then its display name for captures made before the bridge recorded pointers.
+/// This is deliberately parallel to `track_identity_key`: Ableton does not
+/// require device names to be unique within a track.
+pub fn device_identity_key(device_id: Option<&str>, device_name: Option<&str>) -> String {
+    device_id
+        .filter(|id| !id.is_empty())
+        .or(device_name)
+        .unwrap_or_default()
+        .to_string()
+}
+
 /// Compute before/after values for a session's parameter changes.
 ///
-/// Events are grouped by (track, device, parameter) and walked in time order:
+/// Events are grouped by (track, device, parameter) and walked in time order.
+/// Track and device use their stable Live pointers when present:
 /// `after` is the event's value and `before` is the previous value in that group.
 /// The first change in a group has `before = None` (the pre-session value is
 /// unknown — the snapshot reflects the *final* state, so it can't stand in for the
 /// initial one without lying). `parameter_id` is linked when the named parameter
 /// exists in the materialized tree. The grouping key's track component is
-/// `track_identity_key`, not the raw name — see its doc comment.
+/// `track_identity_key` and `device_identity_key`, not their raw display names.
 pub fn build_parameter_changes(
     mut changes: Vec<ChangeEvent>,
     parameter_lookup: &HashMap<(String, String, String), String>,
@@ -725,7 +743,7 @@ pub fn build_parameter_changes(
 
         let key = (
             track_identity_key(change.track_id.as_deref(), change.track_name.as_deref()),
-            change.device_name.clone().unwrap_or_default(),
+            device_identity_key(change.device_id.as_deref(), change.device_name.as_deref()),
             parameter_name.clone(),
         );
 
@@ -749,6 +767,7 @@ pub fn build_parameter_changes(
             parameter_id: parameter_lookup.get(&key).cloned(),
             track_name: change.track_name.clone(),
             track_id: change.track_id.clone(),
+            device_id: change.device_id.clone(),
             device_name: change.device_name.clone(),
             parameter_name: Some(parameter_name),
             before_value,
@@ -1036,6 +1055,7 @@ mod tests {
                 timestamp_ms: 100,
                 track_name: Some("Bass 1".into()),
                 track_id: None,
+                device_id: None,
                 device_name: Some("Synth".into()),
                 parameter_name: Some("Cutoff".into()),
                 value: Some(0.20),
@@ -1057,6 +1077,7 @@ mod tests {
                 timestamp_ms: 200,
                 track_name: Some("Bass 1".into()),
                 track_id: None,
+                device_id: None,
                 device_name: Some("Synth".into()),
                 parameter_name: Some("Cutoff".into()),
                 value: Some(0.55),
@@ -1103,6 +1124,7 @@ mod tests {
                 timestamp_ms: 100,
                 track_name: Some("T".into()),
                 track_id: None,
+                device_id: None,
                 device_name: Some("D".into()),
                 parameter_name: Some("A".into()),
                 value: Some(1.0),
@@ -1124,6 +1146,7 @@ mod tests {
                 timestamp_ms: 150,
                 track_name: Some("T".into()),
                 track_id: None,
+                device_id: None,
                 device_name: Some("D".into()),
                 parameter_name: Some("B".into()),
                 value: Some(9.0),
@@ -1154,6 +1177,7 @@ mod tests {
             timestamp_ms: 100,
             track_name: Some("Bass 1".into()),
             track_id: None,
+            device_id: None,
             device_name: Some("Synth".into()),
             parameter_name: Some("Cutoff".into()),
             value: Some(0.8),
@@ -1197,6 +1221,7 @@ mod tests {
                 timestamp_ms: 100,
                 track_name: Some("Serum 2".into()),
                 track_id: Some("111".into()),
+                device_id: None,
                 device_name: Some("Serum 2".into()),
                 parameter_name: Some("Cutoff".into()),
                 value: Some(0.20),
@@ -1218,6 +1243,7 @@ mod tests {
                 timestamp_ms: 200,
                 track_name: Some("Serum 2".into()),
                 track_id: Some("222".into()),
+                device_id: None,
                 device_name: Some("Serum 2".into()),
                 parameter_name: Some("Cutoff".into()),
                 value: Some(0.90),
@@ -1246,10 +1272,83 @@ mod tests {
     }
 
     #[test]
+    fn duplicate_device_names_with_distinct_ids_do_not_share_history_or_links() {
+        let changes = vec![
+            ChangeEvent {
+                event_id: 1,
+                event_type: "parameter_changed".into(),
+                timestamp_ms: 100,
+                track_name: Some("Mix bus".into()),
+                track_id: Some("100".into()),
+                device_id: Some("200".into()),
+                device_name: Some("EQ Eight".into()),
+                parameter_name: Some("Frequency A".into()),
+                value: Some(0.2),
+                previous_value: None,
+                value_percent: None,
+                previous_value_percent: None,
+                display_value: None,
+                previous_display_value: None,
+                is_quantized: None,
+                automation_start_ms: None,
+                automation_start_position: None,
+                automation_end_position: None,
+                observed_arrangement_position: None,
+                observed_arrangement_beats: None,
+            },
+            ChangeEvent {
+                event_id: 2,
+                event_type: "parameter_changed".into(),
+                timestamp_ms: 200,
+                track_name: Some("Mix bus".into()),
+                track_id: Some("100".into()),
+                device_id: Some("204".into()),
+                device_name: Some("EQ Eight".into()),
+                parameter_name: Some("Frequency A".into()),
+                value: Some(0.9),
+                previous_value: None,
+                value_percent: None,
+                previous_value_percent: None,
+                display_value: None,
+                previous_display_value: None,
+                is_quantized: None,
+                automation_start_ms: None,
+                automation_start_position: None,
+                automation_end_position: None,
+                observed_arrangement_position: None,
+                observed_arrangement_beats: None,
+            },
+        ];
+        let mut lookup = HashMap::new();
+        lookup.insert(
+            ("100".into(), "200".into(), "Frequency A".into()),
+            "parameter-a".into(),
+        );
+        lookup.insert(
+            ("100".into(), "204".into(), "Frequency A".into()),
+            "parameter-b".into(),
+        );
+
+        let rows = build_parameter_changes(changes, &lookup);
+        assert!(rows.iter().all(|row| row.before_value.is_none()));
+        assert_eq!(rows[0].parameter_id.as_deref(), Some("parameter-a"));
+        assert_eq!(rows[1].parameter_id.as_deref(), Some("parameter-b"));
+        assert_eq!(rows[0].device_id.as_deref(), Some("200"));
+        assert_eq!(rows[1].device_id.as_deref(), Some("204"));
+    }
+
+    #[test]
     fn track_identity_key_prefers_id_falls_back_to_name() {
         assert_eq!(track_identity_key(Some("42"), Some("Serum 2")), "42");
         assert_eq!(track_identity_key(None, Some("Serum 2")), "Serum 2");
         assert_eq!(track_identity_key(None, None), "");
+    }
+
+    #[test]
+    fn device_identity_key_prefers_id_falls_back_to_name() {
+        assert_eq!(device_identity_key(Some("200"), Some("EQ Eight")), "200");
+        assert_eq!(device_identity_key(None, Some("EQ Eight")), "EQ Eight");
+        assert_eq!(device_identity_key(Some(""), Some("EQ Eight")), "EQ Eight");
     }
 
     // The reason this function exists at all (see its doc comment): Ableton

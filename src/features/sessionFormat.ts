@@ -51,6 +51,46 @@ export function alsSetName(path: string | null | undefined): string | null {
   return name === "" || name === "0" ? null : name;
 }
 
+function readableCaptureName(value: string | null | undefined): string | null {
+  const name = value?.trim() ?? "";
+  if (name === "" || name === "0") return null;
+  // Generated IDs are useful to storage, but are never a meaningful capture title.
+  if (/^session[\s_-]*\d{6,}$/iu.test(name)) return null;
+  return name;
+}
+
+/** A capture's human name. This deliberately never falls back to its database ID. */
+export function preferredCaptureTitle(session: Pick<
+  SavedSessionMetadata,
+  "als_path" | "display_name" | "capture_name"
+> | null): string | null {
+  return (
+    alsSetName(session?.als_path) ??
+    readableCaptureName(session?.display_name) ??
+    readableCaptureName(session?.capture_name)
+  );
+}
+
+/**
+ * The report a project should reopen. A new bridge checkpoint can be empty even
+ * when the project has just-recorded work, so activity beats simple recency.
+ */
+export function preferredProjectReportSession(
+  captures: SavedSessionMetadata[],
+): SavedSessionMetadata | null {
+  const activityRank = (capture: SavedSessionMetadata): number => {
+    if (capture.creative_event_count > 0) return 2;
+    if (capture.event_count > 0) return 1;
+    return 0;
+  };
+
+  return [...captures].sort((left, right) =>
+    activityRank(right) - activityRank(left) ||
+    right.last_updated_at_ms - left.last_updated_at_ms ||
+    right.started_at_ms - left.started_at_ms,
+  )[0] ?? null;
+}
+
 /**
  * The producer-facing project title. A saved `.als` filename is more reliable
  * than Recall's editable desk label, so it wins whenever one is available.

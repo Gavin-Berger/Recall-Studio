@@ -45,6 +45,7 @@ export type SavedSessionEvent = {
   session_id: string | null;
   track: string | null;
   track_type: string | null;
+  device_id?: string | null;
   device: string | null;
   device_chain: string | null;
   parameter: string | null;

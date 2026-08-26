@@ -104,6 +104,8 @@ pub struct SavedSessionEvent {
     // they hold the track_name / device_name / parameter_name values.
     pub track: Option<String>,
     pub track_type: Option<String>,
+    #[serde(default)]
+    pub device_id: Option<String>,
     pub device: Option<String>,
     pub device_chain: Option<String>,
     pub parameter: Option<String>,
@@ -151,6 +153,7 @@ impl From<RecallEvent> for SavedSessionEvent {
             // Carry the structured fields through instead of dropping them.
             track: event.track_name,
             track_type: event.track_type,
+            device_id: event.device_id,
             device: event.device_name,
             device_chain: event.device_chain,
             parameter: event.parameter_name,

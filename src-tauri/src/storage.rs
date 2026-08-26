@@ -708,6 +708,7 @@ impl StorageState {
                     session_id,
                     track_name,
                     track_type,
+                    device_id,
                     device_name,
                     device_chain,
                     parameter_name,
@@ -745,21 +746,22 @@ impl StorageState {
                 // existed; those fall back to the payload JSON below.
                 let track_name: Option<String> = row.get(8)?;
                 let track_type: Option<String> = row.get(9)?;
-                let device_name: Option<String> = row.get(10)?;
-                let device_chain: Option<String> = row.get(11)?;
-                let parameter_name: Option<String> = row.get(12)?;
-                let parameter_value: Option<f64> = row.get(13)?;
-                let previous_parameter_value: Option<f64> = row.get(14)?;
-                let parameter_value_percent: Option<f64> = row.get(15)?;
-                let previous_parameter_value_percent: Option<f64> = row.get(16)?;
-                let clip_name: Option<String> = row.get(17)?;
-                let sample_name: Option<String> = row.get(18)?;
-                let file_path: Option<String> = row.get(19)?;
-                let bpm: Option<f64> = row.get(20)?;
-                let playing: Option<i64> = row.get(21)?;
-                let parameter_display_value: Option<String> = row.get(22)?;
-                let previous_parameter_display_value: Option<String> = row.get(23)?;
-                let parameter_is_quantized: Option<i64> = row.get(24)?;
+                let device_id: Option<String> = row.get(10)?;
+                let device_name: Option<String> = row.get(11)?;
+                let device_chain: Option<String> = row.get(12)?;
+                let parameter_name: Option<String> = row.get(13)?;
+                let parameter_value: Option<f64> = row.get(14)?;
+                let previous_parameter_value: Option<f64> = row.get(15)?;
+                let parameter_value_percent: Option<f64> = row.get(16)?;
+                let previous_parameter_value_percent: Option<f64> = row.get(17)?;
+                let clip_name: Option<String> = row.get(18)?;
+                let sample_name: Option<String> = row.get(19)?;
+                let file_path: Option<String> = row.get(20)?;
+                let bpm: Option<f64> = row.get(21)?;
+                let playing: Option<i64> = row.get(22)?;
+                let parameter_display_value: Option<String> = row.get(23)?;
+                let previous_parameter_display_value: Option<String> = row.get(24)?;
+                let parameter_is_quantized: Option<i64> = row.get(25)?;
 
                 let payload_json = payload
                     .as_deref()
@@ -779,6 +781,7 @@ impl StorageState {
                     source,
                     track: track_name.or_else(|| read_payload_string(pj, &["track", "track_name"])),
                     track_type: track_type.or_else(|| read_payload_string(pj, &["track_type"])),
+                    device_id: device_id.or_else(|| read_payload_string(pj, &["device_id", "deviceId"])),
                     device: device_name
                         .or_else(|| read_payload_string(pj, &["device", "device_name"])),
                     device_chain: device_chain
@@ -2001,6 +2004,7 @@ impl StorageState {
                         payload,
                         track_name,
                         track_id,
+                        device_id,
                         track_type,
                         device_name,
                         device_chain,
@@ -2022,7 +2026,7 @@ impl StorageState {
                     VALUES (
                         ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
                         ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20,
-                        ?21, ?22, ?23, ?24, ?25, ?26, ?27
+                        ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28
                     )
                     ",
                 )
@@ -2046,6 +2050,7 @@ impl StorageState {
                         event.payload.as_deref(),
                         event.track_name.as_deref(),
                         event.track_id.as_deref(),
+                        event.device_id.as_deref(),
                         event.track_type.as_deref(),
                         event.device_name.as_deref(),
                         event.device_chain.as_deref(),
@@ -2284,7 +2289,8 @@ impl StorageState {
 
         // ableton track id -> stable track id, for resolving group parents.
         let mut track_id_by_ableton: HashMap<String, String> = HashMap::new();
-        // (track, device, parameter) names -> parameter id, for change linking.
+        // (track, device, parameter) identities -> parameter id. Track/device
+        // pointers are preferred; their names are retained for legacy rows.
         let mut parameter_lookup: HashMap<(String, String, String), String> = HashMap::new();
 
         // Insert tracks (group_id resolved in a second pass once all ids exist).
@@ -2373,15 +2379,10 @@ impl StorageState {
                     )?;
 
                     if let (Some(device_name), Some(param_name)) = (&device.name, &param.name) {
-                        // Register under both keys a change event might arrive
-                        // with: the ableton_id (what a change carrying track_id
-                        // resolves to — disambiguates same-named tracks) and the
-                        // bare name (what a change with no track_id, e.g. a
-                        // pre-migration row, falls back to). When two tracks
-                        // share a name, the name-keyed entry is necessarily
-                        // ambiguous between them — same as before this fix —
-                        // but the id-keyed entry, used whenever the event has
-                        // one, is exact.
+                        // Register both the stable Live pointers and display-name
+                        // fallbacks. The pointer path is exact even when a chain
+                        // contains duplicate EQ Eights; old bridge events have
+                        // only names and remain inherently ambiguous.
                         let mut keys: Vec<String> = Vec::with_capacity(2);
                         if let Some(ableton_id) = track.ableton_id.as_deref() {
                             if !ableton_id.is_empty() {
@@ -2393,11 +2394,22 @@ impl StorageState {
                                 keys.push(name.to_string());
                             }
                         }
+                        let mut device_keys: Vec<String> = Vec::with_capacity(2);
+                        if let Some(ableton_id) = device.ableton_id.as_deref() {
+                            if !ableton_id.is_empty() {
+                                device_keys.push(ableton_id.to_string());
+                            }
+                        }
+                        if !device_name.is_empty() && !device_keys.contains(device_name) {
+                            device_keys.push(device_name.clone());
+                        }
                         for track_key in keys {
-                            parameter_lookup.insert(
-                                (track_key, device_name.clone(), param_name.clone()),
-                                param_id.clone(),
-                            );
+                            for device_key in &device_keys {
+                                parameter_lookup.insert(
+                                    (track_key.clone(), device_key.clone(), param_name.clone()),
+                                    param_id.clone(),
+                                );
+                            }
                         }
                     }
 
@@ -2422,14 +2434,14 @@ impl StorageState {
             let mut statement = transaction
                 .prepare_cached(
                     "INSERT INTO parameter_changes
-                     (id, session_id, event_type, parameter_id, track_name, track_id, device_name, parameter_name,
+                     (id, session_id, event_type, parameter_id, track_name, track_id, device_id, device_name, parameter_name,
                       before_value, after_value, before_value_percent, after_value_percent,
                       unit, before_display_value, after_display_value, is_quantized,
                       reason, automation_start_ms, automation_start_position, automation_end_position,
                       observed_arrangement_position, observed_arrangement_beats,
                       changed_at_ms, source_event_id)
                      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15,
-                             ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24)",
+                             ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25)",
                 )
                 .map_err(|error| {
                     format!("Failed to prepare parameter_changes insert: {}", error)
@@ -2449,6 +2461,7 @@ impl StorageState {
                         change.parameter_id,
                         change.track_name,
                         change.track_id,
+                        change.device_id,
                         change.device_name,
                         change.parameter_name,
                         change.before_value,
@@ -2539,7 +2552,7 @@ impl StorageState {
 
         let mut statement = connection
             .prepare(
-                "SELECT id, event_type, parameter_id, track_name, track_id, device_name, parameter_name,
+                "SELECT id, event_type, parameter_id, track_name, track_id, device_id, device_name, parameter_name,
                         before_value, after_value, before_value_percent, after_value_percent,
                         unit, before_display_value, after_display_value, is_quantized,
                         reason, automation_start_ms, automation_start_position, automation_end_position,
@@ -2557,25 +2570,26 @@ impl StorageState {
                     parameter_id: row.get(2)?,
                     track_name: row.get(3)?,
                     track_id: row.get(4)?,
-                    device_name: row.get(5)?,
-                    parameter_name: row.get(6)?,
-                    before_value: row.get(7)?,
-                    after_value: row.get(8)?,
-                    before_value_percent: row.get(9)?,
-                    after_value_percent: row.get(10)?,
-                    unit: row.get(11)?,
-                    before_display_value: row.get(12)?,
-                    after_display_value: row.get(13)?,
-                    is_quantized: row.get::<_, Option<i64>>(14)?.map(|value| value != 0),
-                    reason: row.get(15)?,
+                    device_id: row.get(5)?,
+                    device_name: row.get(6)?,
+                    parameter_name: row.get(7)?,
+                    before_value: row.get(8)?,
+                    after_value: row.get(9)?,
+                    before_value_percent: row.get(10)?,
+                    after_value_percent: row.get(11)?,
+                    unit: row.get(12)?,
+                    before_display_value: row.get(13)?,
+                    after_display_value: row.get(14)?,
+                    is_quantized: row.get::<_, Option<i64>>(15)?.map(|value| value != 0),
+                    reason: row.get(16)?,
                     automation_start_ms: row
-                        .get::<_, Option<i64>>(16)?
+                        .get::<_, Option<i64>>(17)?
                         .and_then(|value| u64::try_from(value).ok()),
-                    automation_start_position: row.get(17)?,
-                    automation_end_position: row.get(18)?,
-                    observed_arrangement_position: row.get(19)?,
-                    observed_arrangement_beats: row.get(20)?,
-                    changed_at_ms: row.get::<_, i64>(21)? as u64,
+                    automation_start_position: row.get(18)?,
+                    automation_end_position: row.get(19)?,
+                    observed_arrangement_position: row.get(20)?,
+                    observed_arrangement_beats: row.get(21)?,
+                    changed_at_ms: row.get::<_, i64>(22)? as u64,
                 })
             })
             .map_err(|error| format!("Failed to read parameter_changes: {}", error))?;
@@ -3273,7 +3287,7 @@ fn collect_change_events(
 ) -> Result<Vec<ChangeEvent>, String> {
     let mut statement = connection
         .prepare(
-            "SELECT id, event_type, timestamp_ms, track_name, track_id, device_name, parameter_name,
+            "SELECT id, event_type, timestamp_ms, track_name, track_id, device_id, device_name, parameter_name,
                     parameter_value, previous_parameter_value, parameter_value_percent,
                     previous_parameter_value_percent, parameter_display_value,
                     previous_parameter_display_value, parameter_is_quantized, payload
@@ -3286,7 +3300,7 @@ fn collect_change_events(
 
     let rows = statement
         .query_map(params![session_id], |row| {
-            let payload: Option<String> = row.get(14)?;
+            let payload: Option<String> = row.get(15)?;
             let (automation_start_ms, automation_start_position, automation_end_position) =
                 automation_span_from_payload(payload.as_deref());
             let (observed_arrangement_position, observed_arrangement_beats, _, _) =
@@ -3297,15 +3311,16 @@ fn collect_change_events(
                 timestamp_ms: row.get::<_, i64>(2)? as u64,
                 track_name: row.get(3)?,
                 track_id: row.get(4)?,
-                device_name: row.get(5)?,
-                parameter_name: row.get(6)?,
-                value: row.get(7)?,
-                previous_value: row.get(8)?,
-                value_percent: row.get(9)?,
-                previous_value_percent: row.get(10)?,
-                display_value: row.get(11)?,
-                previous_display_value: row.get(12)?,
-                is_quantized: row.get::<_, Option<i64>>(13)?.map(|value| value != 0),
+                device_id: row.get(5)?,
+                device_name: row.get(6)?,
+                parameter_name: row.get(7)?,
+                value: row.get(8)?,
+                previous_value: row.get(9)?,
+                value_percent: row.get(10)?,
+                previous_value_percent: row.get(11)?,
+                display_value: row.get(12)?,
+                previous_display_value: row.get(13)?,
+                is_quantized: row.get::<_, Option<i64>>(14)?.map(|value| value != 0),
                 automation_start_ms,
                 automation_start_position,
                 automation_end_position,
@@ -3632,6 +3647,7 @@ pub fn initialize_database(db_path: &Path) -> rusqlite::Result<()> {
             -- upgrade path that adds these to databases created before they existed.
             track_name TEXT,
             track_id TEXT,
+            device_id TEXT,
             track_type TEXT,
             device_name TEXT,
             device_chain TEXT,
@@ -3756,6 +3772,7 @@ pub fn initialize_database(db_path: &Path) -> rusqlite::Result<()> {
             parameter_id TEXT,             -- null if no matching tree param (legacy)
             track_name TEXT,
             track_id TEXT,                 -- Live's stable track pointer; disambiguates same-named tracks
+            device_id TEXT,                -- Live's stable device pointer; disambiguates duplicate devices
             device_name TEXT,
             parameter_name TEXT,
             before_value REAL,
@@ -4029,6 +4046,7 @@ fn migrate_event_columns(connection: &Connection) -> rusqlite::Result<()> {
     const COLUMNS: &[(&str, &str)] = &[
         ("track_name", "TEXT"),
         ("track_id", "TEXT"),
+        ("device_id", "TEXT"),
         ("track_type", "TEXT"),
         ("device_name", "TEXT"),
         ("device_chain", "TEXT"),
@@ -4071,6 +4089,7 @@ fn migrate_parameter_change_columns(connection: &Connection) -> rusqlite::Result
         ("after_display_value", "TEXT"),
         ("is_quantized", "INTEGER"),
         ("track_id", "TEXT"),
+        ("device_id", "TEXT"),
         ("event_type", "TEXT NOT NULL DEFAULT 'parameter_changed'"),
         ("automation_start_ms", "INTEGER"),
         ("automation_start_position", "TEXT"),
@@ -4206,6 +4225,7 @@ mod tests {
             session_id: Some(session_id.into()),
             track_name: None,
             track_id: None,
+            device_id: None,
             track_type: None,
             device_name: None,
             parameter_name: None,
@@ -4283,6 +4303,7 @@ mod tests {
         let mut sample = event(&session_id, "sample_added");
         sample.track_name = Some("Vocals".into());
         sample.track_type = Some("audio".into());
+        sample.device_id = Some("140312043829220".into());
         sample.sample_name = Some("Deep_House_Vocal_120bpm.wav".into());
         sample.file_path = Some("C:/Splice/Deep_House_Vocal_120bpm.wav".into());
         sample.device_chain = Some("Serum 2 : Saturator".into());
@@ -4301,6 +4322,7 @@ mod tests {
         // Every field came back from its first-class column, not payload digging.
         assert_eq!(event.track.as_deref(), Some("Vocals"));
         assert_eq!(event.track_type.as_deref(), Some("audio"));
+        assert_eq!(event.device_id.as_deref(), Some("140312043829220"));
         assert_eq!(
             event.sample_name.as_deref(),
             Some("Deep_House_Vocal_120bpm.wav")
@@ -4375,6 +4397,43 @@ mod tests {
             .unwrap();
         let renamed_project = storage.list_projects(false).unwrap().remove(0);
         assert_eq!(renamed_project.display_name, "Drum Practice - Verse Ideas");
+
+        cleanup(&path);
+    }
+
+    #[test]
+    fn path_only_capture_is_filed_with_versions_from_the_same_project_folder() {
+        let (storage, path) = temp_storage();
+        let v2_path = "M:/Ableton Projects/Breaking Point Project/Breaking Point v2.als";
+        let v3_path = "M:/Ableton Projects/Breaking Point Project/Breaking Point v3.als";
+
+        let v2 = storage
+            .activate_take_for_open_file(None, Some(v2_path))
+            .unwrap();
+        storage
+            .remember_ableton_project(v2.session_id.as_deref().unwrap(), None, Some(v2_path))
+            .unwrap();
+
+        let v3 = storage
+            .activate_take_for_open_file(None, Some(v3_path))
+            .unwrap();
+        storage
+            .remember_ableton_project(v3.session_id.as_deref().unwrap(), None, Some(v3_path))
+            .unwrap();
+
+        let sessions = storage.list_saved_sessions().unwrap();
+        let v2_project = sessions
+            .iter()
+            .find(|session| session.id == v2.session_id.as_deref().unwrap())
+            .and_then(|session| session.project_id.as_deref());
+        let v3_project = sessions
+            .iter()
+            .find(|session| session.id == v3.session_id.as_deref().unwrap())
+            .and_then(|session| session.project_id.as_deref());
+
+        assert!(v2_project.is_some());
+        assert_eq!(v3_project, v2_project);
+        assert_eq!(storage.list_projects(false).unwrap().len(), 1);
 
         cleanup(&path);
     }
@@ -5072,6 +5131,7 @@ mod tests {
         for expected in [
             "track_name",
             "track_id",
+            "device_id",
             "track_type",
             "device_chain",
             "previous_parameter_value",
@@ -5214,6 +5274,29 @@ mod tests {
         event
     }
 
+    fn param_change_with_track_and_device_id(
+        session_id: &str,
+        timestamp_ms: u64,
+        track: &str,
+        track_id: &str,
+        device: &str,
+        device_id: &str,
+        parameter: &str,
+        value: f64,
+    ) -> RecallEvent {
+        let mut event = param_change_with_id(
+            session_id,
+            timestamp_ms,
+            track,
+            track_id,
+            device,
+            parameter,
+            value,
+        );
+        event.device_id = Some(device_id.into());
+        event
+    }
+
     #[test]
     fn materialize_keeps_same_named_tracks_separate_when_track_id_present() {
         // Ableton auto-names a track after its first device, so two different
@@ -5288,6 +5371,65 @@ mod tests {
         assert_ne!(changes[0].parameter_id, changes[1].parameter_id);
         assert!(changes[0].parameter_id.is_some());
         assert!(changes[1].parameter_id.is_some());
+
+        cleanup(&path);
+    }
+
+    #[test]
+    fn materialize_keeps_duplicate_device_names_separate_when_device_id_present() {
+        let (storage, path) = temp_storage();
+        let session_id = storage
+            .resume_or_create_active_session()
+            .unwrap()
+            .session_id
+            .unwrap();
+        let snapshot = serde_json::json!({
+            "tracks": [{
+                "index": 0, "id": "100", "name": "Mix bus", "has_midi_input": true,
+                "devices": [
+                    { "id": "200", "name": "EQ Eight", "role": "audio_effect", "is_active": true,
+                      "parameters": [{ "id": "300", "name": "Frequency A", "value": 0.2, "min": 0.0, "max": 1.0 }] },
+                    { "id": "204", "name": "EQ Eight", "role": "audio_effect", "is_active": true,
+                      "parameters": [{ "id": "304", "name": "Frequency A", "value": 0.9, "min": 0.0, "max": 1.0 }] }
+                ]
+            }]
+        });
+
+        storage
+            .save_events_batch(&[
+                snapshot_event(&session_id, snapshot),
+                param_change_with_track_and_device_id(
+                    &session_id,
+                    1_000,
+                    "Mix bus",
+                    "100",
+                    "EQ Eight",
+                    "200",
+                    "Frequency A",
+                    0.2,
+                ),
+                param_change_with_track_and_device_id(
+                    &session_id,
+                    2_000,
+                    "Mix bus",
+                    "100",
+                    "EQ Eight",
+                    "204",
+                    "Frequency A",
+                    0.9,
+                ),
+            ])
+            .unwrap();
+
+        storage.materialize_session_schema(&session_id).unwrap();
+
+        let changes = storage.get_parameter_changes(&session_id).unwrap();
+        assert_eq!(changes.len(), 2);
+        assert!(changes.iter().all(|change| change.before_value.is_none()));
+        assert_eq!(changes[0].device_id.as_deref(), Some("200"));
+        assert_eq!(changes[1].device_id.as_deref(), Some("204"));
+        assert_ne!(changes[0].parameter_id, changes[1].parameter_id);
+        assert!(changes.iter().all(|change| change.parameter_id.is_some()));
 
         cleanup(&path);
     }

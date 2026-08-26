@@ -119,7 +119,11 @@ function rawMemory(overrides: Partial<SavedSessionEvent> = {}): SavedSessionEven
     title: "Routing changed",
     description: "Lead → Main",
     source: "control_surface",
-    payload: JSON.stringify({ track_id: "track-1", output_routing: "Main" }),
+    payload: JSON.stringify({
+      track_id: "track-1",
+      previous_output_routing_type: "Main",
+      output_routing_channel: "Drums",
+    }),
     session_id: "take-1",
     track: "Lead",
     track_type: "midi",

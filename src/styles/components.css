@@ -1611,7 +1611,10 @@
 .session-history__header span {
   margin: 0;
   color: var(--paper);
-  font-size: 0.66rem;
+  /* 0.66rem resolved to 10.56px, just under the --t-micro floor (DESIGN.md §3).
+     Shared by 11 surfaces, so this lifts all of them to the smallest size the
+     system actually defines. */
+  font-size: var(--t-micro);
   font-weight: 850;
   letter-spacing: 0.14em;
   text-transform: uppercase;

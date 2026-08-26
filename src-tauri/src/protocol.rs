@@ -31,6 +31,10 @@ pub struct RecallEvent {
     // bridge builds that predate it — callers must fall back to track_name.
     #[serde(default)]
     pub track_id: Option<String>,
+    // Live's stable per-device pointer (bridge sends `str(device._live_ptr)`).
+    // Device display names are not unique: a track can contain two EQ Eights.
+    #[serde(default)]
+    pub device_id: Option<String>,
     // The kind of track the event is about: "audio", "midi", "return", "group",
     // or "master". Lets the timeline say *what* a producer was working on, not
     // just its name — audio vs MIDI vs a bus are different creative contexts.

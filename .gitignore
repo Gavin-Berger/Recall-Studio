@@ -43,3 +43,9 @@ __pycache__/
 # committed by accident after any icon regeneration.
 src-tauri/icons/android/
 src-tauri/icons/ios/
+
+# Playwright
+playwright-report/
+test-results/
+blob-report/
+.playwright/

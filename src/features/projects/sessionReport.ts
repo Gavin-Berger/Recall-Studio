@@ -1,8 +1,15 @@
-import { activeDurationMs, formatMoveValue } from "../../components/schema/timeline/format";
-import { captureCoverage, describeCaptureCoverage } from "../../components/schema/timeline/captureCoverage";
+import { formatMoveValue } from "../../components/schema/timeline/format";
+import {
+  captureCoverage,
+  describeCaptureCoverage,
+  trackWasWatched,
+  type CaptureCoverage,
+} from "../../components/schema/timeline/captureCoverage";
 import { producerMemoryEvents } from "../../components/schema/timeline/eventMemory";
 import {
   analyzeSession,
+  analyzeSessionSources,
+  normalizedActivitiesAcrossSources,
   normalizedSessionActivities,
   passageKind,
   producerWorkKindForActivity,
@@ -128,6 +135,23 @@ export type ReportTrack = {
   shapedDeviceCount: number;
   /** True when this track's own volume, pan, or send moved. */
   mixerTouched: boolean;
+  /**
+   * Whether Recall ever had this track's controls in view: `true` watched,
+   * `false` never selected in Live, `null` when the capture cannot say.
+   *
+   * A track with no captured changes means nothing on its own. This is what
+   * separates "you did not touch it" from "I was not looking at it".
+   */
+  watched: boolean | null;
+  /**
+   * How many tracks in the set share this name, when the work could not be
+   * pinned to one of them. `null` when the binding was unambiguous.
+   *
+   * Ableton auto-names a track after its first device, so duplicate names are
+   * ordinary rather than exotic. Where an activity arrives without a track id,
+   * this row holds the work and admits it cannot say which track it belongs to.
+   */
+  ambiguousName: number | null;
   workLabel: string;
   workKinds: ProducerWorkKind[];
   workCounts: ProducerWorkCounts;
@@ -189,8 +213,20 @@ export type SessionReport = {
   evidence: Record<string, ReportEvidence>;
 };
 
+/** Icon names the report may ask for. Kept in step with `ReportGlyph`. */
+export type ReportMetricIcon = "time" | "actions" | "decisions" | "tracks" | "moment" | "trend";
+
 export type ReportComparisonMetric = {
   label: string;
+  /**
+   * Named here, beside the label, so the two cannot drift.
+   *
+   * The screen used to pick this by regex-matching the label. The labels were
+   * renamed and the patterns were not, so four of six tiles silently fell
+   * through to a generic trend arrow and the clock became unreachable. One
+   * line now sets both.
+   */
+  icon: ReportMetricIcon;
   current: number;
   baseline: number;
   delta: number;
@@ -368,17 +404,23 @@ function evidenceOf(activity: NormalizedSessionActivity, trackNameOf: TrackNameR
 function decisionsOf(
   activities: NormalizedSessionActivity[],
   trackNameOf: TrackNameResolver,
+  bind: (activity: NormalizedSessionActivity) => TrackBinding,
+  duplicatedDevices: Map<string, Set<string>>,
 ): ReportDecision[] {
   const decisions: ReportDecision[] = [];
   const controlByKey = new Map<string, ReportDecision & { firstBefore: string; lastAfter: string }>();
 
   for (const activity of activities) {
     const evidence = evidenceId(activity);
-    const identity = trackIdentity(activity.trackId, activity.trackName) ?? "project";
+    // The SAME binding the track rollup uses. Deciding attribution here
+    // independently is what let two same-named tracks' faders merge into one
+    // decision with a spliced before → after that neither fader ever showed.
+    const binding = bind(activity);
+    const identity = binding.key ?? "project";
     const where = whereOf(activity, trackNameOf);
     if (activity.kind === "move") {
       const subject = controlLabel(activity.deviceName, activity.parameterName);
-      const key = `control:${identity}:${subject.toLocaleLowerCase()}`;
+      const key = moveControlKey(activity, binding, duplicatedDevices, identity);
       const before = valueOf(activity.change, "before");
       const after = valueOf(activity.change, "after");
       const current = controlByKey.get(key);
@@ -471,6 +513,50 @@ function controlLabel(deviceName: string | null, parameterName: string | null): 
   return [deviceName, parameterName ?? "Unlabelled control"].filter(Boolean).join(" · ");
 }
 
+type MoveActivity = Extract<NormalizedSessionActivity, { kind: "move" }>;
+
+function moveControlKey(
+  activity: MoveActivity,
+  binding: TrackBinding,
+  duplicatedDevices: Map<string, Set<string>>,
+  identity = binding.key ?? "project",
+): string {
+  const parameterId = activity.change.parameter_id?.trim();
+  if (parameterId) return `control:${identity}:parameter:${parameterId}`;
+
+  const deviceId = activity.change.device_id?.trim();
+  const parameterName = activity.parameterName?.trim().toLocaleLowerCase() ?? "unlabelled";
+  if (deviceId) return `control:${identity}:device:${deviceId}:parameter:${parameterName}`;
+
+  // Historical events did not carry device ids. When the schema proves a name
+  // repeats, keeping each old row separate is safer than inventing a combined
+  // before -> after outcome that neither EQ Eight actually held.
+  const deviceName = activity.deviceName?.trim().toLocaleLowerCase();
+  const duplicated = Boolean(
+    binding.schemaTrack && deviceName && duplicatedDevices.get(binding.schemaTrack.id)?.has(deviceName),
+  );
+  return duplicated
+    ? `control:${identity}:legacy:${activity.id}`
+    : `control:${identity}:label:${controlLabel(activity.deviceName, activity.parameterName).toLocaleLowerCase()}`;
+}
+
+function moveDeviceKey(
+  activity: MoveActivity,
+  binding: TrackBinding,
+  duplicatedDevices: Map<string, Set<string>>,
+): string | null {
+  if (isMixerDevice(activity.deviceName)) return null;
+  const deviceId = activity.change.device_id?.trim();
+  if (deviceId) return `device:${deviceId}`;
+
+  const deviceName = activity.deviceName?.trim().toLocaleLowerCase();
+  if (!deviceName) return null;
+  const duplicated = Boolean(
+    binding.schemaTrack && duplicatedDevices.get(binding.schemaTrack.id)?.has(deviceName),
+  );
+  return duplicated ? `legacy-device:${binding.key ?? "project"}:${activity.id}` : `label:${deviceName}`;
+}
+
 function schemaTrackLookups(schema: ProjectSchema | null): {
   byId: Map<string, TrackObj>;
   byName: Map<string, TrackObj[]>;
@@ -486,8 +572,19 @@ function schemaTrackLookups(schema: ProjectSchema | null): {
   return { byId, byName };
 }
 
-function workLabel(workCounts: ProducerWorkCounts): string {
-  if (Object.values(workCounts).every((count) => count === 0)) return "Untouched this version";
+/**
+ * What kind of work landed on a track, or why nothing did.
+ *
+ * An empty track has three different meanings and they must not share a label.
+ * "Untouched this version" is an assertion about the producer; Recall can only
+ * make it for a track it actually had in view.
+ */
+function workLabel(workCounts: ProducerWorkCounts, watched: boolean | null): string {
+  if (Object.values(workCounts).every((count) => count === 0)) {
+    if (watched === false) return "Not watched";
+    if (watched === null) return "No changes recorded";
+    return "Untouched this version";
+  }
   const dominant = dominantProducerWork(workCounts);
   if (dominant.kind !== "mixed") return producerWorkDefinition(dominant.kind).label;
   return dominant.observed
@@ -496,27 +593,118 @@ function workLabel(workCounts: ProducerWorkCounts): string {
     .join(" + ");
 }
 
+/** Which track a captured row belongs to, and how sure the report is. */
+type TrackBinding = {
+  /**
+   * The identity everything groups by. Two rows sharing a key are the same
+   * track; two rows that merely *might* be never share one.
+   */
+  key: string | null;
+  name: string | null;
+  schemaTrack: TrackObj | null;
+  /** Tracks sharing this name when the row could not be pinned to one. */
+  ambiguousCount: number | null;
+};
+
+/**
+ * The one place a captured row is bound to a track.
+ *
+ * Every consumer must use this. When the track rollup and the decision grouping
+ * each decided attribution for themselves, they disagreed: the rollup refused
+ * to guess between two same-named tracks while `decisionsOf` merged them by
+ * name — and merging spliced two different faders into one invented outcome
+ * ("10% → 90%" when one went 10→20 and the other 80→90). A value that never
+ * existed, stated precisely, on the page whose whole claim is exactness.
+ *
+ * An id is proof. A name is a guess, and Ableton makes it a bad one: a new
+ * track is auto-named after the first device dropped on it, so two tracks
+ * called "Serum 2" is ordinary rather than exotic.
+ */
+function trackBinder(schema: ProjectSchema | null, trackNameOf: TrackNameResolver) {
+  const { byId, byName } = schemaTrackLookups(schema);
+
+  return function bind(activity: NormalizedSessionActivity): TrackBinding {
+    const resolvedName = trackNameOf(activity);
+    const namedMatches = resolvedName ? byName.get(resolvedName.toLocaleLowerCase()) ?? [] : [];
+    // Only detectable with a schema to compare against. Without one there is no
+    // evidence of duplicates, and grouping by name stays the best available
+    // reading rather than a guess.
+    const ambiguous = !activity.trackId && namedMatches.length > 1;
+    const schemaTrack = ambiguous
+      ? null
+      : (activity.trackId ? byId.get(activity.trackId) : undefined) ?? namedMatches[0] ?? null;
+
+    // An ambiguous row keys on its own activity id, so no two of them ever
+    // merge. Grouping them would fabricate a combined outcome; keeping them
+    // apart at worst under-groups one track's repeated moves, and every value
+    // shown stays one the producer actually saw.
+    const key = ambiguous
+      ? `ambiguous:${resolvedName?.toLocaleLowerCase()}:${activity.id}`
+      : schemaTrack
+        ? `schema:${schemaTrack.id}`
+        : trackIdentity(activity.trackId, resolvedName);
+
+    return {
+      key,
+      name: schemaTrack?.name ?? resolvedName,
+      schemaTrack,
+      ambiguousCount: ambiguous ? namedMatches.length : null,
+    };
+  };
+}
+
+/**
+ * Device names that appear more than once on the same track.
+ *
+ * A chain of EQ Eight → Glue Compressor → EQ Eight is completely ordinary.
+ * New captures identify each device by its Live pointer; this lookup exists so
+ * legacy captures without that pointer still avoid merging a known duplicate.
+ *
+ * Grouping those into one decision spliced them: EQ one moved 10% → 20%, EQ
+ * three moved 80% → 90%, and the report stated a single confident "10% → 90%"
+ * that neither knob ever showed. The schema is the only place that knows the
+ * name is duplicated, so it is where the report learns not to merge.
+ */
+function duplicatedDeviceNames(schema: ProjectSchema | null): Map<string, Set<string>> {
+  const byTrack = new Map<string, Set<string>>();
+  for (const track of schema?.tracks ?? []) {
+    const seen = new Set<string>();
+    const duplicated = new Set<string>();
+    for (const device of track.devices) {
+      const name = device.name?.trim().toLocaleLowerCase();
+      if (!name) continue;
+      if (seen.has(name)) duplicated.add(name);
+      seen.add(name);
+    }
+    if (duplicated.size > 0) byTrack.set(track.id, duplicated);
+  }
+  return byTrack;
+}
+
 function tracksOf(
   schema: ProjectSchema | null,
   activities: NormalizedSessionActivity[],
-  trackNameOf: TrackNameResolver,
+  coverage: CaptureCoverage,
+  bind: (activity: NormalizedSessionActivity) => TrackBinding,
+  duplicatedDevices: Map<string, Set<string>>,
 ): ReportTrack[] {
-  const { byId, byName } = schemaTrackLookups(schema);
   const tracks = new Map<string, MutableTrack>();
 
   function ensure(activity: NormalizedSessionActivity): MutableTrack | null {
-    const resolvedName = trackNameOf(activity);
-    const schemaTrack =
-      (activity.trackId ? byId.get(activity.trackId) : undefined) ??
-      (resolvedName ? byName.get(resolvedName.toLocaleLowerCase())?.[0] : undefined);
-    const key = schemaTrack
-      ? `schema:${schemaTrack.id}`
-      : trackIdentity(activity.trackId, resolvedName);
+    const binding = bind(activity);
+    const resolvedName = binding.name;
+    const ambiguous = binding.ambiguousCount !== null;
+    const schemaTrack = binding.schemaTrack ?? undefined;
+    // The rollup groups every ambiguous row of one name into a single "cannot
+    // tell which" row — the decision layer keeps them apart, but the track
+    // table needs one place to show the work and say it is unattributable.
+    const key = ambiguous ? `ambiguous:${resolvedName?.toLocaleLowerCase()}` : binding.key;
     if (!key) return null;
     const current = tracks.get(key);
     if (current) return current;
     const created: MutableTrack = {
       id: key,
+      ambiguousName: binding.ambiguousCount,
       name: clean(schemaTrack?.name ?? resolvedName, "Untitled track"),
       number: schemaTrack?.number ?? null,
       type: schemaTrack?.type ?? null,
@@ -531,6 +719,11 @@ function tracksOf(
       chainDeviceCount: schemaTrack?.devices.length ?? 0,
       shapedDeviceCount: 0,
       mixerTouched: false,
+      // If the name is not trustworthy enough to identify a track, it is not
+      // trustworthy enough to claim coverage for one either. An ambiguous row
+      // cannot say whether Recall was watching, and must not guess in either
+      // direction.
+      watched: ambiguous ? null : trackWasWatched(coverage, schemaTrack?.name ?? resolvedName),
       workLabel: "Untouched this version",
       workKinds: [],
       lastTouchedMs: null,
@@ -583,10 +776,14 @@ function tracksOf(
     if (activity.kind === "move") {
       track.actionCount += 1;
       track.moveCount += 1;
-      track.controls.add(`${activity.deviceName ?? ""}:${activity.parameterName ?? ""}`);
+      const binding = bind(activity);
+      track.controls.add(moveControlKey(activity, binding, duplicatedDevices));
       // The mixer strip is counted as mix work, never as a device in the chain.
       if (isMixerDevice(activity.deviceName)) track.mixerTouched = true;
-      else if (activity.deviceName) track.devices.add(activity.deviceName);
+      else {
+        const deviceKey = moveDeviceKey(activity, binding, duplicatedDevices);
+        if (deviceKey) track.devices.add(deviceKey);
+      }
     } else if (activity.kind === "midi") {
       track.actionCount += 1;
       track.midiCount += 1;
@@ -610,7 +807,7 @@ function tracksOf(
       // were touched, because the chain happened to hold three.
       shapedDeviceCount: devices.size,
       chainDeviceCount: Math.max(track.chainDeviceCount, devices.size),
-      workLabel: workLabel(track.workCounts),
+      workLabel: workLabel(track.workCounts, track.watched),
       workKinds: dominantProducerWork(track.workCounts).observed,
     }))
     .sort((a, b) => {
@@ -744,13 +941,25 @@ function joinPassages(previous: SessionPassage, next: SessionPassage): SessionPa
   const primaryWorkCounts = mergeCounts(previous.primaryWorkCounts, next.primaryWorkCounts);
   const { kind, label } = passageKind(primaryWorkCounts, workCounts);
   const primaryTrackCounts = mergeTrackCounts(previous.primaryTrackCounts, next.primaryTrackCounts);
+  // Every field named explicitly, no spread.
+  //
+  // `{ ...previous }` meant a field added to SessionPassage later would silently
+  // inherit the FIRST passage's value instead of being combined — a chapter
+  // under-reporting whatever the new field counts, with no type error and no
+  // failing test. Listing them all makes adding a field a compile error here,
+  // which forces a deliberate decision about how it merges.
   return {
-    ...previous,
+    id: previous.id,
+    order: previous.order,
+    pathPosition: previous.pathPosition,
     kind,
     label,
     workCounts,
     primaryWorkCounts,
     workKinds: dominantProducerWork(workCounts).observed,
+    startMs: previous.startMs,
+    gapBeforeMs: previous.gapBeforeMs,
+    firstAction: previous.firstAction,
     endMs: Math.max(previous.endMs, next.endMs),
     actionCount: previous.actionCount + next.actionCount,
     controlMoveCount: previous.controlMoveCount + next.controlMoveCount,
@@ -800,11 +1009,38 @@ export function reportChapters(passages: SessionPassage[]): SessionPassage[] {
   }));
 }
 
+/**
+ * A stretch of work shorter than this still took real time. One fader move is
+ * not instantaneous; the producer listened, reached, and decided.
+ */
+const CHAPTER_MINIMUM_MS = 60 * 1000;
+
+/**
+ * How long the producer actually had their hands on the work.
+ *
+ * Derived from the chapters the page itself lists, which is the whole point.
+ * The previous figure came from `activeDurationMs`, whose ten-minute idle
+ * tolerance credited a nine-minute break as working time — so Step 1 read
+ * "1 hr" while the six stretches on Step 2 totalled 28 minutes. Two numbers,
+ * one page, both claiming to measure the same thing.
+ *
+ * Summing the chapters means the headline is the stretches rendered twice
+ * rather than a second opinion about them. `reportInvariants` enforces it.
+ */
+export function chapterHandsOnMs(chapters: SessionPassage[]): number {
+  return chapters.reduce(
+    (total, chapter) => total + Math.max(CHAPTER_MINIMUM_MS, chapter.endMs - chapter.startMs),
+    0,
+  );
+}
+
 function ledgerOf(
   activities: NormalizedSessionActivity[],
   decisions: ReportDecision[],
   tracks: ReportTrack[],
   schema: ProjectSchema | null,
+  bind: (activity: NormalizedSessionActivity) => TrackBinding,
+  duplicatedDevices: Map<string, Set<string>>,
 ): ReportLedger {
   const moves = activities.filter(
     (activity): activity is Extract<NormalizedSessionActivity, { kind: "move" }> => activity.kind === "move",
@@ -824,13 +1060,15 @@ function ledgerOf(
     momentCount,
     decisionCount: decisions.length,
     groupedCount: capturedCount - decisions.length,
+    // Bound the same way as decisions and the track table, so "controls moved"
+    // cannot count two same-named tracks' faders as one.
     controlCount: new Set(
-      moves.map((move) => `${move.trackId ?? move.trackName ?? ""}${controlLabel(move.deviceName, move.parameterName)}`),
+      moves.map((move) => moveControlKey(move, bind(move), duplicatedDevices)),
     ).size,
     deviceCount: new Set(
       moves
-        .map((move) => move.deviceName)
-        .filter((name): name is string => Boolean(name) && !isMixerDevice(name)),
+        .map((move) => moveDeviceKey(move, bind(move), duplicatedDevices))
+        .filter((key): key is string => Boolean(key)),
     ).size,
     mixerTouched: moves.some((move) => isMixerDevice(move.deviceName)),
     tracksTouched: tracks.filter((track) => track.sourceEventCount > 0).length,
@@ -893,30 +1131,86 @@ export function reportInvariants(report: SessionReport): string[] {
     problems.push(`${overShaped.name} reports ${overShaped.shapedDeviceCount} devices shaped but only ${overShaped.chainDeviceCount} in its chain.`);
   }
 
+  // The headline time must BE the stretches on Step 2, not a second opinion
+  // about them. This is the invariant that keeps 2A from quietly regressing.
+  const chapterTotal = chapterHandsOnMs(report.chapters);
+  if (report.handsOnMs !== chapterTotal) {
+    problems.push(
+      `Hands-on time (${report.handsOnMs}ms) does not equal the ${report.chapters.length} stretches shown (${chapterTotal}ms).`,
+    );
+  }
+
+  // A track cannot have captured work on it if Recall never had it in view.
+  const impossible = report.tracks.find((track) => track.watched === false && track.sourceEventCount > 0);
+  if (impossible) {
+    problems.push(`${impossible.name} has ${impossible.sourceEventCount} captured changes but is marked as never watched.`);
+  }
+
+  // An ambiguous row must never claim a position in the set — that is the
+  // guess it exists to avoid making.
+  const boundAmbiguity = report.tracks.find((track) => track.ambiguousName !== null && track.number !== null);
+  if (boundAmbiguity) {
+    problems.push(`${boundAmbiguity.name} is marked ambiguous but still claims track number ${boundAmbiguity.number}.`);
+  }
+
   return problems;
 }
 
-function trustOf(input: SessionReportInput): ReportTrust {
-  const coverage = captureCoverage(input.session.events);
+function trackWord(count: number): string {
+  return count === 1 ? "track" : "tracks";
+}
+
+/**
+ * How far the page's claims can be trusted, stated before any of them.
+ *
+ * The old "clear" branch said *"Every control on the tracks you touched stayed
+ * in view"* on the strength of one `focus_changed` with no truncation. The
+ * bridge only watches the selected track's devices, so a set where four of
+ * eight tracks were never selected produced the same confident green banner as
+ * one where every track was watched. Coverage is now stated as a count, and
+ * anything less than the whole set reads as partial.
+ */
+function trustOf(
+  input: { session: SavedSession; coverage: CaptureCoverage; scanned: boolean },
+  tracks: ReportTrack[],
+): ReportTrust {
+  const { coverage } = input;
   const coverageDetail = describeCaptureCoverage(coverage);
-  if (coverage.partial && coverageDetail) {
-    return { level: "partial", label: "Some controls were out of view", detail: coverageDetail };
-  }
-  if (
-    input.session.take_origin === "scanned" ||
-    input.session.events.length === 0 ||
-    !input.session.events.some((event) => event.type === "focus_changed")
-  ) {
+
+  if (input.scanned || input.session.events.length === 0 || !coverage.observed) {
     return {
       level: "unknown",
       label: "Recall was not watching",
       detail: "This version was read from the .als file after the fact, so what follows is the set as saved — not a record of the work that made it.",
     };
   }
+
+  const unwatched = tracks.filter((track) => track.watched === false);
+  const watchedCount = tracks.length - unwatched.length;
+  const names = unwatched.slice(0, 3).map((track) => track.name);
+  const rest = unwatched.length - names.length;
+  const unwatchedLabel = rest > 0 ? `${names.join(", ")} and ${rest} more` : names.join(" and ");
+
+  if (unwatched.length > 0) {
+    const truncationNote = coverage.partial && coverageDetail ? ` ${coverageDetail}` : "";
+    return {
+      level: "partial",
+      label: `${watchedCount} of ${tracks.length} ${trackWord(tracks.length)} were in view`,
+      // Named, not just counted: the producer needs to know which tracks to
+      // discount, and the answer is actionable — select the track in Live and
+      // Recall starts watching it.
+      detail: `Recall only watches the track selected in Live, so nothing that happened on ${unwatchedLabel} was recorded. Volume, pan, and sends are watched on every track.${truncationNote}`,
+    };
+  }
+
+  if (coverage.partial && coverageDetail) {
+    return { level: "partial", label: "Some controls were out of view", detail: coverageDetail };
+  }
+
   return {
     level: "clear",
-    label: "Recall was watching throughout",
-    detail: "Every control on the tracks you touched stayed in view. Nothing below was reconstructed after the fact.",
+    label: `All ${tracks.length} ${trackWord(tracks.length)} were in view`,
+    detail: "Every track in this set was selected at some point, so Recall had its controls in view. Nothing below was reconstructed after the fact.",
   };
 }
 
@@ -980,40 +1274,119 @@ function lessonsOf(
   return lessons;
 }
 
-export function buildSessionReport(input: SessionReportInput): SessionReport {
-  const memoryEvents = producerMemoryEvents(input.session.events);
-  const analysisInput = {
+/**
+ * One version's report, read across every sitting captured against its `.als`.
+ *
+ * A capture session ends for reasons that have nothing to do with the music —
+ * closing the app, a four-hour break, opening another set — so a single `.als`
+ * accumulates several. Reading them separately split one version's history into
+ * unrelated-looking fragments (see `projectVersions.ts`). Sources stay
+ * separate through the analysis so each sitting's opening Live snapshot is
+ * judged against its own start, then merge into one span.
+ *
+ * `buildSessionReport` is this with a single input, kept as the narrow entry
+ * point for callers that genuinely mean one capture.
+ */
+export function buildVersionReport(inputs: SessionReportInput[]): SessionReport {
+  if (inputs.length === 0) throw new Error("A version report needs at least one capture");
+  if (inputs.length === 1) return buildSessionReport(inputs[0]!);
+
+  const ordered = [...inputs].sort((a, b) => a.session.started_at_ms - b.session.started_at_ms);
+  const first = ordered[0]!;
+  const last = ordered[ordered.length - 1]!;
+
+  const analysisInputs = ordered.map((input) => ({
     changes: input.changes,
     noteEdits: input.noteEdits,
     clipEvents: input.clipEvents,
-    memoryEvents,
+    memoryEvents: producerMemoryEvents(input.session.events),
     moments: input.moments,
     sessionStartedAtMs: input.session.started_at_ms,
+    sourceId: input.session.id,
+    sourceLabel: input.session.display_name ?? input.session.name,
+  }));
+
+  const analysis = analyzeSessionSources(analysisInputs);
+  const activities = normalizedActivitiesAcrossSources(analysisInputs);
+
+  // The version is represented by a synthetic session spanning every sitting.
+  // The schema comes from the LAST capture that has one: a version's structure
+  // is what it looks like now, not what it looked like the first evening.
+  const schema = [...ordered].reverse().find((input) => input.schema)?.schema ?? null;
+  const mergedSession: SavedSession = {
+    ...last.session,
+    started_at_ms: first.session.started_at_ms,
+    // Live if any sitting is still open.
+    ended_at_ms: ordered.some((input) => input.session.ended_at_ms === null)
+      ? null
+      : Math.max(...ordered.map((input) => input.session.ended_at_ms ?? 0)),
+    event_count: ordered.reduce((total, input) => total + input.session.event_count, 0),
+    creative_event_count: ordered.reduce((total, input) => total + input.session.creative_event_count, 0),
+    heartbeat_count: ordered.reduce((total, input) => total + input.session.heartbeat_count, 0),
+    events: ordered.flatMap((input) => input.session.events),
   };
-  const analysis = analyzeSession(analysisInput);
-  const activities = normalizedSessionActivities(analysisInput);
-  const trackNameOf = trackNameResolver(input.schema);
+
+  return assembleReport({
+    session: mergedSession,
+    schema,
+    analysis,
+    activities,
+    // Coverage is the union: a track watched in any sitting was watched for
+    // this version. Reading only the last capture would report every earlier
+    // evening's tracks as never seen.
+    coverage: captureCoverage(mergedSession.events),
+    scanned: ordered.every((input) => input.session.take_origin === "scanned"),
+  });
+}
+
+/**
+ * Everything downstream of the analysis, shared by the one-capture and
+ * many-capture paths.
+ *
+ * Split out so a version report and a session report cannot drift: the only
+ * difference between them is how the activities and coverage were gathered, and
+ * every number after that point is derived the same way.
+ */
+function assembleReport(parts: {
+  session: SavedSession;
+  schema: ProjectSchema | null;
+  analysis: SessionAnalysis;
+  activities: NormalizedSessionActivity[];
+  coverage: CaptureCoverage;
+  scanned: boolean;
+}): SessionReport {
+  const { session, schema, analysis, activities, coverage, scanned } = parts;
+  const trackNameOf = trackNameResolver(schema);
+  // Built once and shared by every consumer. When the track table, the decision
+  // grouping, and the ledger each resolved attribution for themselves, they
+  // reached different answers about the same row.
+  const bind = trackBinder(schema, trackNameOf);
   const evidenceEntries = activities.map((activity) => evidenceOf(activity, trackNameOf));
   const evidence = Object.fromEntries(evidenceEntries.map((item) => [item.id, item]));
-  const decisions = decisionsOf(activities, trackNameOf);
-  const tracks = tracksOf(input.schema, activities, trackNameOf);
+  const duplicatedDevices = duplicatedDeviceNames(schema);
+  const decisions = decisionsOf(activities, trackNameOf, bind, duplicatedDevices);
+  const tracks = tracksOf(schema, activities, coverage, bind, duplicatedDevices);
+  const chapters = reportChapters(analysis.passages);
   const stamps = activities.map((activity) => activity.atMs);
   const activityStartMs = stamps.length > 0 ? Math.min(...stamps) : null;
   const activityEndMs = stamps.length > 0 ? Math.max(...stamps) : null;
-  const handsOnMs = activeDurationMs(stamps, input.session.ended_at_ms === null ? Date.now() : null);
-  const wallClockMs = Math.max(0, (input.session.ended_at_ms ?? activityEndMs ?? Date.now()) - input.session.started_at_ms);
 
   return {
-    session: input.session,
-    schema: input.schema,
+    session,
+    schema,
     analysis,
-    trust: trustOf(input),
-    handsOnMs,
-    wallClockMs,
+    trust: trustOf({ session, coverage, scanned }, tracks),
+    handsOnMs: chapterHandsOnMs(chapters),
+    // The report labels this as the activity window, so derive it from the
+    // first and last actual rows. A version may stay open across days between
+    // sittings; capture start and stop would make that idle gap look like work.
+    wallClockMs: activityStartMs !== null && activityEndMs !== null
+      ? Math.max(0, activityEndMs - activityStartMs)
+      : 0,
     activityStartMs,
     activityEndMs,
-    chapters: reportChapters(analysis.passages),
-    ledger: ledgerOf(activities, decisions, tracks, input.schema),
+    chapters,
+    ledger: ledgerOf(activities, decisions, tracks, schema, bind, duplicatedDevices),
     summaryText: analysis.pathSummary ?? "Recall has not seen enough work yet to describe this version.",
     tracks,
     decisions,
@@ -1024,16 +1397,38 @@ export function buildSessionReport(input: SessionReportInput): SessionReport {
   };
 }
 
+export function buildSessionReport(input: SessionReportInput): SessionReport {
+  const analysisInput = {
+    changes: input.changes,
+    noteEdits: input.noteEdits,
+    clipEvents: input.clipEvents,
+    memoryEvents: producerMemoryEvents(input.session.events),
+    moments: input.moments,
+    sessionStartedAtMs: input.session.started_at_ms,
+  };
+
+  return assembleReport({
+    session: input.session,
+    schema: input.schema,
+    analysis: analyzeSession(analysisInput),
+    activities: normalizedSessionActivities(analysisInput),
+    coverage: captureCoverage(input.session.events),
+    scanned: input.session.take_origin === "scanned",
+  });
+}
+
 export function compareSessionReports(current: SessionReport, baseline: SessionReport): ReportComparison {
   const currentKeys = new Set(current.decisions.map((decision) => decision.key));
   const baselineKeys = new Set(baseline.decisions.map((decision) => decision.key));
   const metric = (
     label: string,
+    icon: ReportMetricIcon,
     currentValue: number,
     baselineValue: number,
     format: ReportComparisonMetric["format"] = "number",
   ): ReportComparisonMetric => ({
     label,
+    icon,
     current: currentValue,
     baseline: baselineValue,
     delta: currentValue - baselineValue,
@@ -1042,12 +1437,12 @@ export function compareSessionReports(current: SessionReport, baseline: SessionR
 
   return {
     metrics: [
-      metric("Time at the desk", current.handsOnMs, baseline.handsOnMs, "duration"),
-      metric("Changes captured", current.ledger.capturedCount, baseline.ledger.capturedCount),
-      metric("Decisions", current.ledger.decisionCount, baseline.ledger.decisionCount),
-      metric("Tracks touched", current.ledger.tracksTouched, baseline.ledger.tracksTouched),
-      metric("MIDI edits", current.analysis.midiEditCount, baseline.analysis.midiEditCount),
-      metric("Moments saved", current.ledger.momentCount, baseline.ledger.momentCount),
+      metric("Time at the desk", "time", current.handsOnMs, baseline.handsOnMs, "duration"),
+      metric("Changes captured", "actions", current.ledger.capturedCount, baseline.ledger.capturedCount),
+      metric("Decisions", "decisions", current.ledger.decisionCount, baseline.ledger.decisionCount),
+      metric("Tracks touched", "tracks", current.ledger.tracksTouched, baseline.ledger.tracksTouched),
+      metric("MIDI edits", "actions", current.analysis.midiEditCount, baseline.analysis.midiEditCount),
+      metric("Moments saved", "moment", current.ledger.momentCount, baseline.ledger.momentCount),
     ],
     structural: current.schema && baseline.schema ? compareSchemas(baseline.schema, current.schema) : null,
     onlyCurrent: current.decisions.filter((decision) => !baselineKeys.has(decision.key)),

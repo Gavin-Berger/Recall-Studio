@@ -655,15 +655,36 @@ export function SchemaTimeline({
     let unlisten: (() => void) | null = null;
     let refreshTimer: number | null = null;
     let refreshSessionEventLog = false;
+    let refreshRunning = false;
+    let refreshAgain = false;
+
+    const runRefresh = () => {
+      if (refreshRunning) {
+        refreshAgain = true;
+        return;
+      }
+
+      const includeSessionEvents = refreshSessionEventLog;
+      refreshSessionEventLog = false;
+      refreshRunning = true;
+      void load(true, true, includeSessionEvents).finally(() => {
+        refreshRunning = false;
+        if (disposed || !refreshAgain) return;
+
+        refreshAgain = false;
+        refreshTimer = window.setTimeout(() => {
+          refreshTimer = null;
+          runRefresh();
+        }, LIVE_REFRESH_DEBOUNCE_MS);
+      });
+    };
 
     const scheduleRefresh = (includeSessionEventLog: boolean) => {
       refreshSessionEventLog = refreshSessionEventLog || includeSessionEventLog;
       if (refreshTimer !== null) window.clearTimeout(refreshTimer);
       refreshTimer = window.setTimeout(() => {
         refreshTimer = null;
-        const includeSessionEvents = refreshSessionEventLog;
-        refreshSessionEventLog = false;
-        void load(true, true, includeSessionEvents);
+        runRefresh();
       }, LIVE_REFRESH_DEBOUNCE_MS);
     };
 
@@ -706,7 +727,7 @@ export function SchemaTimeline({
     // The interval is slow (LIVE_SAFETY_POLL_MS) because it exists to bound how
     // long a miss can last, not to drive normal updates. Pushes still do that.
     const safetyPoll = window.setInterval(() => {
-      void load(true, true, false);
+      scheduleRefresh(false);
     }, LIVE_SAFETY_POLL_MS);
 
     // Refresh the moment the window comes back. Suspension is exactly when
@@ -714,7 +735,7 @@ export function SchemaTimeline({
     // that we were gone — it makes recovery feel instant rather than making the
     // producer wait out the poll interval.
     const onWake = () => {
-      if (document.visibilityState === "visible") void load(true, true, true);
+      if (document.visibilityState === "visible") scheduleRefresh(true);
     };
     window.addEventListener("focus", onWake);
     document.addEventListener("visibilitychange", onWake);

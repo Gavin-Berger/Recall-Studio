@@ -462,6 +462,23 @@ export function normalizedSessionActivities(input: SessionAnalysisInput): Normal
   return canonicalActivities(input).activities;
 }
 
+/**
+ * The same normalization across several takes, ordered as one stream.
+ *
+ * Sources stay separate through `canonicalActivities` so each take's opening
+ * snapshot is judged against its own start — folding them into one input first
+ * would let take two's routing snapshot read as new work in take one. The
+ * companion to `analyzeSessionSources`, for callers that need the rows rather
+ * than the analysis.
+ */
+export function normalizedActivitiesAcrossSources(
+  inputs: SessionAnalysisSourceInput[],
+): NormalizedSessionActivity[] {
+  return inputs
+    .flatMap((input) => canonicalActivities(input).activities)
+    .sort(compareActivities);
+}
+
 function clusterActivities(activities: NormalizedSessionActivity[]): NormalizedSessionActivity[][] {
   if (activities.length === 0) return [];
   const clusters: NormalizedSessionActivity[][] = [];

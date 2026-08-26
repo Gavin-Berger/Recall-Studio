@@ -12,7 +12,9 @@
     "deploy:bridge": "node scripts/deploy-bridge.mjs",
     "deploy:remote": "node scripts/deploy-remote-script.mjs",
     "deploy:lom-explorer": "node scripts/deploy-lom-explorer.mjs",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "test:e2e": "playwright test",
+    "test:e2e:ui": "playwright test --ui"
   },
   "dependencies": {
     "@fontsource/ibm-plex-mono": "^5.2.6",
@@ -34,11 +36,15 @@
   "devDependencies": {
     "@playwright/test": "^1.60.0",
     "@tauri-apps/cli": "^2",
+    "@testing-library/jest-dom": "^7.0.1",
+    "@testing-library/react": "^16.3.2",
+    "@testing-library/user-event": "^14.6.5",
     "@types/d3-shape": "^3.1.8",
     "@types/react": "^19.1.8",
     "@types/react-dom": "^19.1.6",
     "@types/three": "^0.184.1",
     "@vitejs/plugin-react": "^4.6.0",
+    "jsdom": "^29.1.1",
     "typescript": "~5.8.3",
     "vite": "^7.0.4",
     "vitest": "^4.1.8"

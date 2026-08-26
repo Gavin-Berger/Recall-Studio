@@ -91,6 +91,9 @@ export type ParameterChange = {
   // tracks) but never this — prefer it for grouping/identity. Null for changes
   // captured before the bridge sent it.
   track_id: string | null;
+  // Live's stable per-device pointer. This is the identity that keeps two
+  // identically named devices on the same track from being merged.
+  device_id?: string | null;
   device_name: string | null;
   parameter_name: string | null;
   before_value: number | null;

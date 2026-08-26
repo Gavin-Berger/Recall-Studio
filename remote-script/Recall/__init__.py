@@ -541,7 +541,10 @@ ROUTING_PROPERTIES = (
 # MIDI note onsets, selected audio-clip warp state, song context, and locators.
 # 0.7.1 keeps Live's automatic numbered-track adjustments out of producer
 # memory while still refreshing the current lane labels through the snapshot.
-SCRIPT_VERSION = "0.7.1"
+# 0.7.2 ignores transient Python identities for routing-channel objects. A
+# listener refresh must not turn an unchanged set-wide routing snapshot into
+# dozens of claimed producer actions.
+SCRIPT_VERSION = "0.7.3"
 
 
 class Recall(ControlSurface):
@@ -1418,6 +1421,12 @@ class Recall(ControlSurface):
                 pass
         try:
             rendered = str(value).strip()
+            # Some Live builds expose RoutingChannel objects without a readable
+            # display_name. Their default string includes a Python memory
+            # address, which changes across refreshes even when the route does
+            # not. Treat it as unknown rather than inventing a routing change.
+            if rendered.startswith("<") and " object at 0x" in rendered:
+                return None
             return rendered if rendered and rendered != "0" else None
         except Exception:  # noqa: BLE001
             return None
@@ -1771,6 +1780,7 @@ class Recall(ControlSurface):
                     parameter,
                     "send_changed",
                     "Mixer",
+                    None,
                     "Send → {}".format(destination),
                 )
 
@@ -1781,7 +1791,7 @@ class Recall(ControlSurface):
             parameter = getattr(mixer, attribute)
         except Exception:  # noqa: BLE001 - e.g. a special track without pan
             return
-        self._watch_value_parameter(track, parameter, event_type, "Mixer", label)
+        self._watch_value_parameter(track, parameter, event_type, "Mixer", None, label)
 
     def _watch_mixer_property(self, track, mixer, name, event_type):
         key = (id(mixer), name)
@@ -1815,14 +1825,16 @@ class Recall(ControlSurface):
 
         return _on_property
 
-    def _watch_value_parameter(self, track, parameter, event_type, device_name, parameter_name):
+    def _watch_value_parameter(
+        self, track, parameter, event_type, device_name, device_id, parameter_name
+    ):
         if parameter is None:
             return
         key = id(parameter)
         try:
             self._last_values[key] = parameter.value
             listener = self._make_value_listener(
-                track, parameter, event_type, device_name, parameter_name
+                track, parameter, event_type, device_name, device_id, parameter_name
             )
             parameter.add_value_listener(listener)
             self._mixer_parameter_listeners.append((parameter, listener))
@@ -1830,6 +1842,7 @@ class Recall(ControlSurface):
                 track,
                 parameter,
                 device_name,
+                device_id,
                 parameter_name,
                 self._mixer_automation_listeners,
             )
@@ -1851,7 +1864,7 @@ class Recall(ControlSurface):
             return None
 
     def _watch_automation_state(
-        self, track, parameter, device_name, parameter_name, listener_store
+        self, track, parameter, device_name, device_id, parameter_name, listener_store
     ):
         """Watch automation state without widening parameter traversal scope."""
         # A build that cannot identify the playing enum cannot safely distinguish
@@ -1869,7 +1882,7 @@ class Recall(ControlSurface):
         key = id(parameter)
         try:
             listener = self._make_automation_listener(
-                track, parameter, device_name, parameter_name
+                track, parameter, device_name, device_id, parameter_name
             )
             parameter.add_automation_state_listener(listener)
             listener_store.append((parameter, listener))
@@ -1907,7 +1920,7 @@ class Recall(ControlSurface):
             return False
 
     def _start_automation_write(
-        self, track, parameter, device_name, parameter_name, previous_state
+        self, track, parameter, device_name, device_id, parameter_name, previous_state
     ):
         """Open a write action; it remains silent until a value actually moves."""
         try:
@@ -1920,6 +1933,7 @@ class Recall(ControlSurface):
             "track": track,
             "parameter": parameter,
             "device_name": device_name,
+            "device_id": device_id,
             "parameter_name": parameter_name,
             # Live reports no automation before a new lane, otherwise this is
             # an edit to an existing lane. This is the only classification here.
@@ -1938,7 +1952,9 @@ class Recall(ControlSurface):
             "last_value_at": None,
         }
 
-    def _record_automation_value(self, track, parameter, device_name, parameter_name):
+    def _record_automation_value(
+        self, track, parameter, device_name, device_id, parameter_name
+    ):
         """Sample a real automation-write value and its exact Live ruler point."""
         key = id(parameter)
         try:
@@ -1956,6 +1972,7 @@ class Recall(ControlSurface):
                 track,
                 parameter,
                 device_name,
+                device_id,
                 parameter_name,
                 self._automation_states.get(key),
             )
@@ -2011,6 +2028,7 @@ class Recall(ControlSurface):
             "track_name": self._safe_name(write["track"]),
             "track_id": self._safe_id(write["track"]),
             "device_name": write["device_name"],
+            "device_id": write["device_id"],
             "parameter_name": write["parameter_name"],
             "parameter_value": landed,
             "previous_parameter_value": write["start_value"],
@@ -2033,7 +2051,9 @@ class Recall(ControlSurface):
         payload.update(write.get("observed_position", {}))
         self._emit(write["event_type"], payload)
 
-    def _make_automation_listener(self, track, parameter, device_name, parameter_name):
+    def _make_automation_listener(
+        self, track, parameter, device_name, device_id, parameter_name
+    ):
         def _on_automation_state():
             key = id(parameter)
             current_state = self._read_automation_state(parameter)
@@ -2047,7 +2067,12 @@ class Recall(ControlSurface):
                 and previous_state != AUTOMATION_STATE_RECORDING
             ):
                 self._start_automation_write(
-                    track, parameter, device_name, parameter_name, previous_state
+                    track,
+                    parameter,
+                    device_name,
+                    device_id,
+                    parameter_name,
+                    previous_state,
                 )
             elif (
                 previous_state == AUTOMATION_STATE_RECORDING
@@ -3411,6 +3436,7 @@ class Recall(ControlSurface):
                     track,
                     parameter,
                     self._safe_name(device),
+                    self._safe_id(device),
                     self._safe_name(parameter),
                     self._automation_parameter_listeners,
                 )
@@ -3600,11 +3626,12 @@ class Recall(ControlSurface):
             parameter,
             "parameter_changed",
             self._safe_name(device),
+            self._safe_id(device),
             self._safe_name(parameter),
         )
 
     def _make_value_listener(
-        self, track, parameter, event_type, device_name, parameter_name
+        self, track, parameter, event_type, device_name, device_id, parameter_name
     ):
         # Closure per parameter: Live's listener callbacks take no arguments, so
         # identity has to be captured here rather than looked up on fire. Mixer
@@ -3621,7 +3648,7 @@ class Recall(ControlSurface):
             ) < GESTURE_SETTLE_SEC
             if self._is_automation_being_written(parameter):
                 self._record_automation_value(
-                    track, parameter, device_name, parameter_name
+                    track, parameter, device_name, device_id, parameter_name
                 )
                 return
 
@@ -3654,6 +3681,7 @@ class Recall(ControlSurface):
                     "parameter": parameter,
                     "event_type": event_type,
                     "device_name": device_name,
+                    "device_id": device_id,
                     "parameter_name": parameter_name,
                     "start": self._last_values.get(key, current),
                     "min": current,
@@ -3839,6 +3867,7 @@ class Recall(ControlSurface):
             "track_name": track_name,
             "track_id": track_id,
             "device_name": device_name,
+            "device_id": gesture["device_id"],
             "parameter_name": parameter_name,
             "parameter_value": landed,
             "previous_parameter_value": start,

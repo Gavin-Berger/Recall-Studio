@@ -228,6 +228,35 @@ function transition(before: string | null, after: string | null): string {
   return after ? `Set to ${after}` : before ?? "Changed";
 }
 
+function routeLabel(value: string | null): string | null {
+  if (!value) return null;
+  // Live routing channels can stringify to a transient Python object address.
+  // That is observer bookkeeping, never a route a producer can verify.
+  if (/^<[^>]+\sobject\sat\s0x[\da-f]+>$/iu.test(value)) return null;
+  return value;
+}
+
+function routingPath(payload: Payload, direction: "input" | "output", previous = false): string | null {
+  const prefix = previous ? "previous_" : "";
+  return routeLabel(text(
+    payload,
+    `${prefix}${direction}_routing_channel`,
+    `${prefix}${direction}_routing_type`,
+    `${prefix}${direction}_routing`,
+  ));
+}
+
+function routingChange(payload: Payload):
+  | { direction: "input" | "output"; before: string; after: string }
+  | null {
+  for (const direction of ["output", "input"] as const) {
+    const before = routingPath(payload, direction, true);
+    const after = routingPath(payload, direction);
+    if (before && after && before !== after) return { direction, before, after };
+  }
+  return null;
+}
+
 function memory(
   event: SavedSessionEvent,
   payload: Payload,
@@ -322,8 +351,18 @@ export function producerMemoryEvent(event: SavedSessionEvent): ProducerMemoryEve
     case "track_flattened":
       return memory(event, payload, "structure", "Track flattened", `Committed ${track} to audio`);
     case "track_routing_changed": {
-      const route = text(payload, "output_routing_type", "input_routing_type", "routing");
-      return memory(event, payload, "structure", "Routing changed", route ? `${track} → ${route}` : `Changed routing on ${track}`);
+      const change = routingChange(payload);
+      // A routing listener has no useful meaning unless it captured both ends
+      // of the path. This hides delayed Live refresh snapshots already stored
+      // in historical sessions instead of presenting them as user actions.
+      if (!change) return null;
+      if (change.direction === "input") {
+        return memory(event, payload, "structure", "Input source updated", `${track} now listens to ${change.after} instead of ${change.before}`);
+      }
+      const action = change.after.toLocaleLowerCase() === "no output"
+        ? "now has no output"
+        : `now feeds ${change.after}`;
+      return memory(event, payload, "structure", "Signal path updated", `${track} ${action} instead of ${change.before}`);
     }
     case "device_added":
       return memory(event, payload, "sound", "Device added", `Added ${device} to ${track}`);

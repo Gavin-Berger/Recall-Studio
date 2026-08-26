@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { alsSetName, preferredProjectTitle } from "./sessionFormat";
+import { alsSetName, preferredProjectReportSession, preferredProjectTitle } from "./sessionFormat";
 
 describe("alsSetName", () => {
   it("takes the filename from a path and drops the .als extension", () => {
@@ -50,5 +50,50 @@ describe("preferredProjectTitle", () => {
         ableton_path: null,
       },
     )).toBe("New idea");
+  });
+});
+
+describe("preferredProjectReportSession", () => {
+  it("reopens recorded work rather than a newer empty checkpoint", () => {
+    const report = preferredProjectReportSession([
+      {
+        id: "empty-newer",
+        name: "empty-newer",
+        project_id: "project-1",
+        capture_name: null,
+        capture_status: "complete",
+        project_name: "Nightfall",
+        project_path: null,
+        als_path: "C:\\Music\\Nightfall.als",
+        take_origin: "recorded",
+        display_name: null,
+        started_at_ms: 300,
+        ended_at_ms: 400,
+        last_updated_at_ms: 400,
+        event_count: 0,
+        creative_event_count: 0,
+        heartbeat_count: 0,
+      },
+      {
+        id: "recorded-earlier",
+        name: "recorded-earlier",
+        project_id: "project-1",
+        capture_name: null,
+        capture_status: "complete",
+        project_name: "Nightfall",
+        project_path: null,
+        als_path: "C:\\Music\\Nightfall.als",
+        take_origin: "recorded",
+        display_name: null,
+        started_at_ms: 100,
+        ended_at_ms: 200,
+        last_updated_at_ms: 200,
+        event_count: 48,
+        creative_event_count: 14,
+        heartbeat_count: 0,
+      },
+    ]);
+
+    expect(report?.id).toBe("recorded-earlier");
   });
 });

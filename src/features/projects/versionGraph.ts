@@ -88,13 +88,18 @@ export type VersionStem = {
 };
 
 /**
- * Pull a version number off the end of a set name.
+ * Split a set name into the song and the version number.
  *
- * Only a *trailing* number counts. `nightfall v4` and `nightfall 4` are the
- * fourth version of `nightfall`; `nightfall v4 alt` is not the fourth version
- * of anything — the trailing word means the producer deliberately branched off
- * and named the branch. Treating it as a separate stem is what puts it on its
- * own lane, which is exactly where it belongs.
+ * An explicit `v4` token counts wherever it appears, not just at the end. Real
+ * names put it in the middle — `Breaking Point v3 mixdown` next to
+ * `Breaking Point v2 mixdown` — and an end-anchored rule reads both as
+ * unnumbered and loses the most obvious lineage in the folder. Removing the
+ * token rather than truncating at it is what makes those two share a stem
+ * (`breaking point mixdown`) instead of splitting on the trailing word.
+ *
+ * A bare trailing number is the weaker fallback: `nightfall 4` is version four,
+ * but only when nothing more explicit is present, because a trailing digit is
+ * as likely to be part of the name.
  *
  * Separators are normalized because the same song is written `nightfall_v4`,
  * `nightfall-v4`, and `Nightfall V4` depending on who saved it and when.
@@ -107,15 +112,28 @@ export function parseVersionName(name: string): VersionStem {
     .trim()
     .toLocaleLowerCase();
 
-  const match = /^(.*?)\s*v?(\d+)$/.exec(normalized);
-  if (!match) return { stem: normalized, ordinal: null };
+  const token = /(?:^|\s)v(\d+)(?=\s|$)/.exec(normalized);
+  if (token) {
+    const stem = (
+      normalized.slice(0, token.index) +
+      " " +
+      normalized.slice(token.index + token[0].length)
+    )
+      .replace(/\s+/g, " ")
+      .trim();
+    // "v4" on its own has no song in front of it. There is nothing to group by,
+    // so keep the whole string rather than inventing an empty stem.
+    if (stem) return { stem, ordinal: Number(token[1]) };
+    return { stem: normalized, ordinal: null };
+  }
 
-  const stem = match[1]!.trim();
-  // "v4" on its own has no song in front of it. There is nothing to group by,
-  // so keep the whole string as the stem rather than inventing an empty one.
-  if (!stem) return { stem: normalized, ordinal: null };
+  const trailing = /^(.*?)\s*(\d+)$/.exec(normalized);
+  const trailingStem = trailing?.[1]?.trim();
+  if (trailing && trailingStem) {
+    return { stem: trailingStem, ordinal: Number(trailing[2]) };
+  }
 
-  return { stem, ordinal: Number(match[2]) };
+  return { stem: normalized, ordinal: null };
 }
 
 /** The one-line justification shown when a producer hovers an edge. */

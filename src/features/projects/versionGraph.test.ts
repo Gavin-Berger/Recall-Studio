@@ -99,12 +99,37 @@ describe("parseVersionName", () => {
     expect(parseVersionName("nightfall")).toEqual({ stem: "nightfall", ordinal: null });
   });
 
-  it("keeps a named branch as its own stem", () => {
-    // "v3 alt" is not the third version of anything — the producer branched and
-    // named the branch. A separate stem is what puts it on its own lane.
+  it("reads a version number from the middle of a name", () => {
+    // Straight from the real library: two projects, same song, and the version
+    // token sits before a trailing word. An end-anchored rule reads both as
+    // unnumbered and loses the most obvious lineage there is.
+    expect(parseVersionName("Breaking Point v3 mixdown")).toEqual({
+      stem: "breaking point mixdown",
+      ordinal: 3,
+    });
+    expect(parseVersionName("Breaking Point v2 mixdown").stem).toBe("breaking point mixdown");
+  });
+
+  it("keeps a named branch on its own stem", () => {
+    // "v3 alt" is version three OF THE ALT LINE, not of the song. Different
+    // stem from plain "nightfall", so the alt still gets its own lane — and
+    // "nightfall v4 alt" now joins it instead of standing alone.
     expect(parseVersionName("nightfall v3 alt")).toEqual({
-      stem: "nightfall v3 alt",
-      ordinal: null,
+      stem: "nightfall alt",
+      ordinal: 3,
+    });
+    expect(parseVersionName("nightfall v4 alt").stem).toBe("nightfall alt");
+    expect(parseVersionName("nightfall v3 alt").stem).not.toBe(
+      parseVersionName("nightfall v3").stem,
+    );
+  });
+
+  it("prefers an explicit v-token over a trailing digit", () => {
+    // "serum 2" is a device, "v2" is a version. When both shapes are present
+    // the explicit one is the version.
+    expect(parseVersionName("drums v2 serum 3")).toEqual({
+      stem: "drums serum 3",
+      ordinal: 2,
     });
   });
 

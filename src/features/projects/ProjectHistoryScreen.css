@@ -147,22 +147,38 @@
 .ph-rail {
   flex: none;
   display: block;
+  /* The SVG's height attribute is its coordinate system, not its rendered
+     height. Let the flex row stretch it so a wrapped commit explanation keeps
+     the lane continuous all the way to the next row. */
+  height: auto;
   /* Bleeds into the row padding so consecutive rows' lines meet with no seam. */
   margin: calc(var(--s3) * -1) 0;
   align-self: stretch;
   overflow: visible;
 }
 
-.ph-rail__line {
+.ph-rail__line,
+.ph-rail__elbow {
   stroke-width: var(--stroke-edge);
+  stroke-linecap: round;
+}
+
+/* A guess must never be drawn the way a fact is (§11). Solid means Recall
+   watched work continue against the same set; dashed means it inferred the
+   link from what it had open at the time. */
+.ph-rail__elbow--inferred {
+  stroke-dasharray: 4 2;
 }
 
 .ph-rail__node {
   stroke-width: var(--stroke-edge);
 }
 
-.ph-rail__node--hollow {
-  stroke-dasharray: 3 2;
+/* Live capture is the one present-tense fact here. It takes --signal and it
+   still does not move: §6's pulse exception belongs to the connection dot. */
+.ph-rail__node--live {
+  fill: var(--signal);
+  stroke: var(--signal);
 }
 
 .ph-row.is-selected .ph-rail__node {
@@ -251,6 +267,15 @@
   background: transparent;
 }
 
+/* The set a commit was made against. Metadata on the commit, so it reads as a
+   label rather than as the thing's name. */
+.ph-ref--set {
+  font-family: var(--font-mono);
+  color: var(--muted);
+  background: transparent;
+  border-style: dashed;
+}
+
 .ph-ref--latest {
   border-color: rgba(var(--signal-rgb), 0.45);
   color: var(--signal-soft);
@@ -296,4 +321,61 @@
   .ph-rail {
     margin: 0;
   }
+}
+
+/* Artifacts --------------------------------------------------------------- */
+
+/* Files on disk Recall never watched. Set apart from the history on purpose:
+   they are not commits and must not read as though they were. */
+.ph__artifacts {
+  border: var(--stroke-hair) dashed var(--line);
+  border-radius: var(--radius);
+  padding: var(--s4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+}
+
+.ph__artifacts-head {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: var(--t-micro);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--faint-aa);
+}
+
+.ph__artifacts-note {
+  margin: 0;
+  max-width: 68ch;
+  color: var(--muted);
+  font-size: var(--t-meta);
+  line-height: 1.55;
+}
+
+.ph__artifact-list {
+  list-style: none;
+  margin: var(--s2) 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+}
+
+.ph__artifact-list li {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s3);
+  flex-wrap: wrap;
+}
+
+.ph__artifact-name {
+  font-size: var(--t-meta);
+  color: var(--paper);
+}
+
+.ph__artifact-meta {
+  font-family: var(--font-mono);
+  font-size: var(--t-micro);
+  color: var(--faint-aa);
 }

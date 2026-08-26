@@ -1,75 +1,67 @@
-// The version history as a list of rows, to sit beneath the graph.
+// The commit history as rows, and the rail geometry that draws it like git.
 //
-// WHY A LIST AS WELL AS A GRAPH
+// The overview graph and this list are built from the SAME commit model
+// (`projectCommits`) and the same lane assignment (`layoutCommits`), so they
+// cannot disagree about the shape of the history — only about how much of it
+// they show. The graph draws time; the list draws structure and detail.
 //
-// DESIGN.md §11 fixes the graph's x-axis to real elapsed time. That is the
-// right call — it is what stops the drawing from claiming a steady cadence the
-// producer never had — but it also means the graph cannot be a table. Nodes sit
-// where their timestamps put them, so two versions made a minute apart overlap
-// and a version from last year is off at the edge. There is nowhere to hang a
-// name, a count, and two buttons.
-//
-// GitHub has the same problem and solves it the same way: the network graph
-// draws the shape, and the commit list underneath carries the detail. Neither
-// is a worse version of the other — the graph answers "what happened to this
-// song" and the list answers "what is this version". They share a selection so
-// they never disagree about what you are looking at.
-//
-// This module is the list's model. It is pure so the ordering, the refs, and
-// the fork detection can be tested without rendering anything.
+// The rail is the part that has to look like git. A row is not a dot: it is a
+// point on a lane, with vertical runs for every lane alive beside it and an
+// ELBOW to its parent when the parent sits on a different lane. Without the
+// elbow a fork is invisible in the list — two lanes just start existing next to
+// each other with nothing saying they are related.
 
-import type { ProjectVersion } from "./projectVersions";
-import { childrenByParent, versionGraph, type VersionNode } from "./versionGraph";
-import { layoutVersionGraph } from "./versionGraphLayout";
+import type { SavedSessionMetadata } from "../../types/recall";
+import { layoutCommits } from "./commitLayout";
+import {
+  commitChildren,
+  projectCommits,
+  type ProjectArtifact,
+  type ProjectCommit,
+} from "./projectCommits";
 
 export type HistoryRow = {
-  node: VersionNode;
-  /** Lane index from the layout — ties the row to the line it sits on. */
+  commit: ProjectCommit;
+  /** Lane index — which line this commit sits on. */
   lane: number;
-  /** Forks from the trunk. Drives `--lane-0…3`, same as the graph. */
+  /** Forks from the trunk. Drives `--lane-0…3`. */
   depth: number;
-  /** The newest version in the project. Renders the `latest` ref. */
+  /** The most recent work in the project. */
   latest: boolean;
-  /** A sitting is still open against this version. Renders the `live` ref. */
+  /** Capture is still running against this commit. */
   live: boolean;
-  /**
-   * The song forked here — this version has more than one child. Worth a ref
-   * of its own because it is the one structural fact a flat list normally
-   * cannot show, and it is the reason the graph exists.
-   */
+  /** The history forks here: more than one commit continued from this one. */
   branchPoint: boolean;
-  /** How many times the producer sat down with this file. */
-  sittings: number;
-  /** Recorded moves across every sitting. Zero means Recall was not running. */
-  moves: number;
-  /** Row index of this version's parent, or null for a root. */
+  /** Row index of the parent, or null for a root. */
   parentRow: number | null;
-  /** The parent edge was a guess, so its connector renders dashed. */
-  inferred: boolean;
-  /**
-   * Lanes with a line running through this row, this row's own lane included.
-   *
-   * This is what turns the list into a git graph rather than a column of dots:
-   * a lane is drawn at every row between its first and last version, so a
-   * branch stays visibly open while the trunk carries on beside it.
-   */
+  /** Lane the parent sits on, or null for a root. */
+  parentLane: number | null;
+  /** Lanes with a line running through this row, this row's own included. */
   railLanes: number[];
 };
 
-/**
- * Build the history rows for one project, newest first.
- *
- * Newest first because the question a producer opens this with is "where am I",
- * not "where did I start" — the same reason a commit list puts HEAD at the top.
- * The graph above keeps time running left to right, so the two read in
- * different directions on purpose: one is a shape, the other is a stack.
- */
-export function versionHistoryRows(versions: ProjectVersion[]): HistoryRow[] {
-  if (versions.length === 0) return [];
+export type ProjectHistory = {
+  rows: HistoryRow[];
+  /** Sets found on disk that Recall never watched. Never linked into history. */
+  artifacts: ProjectArtifact[];
+  /** Sessions that recorded nothing, counted rather than silently dropped. */
+  emptyCheckpoints: number;
+};
 
-  const nodes = versionGraph(versions);
-  const layout = layoutVersionGraph(nodes);
-  const children = childrenByParent(nodes);
+/**
+ * Build the history for one project, most recent work first.
+ *
+ * Most-recent-first because the question a producer opens this with is "where
+ * am I", the same reason a commit list puts HEAD at the top.
+ */
+export function projectHistory(captures: SavedSessionMetadata[]): ProjectHistory {
+  const model = projectCommits(captures);
+  if (model.commits.length === 0) {
+    return { rows: [], artifacts: model.artifacts, emptyCheckpoints: model.emptyCheckpoints };
+  }
+
+  const layout = layoutCommits(model.commits);
+  const children = commitChildren(model.commits);
 
   const laneOf = new Map<string, { lane: number; depth: number }>();
   for (const lane of layout.lanes) {
@@ -78,55 +70,68 @@ export function versionHistoryRows(versions: ProjectVersion[]): HistoryRow[] {
     }
   }
 
-  // "Latest" is by when work last happened, not when the file first appeared.
-  // Going back to an older version makes it the one you are on, and the ref
-  // has to follow that or it points at an abandoned file.
   let latestId: string | null = null;
   let latestAt = -Infinity;
-  for (const node of nodes) {
-    if (node.version.lastUpdatedAtMs > latestAt) {
-      latestAt = node.version.lastUpdatedAtMs;
-      latestId = node.id;
+  for (const commit of model.commits) {
+    if (commit.endedAtMs > latestAt) {
+      latestAt = commit.endedAtMs;
+      latestId = commit.id;
     }
   }
 
-  const rows: HistoryRow[] = nodes.map((node) => {
-    const placed = laneOf.get(node.id);
+  const rows: HistoryRow[] = model.commits.map((commit) => {
+    const placed = laneOf.get(commit.id);
     return {
-      node,
+      commit,
       lane: placed?.lane ?? 0,
       depth: placed?.depth ?? 0,
-      latest: node.id === latestId,
-      live: node.version.live,
-      branchPoint: (children.get(node.id)?.length ?? 0) > 1,
-      sittings: node.version.sessions.length,
-      moves: node.version.eventCount,
+      latest: commit.id === latestId,
+      live: commit.live,
+      branchPoint: (children.get(commit.id)?.length ?? 0) > 1,
       parentRow: null,
-      inferred: node.inferred,
+      parentLane: null,
       railLanes: [],
     };
   });
 
-  // Most recently WORKED first. Ordering by when a file first appeared put the
-  // `latest` ref halfway down the list, because going back to an older version
-  // makes it the newest thing in the project without changing when it was
-  // born — so the list disagreed with its own badge.
-  rows.sort((a, b) => b.node.version.lastUpdatedAtMs - a.node.version.lastUpdatedAtMs);
+  rows.sort((a, b) => b.commit.endedAtMs - a.commit.endedAtMs);
 
-  const rowOf = new Map(rows.map((row, index) => [row.node.id, index]));
+  const rowOf = new Map(rows.map((row, index) => [row.commit.id, index]));
   for (const row of rows) {
-    const parentId = row.node.parentId;
-    row.parentRow = parentId !== null ? rowOf.get(parentId) ?? null : null;
+    const parentId = row.commit.parentId;
+    if (parentId === null) continue;
+    const parentIndex = rowOf.get(parentId);
+    if (parentIndex === undefined) continue;
+    row.parentRow = parentIndex;
+    row.parentLane = rows[parentIndex]!.lane;
   }
 
-  // A lane runs from its earliest row to its latest, so it is drawn at every
-  // row in between even where it has no version of its own.
+  // A lane is drawn at every row between its newest and oldest commit, even
+  // where the rows in between belong to other lanes. That is what keeps a
+  // branch visibly open beside the trunk instead of vanishing between its own
+  // commits.
   const span = new Map<number, { from: number; to: number }>();
   rows.forEach((row, index) => {
     const seen = span.get(row.lane);
     if (!seen) span.set(row.lane, { from: index, to: index });
     else span.set(row.lane, { from: Math.min(seen.from, index), to: Math.max(seen.to, index) });
   });
+
+  // A fork's elbow leaves the child's lane and lands on the parent's, so the
+  // parent's lane has to be drawn up as far as the child row or the elbow ends
+  // in mid-air.
+  for (const row of rows) {
+    if (row.parentRow === null || row.parentLane === null) continue;
+    if (row.parentLane === row.lane) continue;
+    const childIndex = rowOf.get(row.commit.id)!;
+    const seen = span.get(row.parentLane);
+    if (seen) {
+      span.set(row.parentLane, {
+        from: Math.min(seen.from, childIndex),
+        to: Math.max(seen.to, row.parentRow),
+      });
+    }
+  }
 
   rows.forEach((row, index) => {
     row.railLanes = [...span.entries()]
@@ -135,29 +140,24 @@ export function versionHistoryRows(versions: ProjectVersion[]): HistoryRow[] {
       .sort((a, b) => a - b);
   });
 
-  return rows;
+  return { rows, artifacts: model.artifacts, emptyCheckpoints: model.emptyCheckpoints };
 }
 
-/** How many lane columns the rail needs to draw. */
-export function railWidth(rows: HistoryRow[]): number {
-  return rows.reduce((max, row) => Math.max(max, ...row.railLanes.map((lane) => lane + 1)), 1);
-}
+/** Horizontal pitch between lane columns, and the drawn height of one row. */
+export const RAIL_COL = 16;
+export const RAIL_ROW_H = 84;
+/** Where the node sits down the row. */
+export const RAIL_NODE_Y = 26;
+/** Corner radius on an elbow. Orthogonal with one rounded corner (§11). */
+export const RAIL_ELBOW_R = 7;
 
-/**
- * Everything the rail needs that is a property of the LIST, not of one row.
- *
- * A rail line has to be coloured by the depth of the lane it draws, not by the
- * depth of the row it happens to pass — a trunk line running alongside a branch
- * row is still the trunk. And a lane's line has to stop at its newest and
- * oldest version rather than running the full height of the list.
- */
 export type RailShape = {
   columns: number;
   /** Depth per lane index, for `laneColorVar`. */
   depthOf: Map<number, number>;
-  /** Row index holding each lane's most recent version. */
+  /** Row index holding each lane's most recent commit. */
   headRow: Map<number, number>;
-  /** Row index holding each lane's oldest version. */
+  /** Row index holding each lane's oldest commit. */
   tailRow: Map<number, number>;
 };
 
@@ -172,11 +172,51 @@ export function railShape(rows: HistoryRow[]): RailShape {
     tailRow.set(row.lane, index);
   });
 
-  return { columns: railWidth(rows), depthOf, headRow, tailRow };
+  const columns = rows.reduce(
+    (max, row) => Math.max(max, ...row.railLanes.map((lane) => lane + 1)),
+    1,
+  );
+
+  return { columns, depthOf, headRow, tailRow };
 }
 
-/** The sitting a producer expects to land on when they pick a version. */
-export function landingSessionId(row: HistoryRow): string | null {
-  const sessions = row.node.version.sessions;
-  return sessions[sessions.length - 1]?.id ?? null;
+/** Centre of a lane column, in the rail's own pixels. */
+export function laneX(lane: number): number {
+  return lane * RAIL_COL + RAIL_COL / 2;
+}
+
+/**
+ * The connector from a row down to its parent, when the parent is on another
+ * lane.
+ *
+ * The list runs newest-first, so a parent is always BELOW its child. The path
+ * leaves the child's node, drops down the child's own lane, turns once with a
+ * rounded corner, and runs across to the parent's lane — orthogonal with one
+ * corner, never a bezier (§11), the same vocabulary the overview graph uses.
+ *
+ * Returns null when parent and child share a lane: the lane's own vertical run
+ * already connects them and a second line on top would be noise.
+ */
+export function elbowPath(row: HistoryRow): string | null {
+  if (row.parentRow === null || row.parentLane === null) return null;
+  if (row.parentLane === row.lane) return null;
+
+  const from = laneX(row.lane);
+  const to = laneX(row.parentLane);
+  const turn = RAIL_ROW_H - RAIL_ELBOW_R;
+  const rightwards = to > from;
+  const sweep = rightwards ? 0 : 1;
+  const corner = from + (rightwards ? RAIL_ELBOW_R : -RAIL_ELBOW_R);
+
+  return [
+    `M ${from} ${RAIL_NODE_Y}`,
+    `L ${from} ${turn}`,
+    `A ${RAIL_ELBOW_R} ${RAIL_ELBOW_R} 0 0 ${sweep} ${corner} ${RAIL_ROW_H}`,
+    `L ${to} ${RAIL_ROW_H}`,
+  ].join(" ");
+}
+
+/** The session a producer expects to open when they pick a commit. */
+export function landingSessionId(row: HistoryRow): string {
+  return row.commit.id;
 }

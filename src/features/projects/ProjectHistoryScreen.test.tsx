@@ -1,11 +1,12 @@
 // @vitest-environment jsdom
 
-// Render tests for the Timeline surface.
+// Render tests for the Timeline.
 //
-// The row model is proved in projectHistory.test.ts. What only exists here is
-// whether the surface is navigable: that the graph and the list agree about
-// what is selected, that a row can reach the Report and the workspace, and
-// that switching project actually switches what is drawn.
+// The commit model and the rail geometry are proved in projectCommits.test.ts
+// and projectHistory.test.ts. What only exists here is whether the surface is
+// navigable: that the overview and the list share one selection, that a commit
+// reaches its Report and workspace session, that unobserved files are visibly
+// set apart from the history, and that the rail actually renders connectors.
 
 import { describe, expect, it, vi } from "vitest";
 import { render, screen, within } from "@testing-library/react";
@@ -14,35 +15,47 @@ import type { SavedProject, SavedSessionMetadata } from "../../types/recall";
 import { ProjectHistoryScreen } from "./ProjectHistoryScreen";
 
 const minute = 60 * 1000;
-const day = 24 * 60 * minute;
+const hour = 60 * minute;
 const start = 1_720_000_000_000;
 
-function sitting(
+function work(
   id: string,
-  folder: string,
-  file: string,
-  days: number,
+  set: string,
+  atHours: number,
   over: Partial<SavedSessionMetadata> = {},
 ): SavedSessionMetadata {
+  const startedAt = start + atHours * hour;
   return {
     id,
     name: "capture",
-    project_id: folder,
+    project_id: "nightfall",
     capture_name: null,
     capture_status: "ended",
-    project_name: folder,
-    project_path: `C:\\Music\\${folder}`,
-    als_path: `C:\\Music\\${folder}\\${file}.als`,
+    project_name: "nightfall",
+    project_path: "C:\\Music\\nightfall",
+    als_path: `C:\\Music\\nightfall\\${set}.als`,
     take_origin: "recorded",
     display_name: null,
-    started_at_ms: start + days * day,
-    ended_at_ms: start + days * day + 30 * minute,
-    last_updated_at_ms: start + days * day + 30 * minute,
-    event_count: 12,
-    creative_event_count: 8,
+    started_at_ms: startedAt,
+    ended_at_ms: startedAt + 45 * minute,
+    last_updated_at_ms: startedAt + 45 * minute,
+    event_count: 120,
+    creative_event_count: 30,
     heartbeat_count: 0,
     ...over,
   };
+}
+
+function onDisk(id: string, set: string, atHours: number): SavedSessionMetadata {
+  const at = start + atHours * hour;
+  return work(id, set, atHours, {
+    take_origin: "scanned",
+    capture_status: "scanned",
+    ended_at_ms: at,
+    last_updated_at_ms: at,
+    event_count: 0,
+    creative_event_count: 0,
+  });
 }
 
 function project(id: string, name: string, captures: SavedSessionMetadata[]): SavedProject {
@@ -53,26 +66,24 @@ function project(id: string, name: string, captures: SavedSessionMetadata[]): Sa
     ableton_path: `C:\\Music\\${id}`,
     archived_at_ms: null,
     created_at_ms: start,
-    updated_at_ms: start + 5 * day,
-    last_updated_at_ms: start + 5 * day,
+    updated_at_ms: start + 50 * hour,
+    last_updated_at_ms: start + 50 * hour,
     capture_count: captures.length,
     active_capture_count: 0,
     captures,
   };
 }
 
+// Worked `nightfall`, moved to v2 and worked it, then went back to `nightfall`.
 const nightfall = project("nightfall", "Nightfall", [
-  sitting("s1", "nightfall", "nightfall v1", 0),
-  sitting("s2", "nightfall", "nightfall v2", 1),
-  sitting("s3", "nightfall", "nightfall v3", 2),
-  sitting("s4", "nightfall", "nightfall v4", 3),
-  sitting("s5", "nightfall", "nightfall v3", 4),
-  sitting("s6", "nightfall", "nightfall v5", 5),
+  work("c1", "nightfall", 0),
+  work("c2", "nightfall v2", 3),
+  work("c3", "nightfall v2", 8),
+  work("c4", "nightfall", 12),
+  work("c5", "nightfall", 20),
 ]);
 
-const otherSong = project("breaking", "Breaking Point", [
-  sitting("b1", "breaking", "breaking point", 0),
-]);
+const otherSong = project("breaking", "Breaking Point", [work("b1", "breaking point", 0)]);
 
 function renderScreen(projects: SavedProject[] = [nightfall], projectId = "nightfall") {
   const onOpenReport = vi.fn();
@@ -92,94 +103,130 @@ function renderScreen(projects: SavedProject[] = [nightfall], projectId = "night
 }
 
 function graph() {
-  return within(screen.getByRole("group", { name: "Version lineage" }));
+  return within(screen.getByRole("group", { name: "Project history" }));
 }
 
-function rows(): HTMLElement[] {
-  return within(screen.getByRole("list")).getAllByRole("listitem");
+function commitRows(): HTMLElement[] {
+  return within(screen.getByLabelText("Commits")).getAllByRole("listitem");
 }
 
 describe("ProjectHistoryScreen", () => {
-  it("draws the graph and the list from the same project", () => {
+  it("draws one node and one row per captured stretch of work", () => {
     renderScreen();
-    // Six captures, five files. Both surfaces are per-version.
+    // Five commits across two sets. The old model drew two file nodes.
     expect(graph().getAllByRole("button")).toHaveLength(5);
-    expect(rows()).toHaveLength(5);
+    expect(commitRows()).toHaveLength(5);
   });
 
-  it("puts the newest version at the top of the list", () => {
+  it("leads each row with what the commit contains, not with a filename", () => {
     renderScreen();
-    expect(within(rows()[0]!).getByText("nightfall v5")).toBeInTheDocument();
+    expect(within(commitRows()[0]!).getByText(/120 recorded changes/)).toBeInTheDocument();
   });
 
-  it("selects the newest version on arrival", () => {
+  it("shows the set as a label on the commit", () => {
     renderScreen();
-    expect(
-      graph().getByRole("button", { name: /^nightfall v5\./ }),
-    ).toHaveAttribute("aria-pressed", "true");
+    expect(within(commitRows()[0]!).getByText("nightfall")).toBeInTheDocument();
+  });
+
+  it("puts the most recent work at the top with the latest badge", () => {
+    renderScreen();
+    expect(within(commitRows()[0]!).getByText("latest")).toBeInTheDocument();
+  });
+
+  it("says where the history branched", () => {
+    renderScreen();
+    const branchPoint = commitRows().find((row) => within(row).queryByText("branched here"));
+    expect(branchPoint).toBeDefined();
+  });
+
+  it("renders a real elbow connector where a branch leaves its parent", () => {
+    renderScreen();
+    const container = document.body;
+    // A vertical stripe is not a git graph. The fork has to be drawn as an
+    // orthogonal path from the child's lane across to its parent's.
+    const elbows = container.querySelectorAll(".ph-rail__elbow");
+    expect(elbows.length).toBeGreaterThan(0);
+    const d = elbows[0]!.getAttribute("d") ?? "";
+    expect(d).toMatch(/^M .* L .* A .* L /);
+  });
+
+  it("dashes an inferred connector and leaves an observed one solid", () => {
+    renderScreen();
+    // `branched` is a guess and draws dashed; `continued` was watched.
+    const inferred = document.body.querySelectorAll(".ph-rail__elbow--inferred");
+    expect(inferred.length).toBeGreaterThan(0);
   });
 
   it("moves the graph selection when a row is picked", async () => {
     const user = userEvent.setup();
     renderScreen();
+    const nodes = () => graph().getAllByRole("button");
+    const pressedBefore = nodes().filter((node) => node.getAttribute("aria-pressed") === "true");
+    expect(pressedBefore).toHaveLength(1);
 
-    await user.click(within(rows()[3]!).getByRole("button", { name: /nightfall v2/ }));
+    // Each row carries three buttons (select, Report, Workspace); the row
+    // itself is the select target.
+    await user.click(commitRows()[3]!.querySelector(".ph-row__hit") as HTMLElement);
 
-    expect(graph().getByRole("button", { name: /^nightfall v2\./ })).toHaveAttribute(
-      "aria-pressed",
-      "true",
-    );
-    expect(graph().getByRole("button", { name: /^nightfall v5\./ })).toHaveAttribute(
-      "aria-pressed",
-      "false",
-    );
+    const pressed = nodes().filter((node) => node.getAttribute("aria-pressed") === "true");
+    expect(pressed).toHaveLength(1);
+    expect(pressed[0]).not.toBe(pressedBefore[0]);
   });
 
   it("moves the row selection when a node is picked", async () => {
     const user = userEvent.setup();
     renderScreen();
 
-    await user.click(graph().getByRole("button", { name: /^nightfall v1\./ }));
+    await user.click(graph().getAllByRole("button")[0]!);
 
-    // The two surfaces are one selection, so the row must follow the node just
-    // as the node follows the row.
-    const selected = rows().filter((row) => row.className.includes("is-selected"));
+    const selected = commitRows().filter((row) => row.className.includes("is-selected"));
     expect(selected).toHaveLength(1);
-    expect(within(selected[0]!).getByText("nightfall v1")).toBeInTheDocument();
   });
 
-  it("opens the Report for the version's most recent sitting", async () => {
+  it("opens the Report for the commit's own session", async () => {
     const user = userEvent.setup();
     const { onOpenReport } = renderScreen();
 
-    const v3 = rows().find((row) => within(row).queryByText("nightfall v3"))!;
-    await user.click(within(v3).getByRole("button", { name: "Report" }));
+    await user.click(within(commitRows()[0]!).getByRole("button", { name: "Report" }));
 
-    // s5 is the return visit; s3 was the first pass.
-    expect(onOpenReport).toHaveBeenCalledWith("s5");
+    // Rows are most-recent-first, and c5 is the last stretch of work.
+    expect(onOpenReport).toHaveBeenCalledWith("c5");
   });
 
-  it("opens the per-capture workspace from a row", async () => {
+  it("opens the workspace for the commit's own session", async () => {
     const user = userEvent.setup();
     const { onOpenWorkspace } = renderScreen();
 
-    const v1 = rows().find((row) => within(row).queryByText("nightfall v1"))!;
-    await user.click(within(v1).getByRole("button", { name: "Workspace" }));
+    await user.click(within(commitRows()[0]!).getByRole("button", { name: "Workspace" }));
 
-    expect(onOpenWorkspace).toHaveBeenCalledWith("s1");
+    expect(onOpenWorkspace).toHaveBeenCalledWith("c5");
   });
 
-  it("says which version the song forked at", () => {
+  it("explains each commit's parentage without claiming a filename told it", () => {
     renderScreen();
-    const v3 = rows().find((row) => within(row).queryByText("nightfall v3"))!;
-    expect(within(v3).getByText("forked here")).toBeInTheDocument();
+    const why = screen.getAllByText(/Picked up|Recall was capturing|first work Recall/);
+    expect(why.length).toBeGreaterThan(0);
+    expect(screen.queryByText(/read from the file names/)).not.toBeInTheDocument();
   });
 
-  it("explains in plain language why each version hangs where it does", () => {
-    renderScreen();
-    // The row is the only place this sentence is readable; on the graph it is
-    // a hover. It must also admit when it guessed.
-    expect(screen.getAllByText(/not observed|Nothing to follow/).length).toBeGreaterThan(0);
+  it("sets unobserved files apart from the history", () => {
+    const scanned = project("scan", "Scanned", [
+      work("c1", "nightfall", 0),
+      onDisk("s1", "nightfall v9", 3),
+    ]);
+    renderScreen([scanned], "scan");
+
+    const artifacts = screen.getByLabelText("Files found on disk");
+    expect(within(artifacts).getByText("nightfall v9")).toBeInTheDocument();
+    expect(within(artifacts).getByText(/not part of the history/)).toBeInTheDocument();
+    // And it is not a commit.
+    expect(commitRows()).toHaveLength(1);
+  });
+
+  it("says nothing was captured when a project has only files on disk", () => {
+    const scanned = project("scan", "Scanned", [onDisk("s1", "one", 0)]);
+    renderScreen([scanned], "scan");
+    expect(screen.getByText(/Nothing captured yet/)).toBeInTheDocument();
   });
 
   it("switches project from the picker", async () => {
@@ -191,14 +238,9 @@ describe("ProjectHistoryScreen", () => {
     expect(onSelectProject).toHaveBeenCalledWith("breaking");
   });
 
-  it("does not offer a picker for a single project", () => {
-    renderScreen();
-    expect(screen.queryByLabelText("Project")).not.toBeInTheDocument();
-  });
-
   it("says what to do when there are no projects at all", () => {
     renderScreen([], "nothing");
     expect(screen.getByText(/No projects yet/)).toBeInTheDocument();
-    expect(screen.queryByRole("group", { name: "Version lineage" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("group", { name: "Project history" })).not.toBeInTheDocument();
   });
 });

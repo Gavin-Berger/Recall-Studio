@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import "./ProjectHistoryScreen.css";
 import type { SavedProject } from "../../types/recall";
 import { formatSessionDate, formatSessionDuration } from "../sessionFormat";
@@ -18,6 +18,12 @@ import {
   type RailShape,
 } from "./projectHistory";
 import type { ProjectArtifact } from "./projectCommits";
+import {
+  getNoteEdits,
+  getParameterChanges,
+  getTimelineClipEvents,
+} from "../../lib/schema/api";
+import { commitHeadline, summarizeCommit, type CommitContents } from "./commitContents";
 
 // The Timeline: one project's history, as commits.
 //
@@ -114,12 +120,79 @@ function Rail({ row, index, shape }: { row: HistoryRow; index: number; shape: Ra
   );
 }
 
+type ContentsState =
+  | { status: "loading" }
+  | { status: "ready"; contents: CommitContents }
+  | { status: "error" };
+
+/**
+ * What a commit contains, shown for the one that is selected.
+ *
+ * Loaded lazily and only for the selection: a project with sixty commits would
+ * otherwise fire sixty round trips to render a list nobody has read yet.
+ */
+function Contents({ state }: { state: ContentsState }) {
+  if (state.status === "loading") {
+    return <p className="ph-contents__quiet">Reading what changed…</p>;
+  }
+  if (state.status === "error") {
+    return <p className="ph-contents__quiet">Couldn&rsquo;t read what changed in this one.</p>;
+  }
+  const { contents } = state;
+  if (contents.empty) {
+    return (
+      <p className="ph-contents__quiet">
+        Recall recorded work here but has no breakdown for it — the detail predates the
+        projection, or the capture only saw counts.
+      </p>
+    );
+  }
+
+  const groups: { title: string; total: number; rows: { key: string; label: string; context: string | null; changes?: number }[] }[] = [
+    { title: "Tracks", total: contents.totals.tracks, rows: contents.tracks },
+    { title: "Devices", total: contents.totals.devices, rows: contents.devices },
+    { title: "Parameters", total: contents.totals.parameters, rows: contents.parameters },
+    { title: "Notes", total: contents.totals.notes, rows: contents.notes },
+    { title: "Added", total: contents.totals.added, rows: contents.added },
+  ].filter((group) => group.rows.length > 0);
+
+  return (
+    <div className="ph-contents">
+      {groups.map((group) => (
+        <section key={group.title} className="ph-contents__group">
+          <h3 className="ph-contents__head">
+            {group.title}
+            <span className="ph-contents__count">{group.total}</span>
+          </h3>
+          <ul className="ph-contents__list">
+            {group.rows.map((row) => (
+              <li key={row.key}>
+                <span className="ph-contents__label">{row.label}</span>
+                {row.context && <span className="ph-contents__ctx">{row.context}</span>}
+                {typeof row.changes === "number" && (
+                  <span className="ph-contents__n">{row.changes.toLocaleString()}</span>
+                )}
+              </li>
+            ))}
+          </ul>
+          {group.total > group.rows.length && (
+            <p className="ph-contents__more">
+              +{group.total - group.rows.length} more
+            </p>
+          )}
+        </section>
+      ))}
+    </div>
+  );
+}
+
 function CommitRow({
   row,
   index,
   shape,
   selected,
   nowMs,
+  contents,
   onSelect,
   onOpenReport,
   onOpenWorkspace,
@@ -129,11 +202,14 @@ function CommitRow({
   shape: RailShape;
   selected: boolean;
   nowMs: number;
+  contents: ContentsState | null;
   onSelect: () => void;
   onOpenReport: () => void;
   onOpenWorkspace: () => void;
 }) {
   const { commit } = row;
+  const headline =
+    contents?.status === "ready" ? commitHeadline(contents.contents) : null;
 
   return (
     <li className={`ph-row${selected ? " is-selected" : ""}`}>
@@ -147,9 +223,16 @@ function CommitRow({
 
         <span className="ph-row__body">
           <span className="ph-row__top">
+            {/* The commit "message": derived from what the work actually
+                concentrated on, never invented. The breakdown only loads for
+                the selected row, so everything else shows its size instead —
+                which is why the count lives here and not in the meta line
+                below, where it would render twice on the selected row. */}
             <span className="ph-row__name">
-              {commit.changes.toLocaleString()} recorded{" "}
-              {commit.changes === 1 ? "change" : "changes"}
+              {headline ??
+                `${commit.changes.toLocaleString()} recorded ${
+                  commit.changes === 1 ? "change" : "changes"
+                }`}
             </span>
             {commit.setName && <span className="ph-ref ph-ref--set">{commit.setName}</span>}
             {row.live && <span className="ph-ref ph-ref--live">capturing</span>}
@@ -179,6 +262,8 @@ function CommitRow({
               {relativeTime(commit.endedAtMs, nowMs)}
             </time>
           </span>
+
+          {selected && contents && <Contents state={contents} />}
         </span>
       </button>
 
@@ -228,6 +313,10 @@ export function ProjectHistoryScreen({
   onOpenProjects,
 }: ProjectHistoryScreenProps) {
   const [selectedCommitId, setSelectedCommitId] = useState<string | null>(null);
+  // Cached by session id so re-selecting a commit does not refetch. The ref
+  // guards against duplicate fetches when an effect re-runs before state lands.
+  const [contents, setContents] = useState<Record<string, ContentsState>>({});
+  const requested = useRef(new Set<string>());
 
   const project = useMemo(
     () => projects.find((candidate) => candidate.id === projectId) ?? projects[0] ?? null,
@@ -247,7 +336,32 @@ export function ProjectHistoryScreen({
     setSelectedCommitId(rows[0]?.commit.id ?? null);
   }, [project?.id, rows.length]);
 
+  const loadContents = useCallback((sessionId: string) => {
+    if (requested.current.has(sessionId)) return;
+    requested.current.add(sessionId);
+    setContents((current) => ({ ...current, [sessionId]: { status: "loading" } }));
+    void (async () => {
+      try {
+        const [changes, notes, clips] = await Promise.all([
+          getParameterChanges(sessionId),
+          getNoteEdits(sessionId),
+          getTimelineClipEvents(sessionId),
+        ]);
+        setContents((current) => ({
+          ...current,
+          [sessionId]: { status: "ready", contents: summarizeCommit(changes, notes, clips) },
+        }));
+      } catch {
+        setContents((current) => ({ ...current, [sessionId]: { status: "error" } }));
+      }
+    })();
+  }, []);
+
   const selectedRow = rows.find((row) => row.commit.id === selectedCommitId) ?? rows[0] ?? null;
+
+  useEffect(() => {
+    if (selectedRow) loadContents(selectedRow.commit.id);
+  }, [selectedRow, loadContents]);
   const branches = new Set(rows.filter((row) => row.depth > 0).map((row) => row.lane)).size;
 
   if (projects.length === 0) {
@@ -312,6 +426,7 @@ export function ProjectHistoryScreen({
                 index={index}
                 shape={shape}
                 nowMs={nowMs}
+                contents={contents[row.commit.id] ?? null}
                 selected={row.commit.id === selectedRow?.commit.id}
                 onSelect={() => setSelectedCommitId(row.commit.id)}
                 onOpenReport={() => onOpenReport(landingSessionId(row))}

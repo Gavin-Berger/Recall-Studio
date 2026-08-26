@@ -118,9 +118,17 @@ describe("ProjectHistoryScreen", () => {
     expect(commitRows()).toHaveLength(5);
   });
 
-  it("leads each row with what the commit contains, not with a filename", () => {
+  it("leads each row with the commit's size, not with a filename", () => {
+    // The real headline ("Worked Drums and 2 other tracks") needs the backend
+    // breakdown, which jsdom has none of. Until it arrives the row shows how
+    // big the commit is — never the filename, which is only ever a label.
     renderScreen();
     expect(within(commitRows()[0]!).getByText(/120 recorded changes/)).toBeInTheDocument();
+  });
+
+  it("does not print the change count twice on one row", () => {
+    renderScreen();
+    expect(within(commitRows()[0]!).getAllByText(/120 recorded changes/)).toHaveLength(1);
   });
 
   it("shows the set as a label on the commit", () => {

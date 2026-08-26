@@ -26,8 +26,16 @@ import {
   getParameterChanges,
   getProjectSchema,
   getTimelineClipEvents,
+  materializeSessionSchema,
 } from "../../lib/schema/api";
 import { commitRacks, RACK_CONTENTS_LIMIT, type CommitRack } from "./commitRacks";
+import {
+  commitDiff,
+  diffHeadline,
+  diffLines,
+  DIFF_LIMIT,
+  type CommitDiff,
+} from "./commitDiff";
 import { commitHeadline, summarizeCommit, type CommitContents } from "./commitContents";
 
 // The Timeline: one project's history, as commits.
@@ -127,8 +135,56 @@ function Rail({ row, index, shape }: { row: HistoryRow; index: number; shape: Ra
 
 type ContentsState =
   | { status: "loading" }
-  | { status: "ready"; contents: CommitContents; racks: CommitRack[] }
+  | { status: "ready"; contents: CommitContents; racks: CommitRack[]; diff: CommitDiff }
   | { status: "error" };
+
+/**
+ * What changed in the set since the parent commit.
+ *
+ * Leads the panel because it is the structural answer — "this is where the
+ * second Serum arrived" — and everything below it is the work done inside that
+ * structure. Silent for a root, and explicit rather than reassuring when there
+ * is no snapshot to compare: "cannot say" and "nothing changed" are different
+ * facts and must not look alike.
+ */
+function Diff({ state }: { state: CommitDiff }) {
+  if (state.status === "root") return null;
+  if (state.status === "unknown") {
+    return (
+      <p className="ph-diff__quiet">
+        No structure snapshot on one side of this, so Recall can&rsquo;t say what changed in
+        the set.
+      </p>
+    );
+  }
+  if (state.status === "unchanged") {
+    return <p className="ph-diff__quiet">Same tracks and devices as before this.</p>;
+  }
+
+  const { lines, total } = diffLines(state.diff);
+  return (
+    <section className="ph-diff" aria-label="Changed since the previous commit">
+      <h3 className="ph-contents__head">
+        Since the commit before
+        <span className="ph-contents__count">{diffHeadline(state.diff)}</span>
+      </h3>
+      <ul className="ph-diff__list">
+        {lines.map((line) => (
+          <li key={line.key} className={line.sign === "+" ? "is-added" : "is-removed"}>
+            <span className="ph-diff__sign" aria-hidden="true">
+              {line.sign}
+            </span>
+            <span className="ph-contents__label">{line.label}</span>
+            {line.context && <span className="ph-contents__ctx">{line.context}</span>}
+          </li>
+        ))}
+      </ul>
+      {total > DIFF_LIMIT && (
+        <p className="ph-contents__more">+{total - DIFF_LIMIT} more</p>
+      )}
+    </section>
+  );
+}
 
 /**
  * Racks the commit touched, and what is inside them.
@@ -215,6 +271,7 @@ function Contents({ state }: { state: ContentsState }) {
 
   return (
     <>
+    <Diff state={state.diff} />
     <div className="ph-contents">
       {groups.map((group) => (
         <section key={group.title} className="ph-contents__group">
@@ -456,20 +513,39 @@ export function ProjectHistoryScreen({
     setSelectedCommitId(rows[0]?.commit.id ?? null);
   }, [project?.id, rows.length]);
 
-  const loadContents = useCallback((sessionId: string) => {
+  /**
+   * The set's structure for one session.
+   *
+   * Materialized first: the schema is a projection rebuilt from the stored
+   * snapshot events, and a session that has never been materialized reports
+   * `has_snapshot: false` — which would read as "no structure" when the truth
+   * is "not built yet". Failure degrades to null so a missing snapshot costs
+   * the rack list and the diff, never the whole panel.
+   */
+  const structureOf = useCallback(async (sessionId: string) => {
+    try {
+      await materializeSessionSchema(sessionId);
+      return await getProjectSchema(sessionId);
+    } catch {
+      return null;
+    }
+  }, []);
+
+  const loadContents = useCallback(
+    (sessionId: string, parentSessionId: string | null) => {
     if (requested.current.has(sessionId)) return;
     requested.current.add(sessionId);
     setContents((current) => ({ ...current, [sessionId]: { status: "loading" } }));
     void (async () => {
       try {
-        const [changes, notes, clips, schema] = await Promise.all([
+        const [changes, notes, clips, schema, parentSchema] = await Promise.all([
           getParameterChanges(sessionId),
           getNoteEdits(sessionId),
           getTimelineClipEvents(sessionId),
-          // A rack's contents come from the snapshot, not from the change log.
-          // Failing to read it must not cost the rest of the breakdown, so it
-          // degrades to "no racks" rather than taking the panel down.
-          getProjectSchema(sessionId).catch(() => null),
+          structureOf(sessionId),
+          // The PARENT's structure, not the row printed underneath: on a fork
+          // those differ, and the parent is what actually preceded this state.
+          parentSessionId ? structureOf(parentSessionId) : Promise.resolve(null),
         ]);
         const summary = summarizeCommit(changes, notes, clips);
         // Only racks on tracks this commit actually touched. A set can hold
@@ -489,18 +565,22 @@ export function ProjectHistoryScreen({
             status: "ready",
             contents: summary,
             racks: commitRacks(schema?.has_snapshot ? schema : null, touched),
+            diff: commitDiff(parentSchema, schema, parentSessionId !== null),
           },
         }));
       } catch {
         setContents((current) => ({ ...current, [sessionId]: { status: "error" } }));
       }
     })();
-  }, []);
+    },
+    [structureOf],
+  );
 
   const selectedRow = rows.find((row) => row.commit.id === selectedCommitId) ?? rows[0] ?? null;
 
   useEffect(() => {
-    if (selectedRow) loadContents(selectedRow.commit.id);
+    if (!selectedRow) return;
+    loadContents(selectedRow.commit.id, selectedRow.commit.parentId);
   }, [selectedRow, loadContents]);
 
   useEffect(() => {

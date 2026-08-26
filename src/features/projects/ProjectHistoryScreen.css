@@ -601,3 +601,61 @@
   min-width: 0;
   font-size: var(--t-meta);
 }
+
+/* Commit diff -------------------------------------------------------------- */
+
+/* What the commit brought, above what it did inside. Monochrome: additions and
+   removals are told apart by their sign and by luminance, not by the red/green
+   every diff reaches for — DESIGN.md §2 spends no hue on type, and a producer
+   reading their own history is not triaging a merge conflict. */
+.ph-diff {
+  margin-top: var(--s3);
+  padding-top: var(--s3);
+  border-top: var(--stroke-hair) solid var(--line-soft);
+}
+
+.ph-diff__quiet {
+  margin: var(--s3) 0 0;
+  padding-top: var(--s3);
+  border-top: var(--stroke-hair) solid var(--line-soft);
+  color: var(--faint-aa);
+  font-family: var(--font-mono);
+  font-size: var(--t-micro);
+}
+
+.ph-diff__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: var(--s1) var(--s4);
+}
+
+.ph-diff__list li {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s2);
+  min-width: 0;
+  font-size: var(--t-meta);
+}
+
+.ph-diff__sign {
+  flex: none;
+  width: 10px;
+  font-family: var(--font-mono);
+  font-weight: 600;
+  text-align: center;
+}
+
+.ph-diff__list li.is-added .ph-diff__sign,
+.ph-diff__list li.is-added .ph-contents__label {
+  color: var(--paper-strong);
+}
+
+/* Gone is quieter than arrived: a history is read forwards, and what a commit
+   brought is the reason it exists. */
+.ph-diff__list li.is-removed .ph-diff__sign,
+.ph-diff__list li.is-removed .ph-contents__label {
+  color: var(--muted);
+}

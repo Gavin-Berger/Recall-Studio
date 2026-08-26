@@ -1,12 +1,12 @@
-/* Project history — the graph on top, the version list underneath.
-   Monochrome throughout (DESIGN.md §2): lane luminance carries position, and
+/* Project history â€” the graph on top, the version list underneath.
+   Monochrome throughout (DESIGN.md Â§2): lane luminance carries position, and
    --signal appears only on selection, focus, and a live capture. No hue is
-   spent on type. Nothing here moves after it arrives (§6). */
+   spent on type. Nothing here moves after it arrives (Â§6). */
 
 /* `.home-surface` is a centering flex container that already supplies the page
-   padding, so this takes the full width it is given and adds none of its own —
+   padding, so this takes the full width it is given and adds none of its own â€”
    otherwise the padding doubles and the screen shrinks to its content.
-   No max-width: §8 exempts graph surfaces from the single-column rule, because
+   No max-width: Â§8 exempts graph surfaces from the single-column rule, because
    a squeezed time axis claims events were closer together than they were. */
 .ph {
   width: 100%;
@@ -126,9 +126,11 @@
 .ph-row__hit {
   flex: 1;
   min-width: 0;
-  display: flex;
-  align-items: flex-start;
-  gap: var(--s3);
+  /* Rail beside the content, expanded panel beneath both. */
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 0 var(--s4);
   padding: var(--s3) var(--s2);
   background: none;
   border: 0;
@@ -139,13 +141,19 @@
   border-radius: var(--radius-sm);
 }
 
+/* Body sits in column 2; the panel spans under both so it starts flush with
+   the message rather than indented behind the rail. */
+.ph-row__hit > * + * {
+  grid-column: 2;
+}
+
 .ph-row__hit:focus-visible {
   outline: 2px solid var(--signal);
   outline-offset: -2px;
 }
 
 /* The rail. Lane luminance for position, filled for captured, dashed ring for a
-   file Recall never watched (§7) — the same vocabulary the graph above uses, so
+   file Recall never watched (Â§7) â€” the same vocabulary the graph above uses, so
    the two read as one idea rather than two drawings of the same data. */
 .ph-rail {
   flex: none;
@@ -156,7 +164,11 @@
   height: auto;
   /* Bleeds into the row padding so consecutive rows' lines meet with no seam. */
   margin: calc(var(--s3) * -1) 0;
-  align-self: stretch;
+  /* NOT stretch. The SVG has a fixed viewBox, so stretching its box scales
+     the drawing and turns the round node into an ellipse on an expanded row.
+     It keeps its own height; the lane simply does not continue behind the
+     panel, which is the quieter of the two artifacts. */
+  align-self: start;
   overflow: visible;
 }
 
@@ -166,7 +178,7 @@
   stroke-linecap: round;
 }
 
-/* A guess must never be drawn the way a fact is (§11). Solid means Recall
+/* A guess must never be drawn the way a fact is (Â§11). Solid means Recall
    watched work continue against the same set; dashed means it inferred the
    link from what it had open at the time. */
 .ph-rail__elbow--inferred {
@@ -178,7 +190,7 @@
 }
 
 /* Live capture is the one present-tense fact here. It takes --signal and it
-   still does not move: §6's pulse exception belongs to the connection dot. */
+   still does not move: Â§6's pulse exception belongs to the connection dot. */
 .ph-rail__node--live {
   fill: var(--signal);
   stroke: var(--signal);
@@ -189,7 +201,18 @@
   stroke-width: var(--stroke-trunk);
 }
 
+/* Message left, metadata right — the shape a commit list has, and the reason
+   this row is not a narrow column stranded in a very wide container. */
 .ph-row__body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: var(--s5);
+}
+
+.ph-row__lead {
+  flex: 1;
   min-width: 0;
   display: flex;
   flex-direction: column;
@@ -209,7 +232,7 @@
   overflow-wrap: anywhere;
 }
 
-/* The parentage reason. Plain language, and it says outright when it guessed —
+/* The parentage reason. Plain language, and it says outright when it guessed â€”
    the one line on this surface no other screen carries. */
 .ph-row__why {
   font-size: var(--t-meta);
@@ -218,10 +241,13 @@
 }
 
 .ph-row__meta {
+  flex: none;
   display: flex;
-  align-items: center;
+  align-items: baseline;
+  justify-content: flex-end;
   gap: var(--s2);
   flex-wrap: wrap;
+  max-width: 46ch;
   font-family: var(--font-mono);
   /* --t-micro is 11px, so --faint-aa is required here: --faint fails AA below
      19px and DESIGN.md bans it on small text. */
@@ -286,7 +312,7 @@
 }
 
 /* Live is the one genuinely present-tense fact on this surface. It gets the
-   signal colour and it still does not move — §6's pulse exception belongs to
+   signal colour and it still does not move â€” Â§6's pulse exception belongs to
    the connection dot alone. */
 .ph-ref--live {
   border-color: var(--signal);
@@ -308,6 +334,19 @@
   }
   to {
     opacity: 1;
+  }
+}
+
+@media (max-width: 1100px) {
+  /* Not enough width for two columns; the meta drops under the message. */
+  .ph-row__body {
+    flex-direction: column;
+    align-items: stretch;
+    gap: var(--s1);
+  }
+
+  .ph-row__meta {
+    justify-content: flex-start;
   }
 }
 
@@ -386,7 +425,7 @@
 /* Commit contents ---------------------------------------------------------- */
 
 /* What a commit contains, for the selected one only. A count alone is a hollow
-   commit — the question is where the work went. */
+   commit â€” the question is where the work went. */
 .ph-contents {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
@@ -480,7 +519,7 @@
 /* Day grouping ------------------------------------------------------------ */
 
 /* A commit is a stretch of work, so a busy week makes a long list. Grouping by
-   day is how anyone actually navigates back to "that thing I did on Tuesday" —
+   day is how anyone actually navigates back to "that thing I did on Tuesday" â€”
    and the rail runs through the heading so no lane is cut in half by a date. */
 .ph-day-group {
   list-style: none;
@@ -606,7 +645,7 @@
 
 /* What the commit brought, above what it did inside. Monochrome: additions and
    removals are told apart by their sign and by luminance, not by the red/green
-   every diff reaches for — DESIGN.md §2 spends no hue on type, and a producer
+   every diff reaches for â€” DESIGN.md Â§2 spends no hue on type, and a producer
    reading their own history is not triaging a merge conflict. */
 .ph-diff {
   margin-top: var(--s3);

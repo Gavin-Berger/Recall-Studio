@@ -361,6 +361,7 @@ function CommitRow({
   selected,
   nowMs,
   contents,
+  headline: loadedHeadline,
   onSelect,
   onOpenReport,
   onOpenWorkspace,
@@ -371,13 +372,14 @@ function CommitRow({
   selected: boolean;
   nowMs: number;
   contents: ContentsState | null;
+  headline: string | null;
   onSelect: () => void;
   onOpenReport: () => void;
   onOpenWorkspace: () => void;
 }) {
   const { commit } = row;
   const headline =
-    contents?.status === "ready" ? commitHeadline(contents.contents) : null;
+    contents?.status === "ready" ? commitHeadline(contents.contents) : loadedHeadline;
 
   return (
     <li className={`ph-row${selected ? " is-selected" : ""}`}>
@@ -395,6 +397,7 @@ function CommitRow({
         <Rail row={row} index={index} shape={shape} />
 
         <span className="ph-row__body">
+          <span className="ph-row__lead">
           <span className="ph-row__top">
             {/* The commit "message": derived from what the work actually
                 concentrated on, never invented. The breakdown only loads for
@@ -402,21 +405,27 @@ function CommitRow({
                 which is why the count lives here and not in the meta line
                 below, where it would render twice on the selected row. */}
             <span className="ph-row__name">
-              {headline ??
-                `${commit.changes.toLocaleString()} recorded ${
-                  commit.changes === 1 ? "change" : "changes"
-                }`}
+              {headline ?? commit.setName ?? "Unsaved set"}
             </span>
-            {commit.setName && <span className="ph-ref ph-ref--set">{commit.setName}</span>}
+            {commit.setName && headline && (
+              <span className="ph-ref ph-ref--set">{commit.setName}</span>
+            )}
             {row.live && <span className="ph-ref ph-ref--live">capturing</span>}
             {row.latest && !row.live && <span className="ph-ref ph-ref--latest">latest</span>}
             {row.branchPoint && <span className="ph-ref">branched here</span>}
             {row.depth > 0 && <span className="ph-ref ph-ref--quiet">branch</span>}
           </span>
 
-          {/* Why this commit hangs where it does, in the producer's language,
-              naming the evidence actually used and admitting when it guessed. */}
-          <span className="ph-row__why">{commit.reason}</span>
+          {/* Only when it says something.
+              "Picked up X where the earlier session left it" is the DEFAULT —
+              it was printed on every row and read as nine identical lines of
+              noise burying the rows where the lineage is actually uncertain. A
+              guess and a root are worth a sentence; carrying on in the file you
+              were already in is not. */}
+          {(commit.inferred || commit.parentId === null) && (
+            <span className="ph-row__why">{commit.reason}</span>
+          )}
+          </span>
 
           <span className="ph-row__meta">
             {/* The date lives on the day heading above; repeating it on every
@@ -424,6 +433,11 @@ function CommitRow({
             <span>{formatClock(commit.atMs)}</span>
             <span aria-hidden="true">·</span>
             <span>{formatSessionDuration(commit.session)}</span>
+            <span aria-hidden="true">·</span>
+            <span>
+              {commit.changes.toLocaleString()}{" "}
+              {commit.changes === 1 ? "change" : "changes"}
+            </span>
             {commit.creativeChanges > 0 && (
               <>
                 <span aria-hidden="true">·</span>
@@ -435,9 +449,11 @@ function CommitRow({
               {relativeTime(commit.endedAtMs, nowMs)}
             </time>
           </span>
-
-          {selected && contents && <Contents state={contents} />}
         </span>
+
+        {/* Outside the two-column body: the panel is full width, and leaving it
+            inside would make it a third column beside the metadata. */}
+        {selected && contents && <Contents state={contents} />}
       </button>
 
       <span className="ph-row__actions">
@@ -492,7 +508,15 @@ export function ProjectHistoryScreen({
   // Cached by session id so re-selecting a commit does not refetch. The ref
   // guards against duplicate fetches when an effect re-runs before state lands.
   const [contents, setContents] = useState<Record<string, ContentsState>>({});
+  // Headlines for EVERY row, not just the selected one. A list of "1,014
+  // recorded changes / 41 recorded changes / 62 recorded changes" says nothing
+  // about the work — the count is the one fact a commit has that is not worth
+  // reading. One `getParameterChanges` per row is enough for the headline
+  // (tracks and devices come from it); notes, clips, structure and the diff
+  // stay lazy because only the open row shows them.
+  const [headlines, setHeadlines] = useState<Record<string, string>>({});
   const requested = useRef(new Set<string>());
+  const headlined = useRef(new Set<string>());
 
   const project = useMemo(
     () => projects.find((candidate) => candidate.id === projectId) ?? projects[0] ?? null,
@@ -575,6 +599,39 @@ export function ProjectHistoryScreen({
     },
     [structureOf],
   );
+
+  /**
+   * How many rows get a headline without being opened.
+   *
+   * Local SQLite, so a call is cheap, but a two-year project can hold hundreds
+   * of commits and firing hundreds of queries to fill a list nobody has
+   * scrolled to is still wrong. The rows past this keep their change count,
+   * which is honest and costs nothing.
+   */
+  const HEADLINE_BUDGET = 40;
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      for (const row of rows.slice(0, HEADLINE_BUDGET)) {
+        if (cancelled) return;
+        const id = row.commit.id;
+        if (headlined.current.has(id)) continue;
+        headlined.current.add(id);
+        try {
+          const changes = await getParameterChanges(id);
+          if (cancelled) return;
+          const line = commitHeadline(summarizeCommit(changes, [], []));
+          setHeadlines((current) => ({ ...current, [id]: line }));
+        } catch {
+          // The count stays. A row without a headline is quiet, not broken.
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [rows]);
 
   const selectedRow = rows.find((row) => row.commit.id === selectedCommitId) ?? rows[0] ?? null;
 
@@ -705,6 +762,7 @@ export function ProjectHistoryScreen({
                       shape={shape}
                       nowMs={nowMs}
                       contents={contents[row.commit.id] ?? null}
+                headline={headlines[row.commit.id] ?? null}
                       selected={row.commit.id === selectedRow?.commit.id}
                       onSelect={() => setSelectedCommitId(row.commit.id)}
                       onOpenReport={() => onOpenReport(landingSessionId(row))}

@@ -127,17 +127,30 @@ describe("ProjectHistoryScreen", () => {
     expect(commitRows()).toHaveLength(5);
   });
 
-  it("leads each row with the commit's size, not with a filename", () => {
-    // The real headline ("Worked Drums and 2 other tracks") needs the backend
-    // breakdown, which jsdom has none of. Until it arrives the row shows how
-    // big the commit is — never the filename, which is only ever a label.
+  it("puts the commit's size in the metadata, once", () => {
+    // The count is the one fact a commit has that is not worth reading twice.
+    // It lives in the meta line; the headline says what the work WAS.
     renderScreen();
-    expect(within(commitRows()[0]!).getByText(/120 recorded changes/)).toBeInTheDocument();
+    expect(within(commitRows()[0]!).getAllByText(/120 changes/)).toHaveLength(1);
   });
 
-  it("does not print the change count twice on one row", () => {
+  it("does not repeat the default parentage line on every row", () => {
+    // "Picked up X where the earlier session left it" is what CONTINUING looks
+    // like, which is most rows. Printing it on all of them buried the rows
+    // where the lineage is actually a guess.
     renderScreen();
-    expect(within(commitRows()[0]!).getAllByText(/120 recorded changes/)).toHaveLength(1);
+    // Scoped to the list: the graph's hover titles still carry the full
+    // reason, which is the right place for it.
+    const repeated = within(screen.getByLabelText("Commits")).queryAllByText(
+      /Picked up .* where the earlier session left it/,
+    );
+    expect(repeated).toHaveLength(0);
+  });
+
+  it("still explains a row whose parentage was guessed", () => {
+    renderScreen();
+    // The fixture forks, so at least one edge is inferred and must say so.
+    expect(screen.getAllByText(/not observed|first work Recall/).length).toBeGreaterThan(0);
   });
 
   it("shows the set as a label on the commit", () => {

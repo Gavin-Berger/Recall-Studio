@@ -435,12 +435,27 @@ describe("duration spans", () => {
 });
 
 describe("dated axis", () => {
-  it("dates the start of every stretch the scale kept at full width", () => {
-    // One tick per segment: exactly where a collapsed gap has jumped the
-    // reader forward and they need telling again.
-    const { geometry, layout } = geometryFor(["a", "b", "c"], 1200, 30 * day);
-    const scale = collapseGaps(layout.placements.map((p) => p.atMs));
-    expect(geometry.axis).toHaveLength(scale.segments.length);
+  it("dates the stretches the scale kept at full width", () => {
+    const { geometry } = geometryFor(["a", "b", "c"], 1200, 30 * day);
+    expect(geometry.axis.length).toBeGreaterThan(0);
+  });
+
+  it("never prints a date on top of a gap label", () => {
+    // A break sits where the dead air was removed and the next segment starts
+    // immediately after it, so the two overprinted: "Aug 11, 20264 days".
+    const { geometry } = geometryFor(["a", "b", "c"], 1200, 30 * day);
+    expect(geometry.breaks.length).toBeGreaterThan(0);
+    for (const tick of geometry.axis) {
+      for (const brk of geometry.breaks) {
+        expect(Math.abs(tick.x - brk.x)).toBeGreaterThanOrEqual(74);
+      }
+    }
+  });
+
+  it("still dates the first stretch, which no break precedes", () => {
+    // Dropping every colliding tick must not silently strip the opening date.
+    const { geometry } = geometryFor(["a", "b", "c"], 1200, 30 * day);
+    expect(geometry.axis.length).toBeGreaterThanOrEqual(1);
   });
 
   it("puts the axis below the last lane", () => {

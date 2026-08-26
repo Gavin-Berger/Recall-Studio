@@ -20,6 +20,9 @@ type CommitGraphViewProps = {
   onSelectCommit: (commitId: string) => void;
 };
 
+/** Room a selected commit's name needs before it must flip to the other side. */
+const LABEL_ROOM = 240;
+
 /** Rounded to the unit a producer would actually say out loud. */
 function describeGap(durationMs: number): string {
   const days = Math.round(durationMs / 86_400_000);
@@ -224,15 +227,19 @@ export function CommitGraphView({
                 {label ? (
                   <text
                     className="vg__label vg__label--selected"
-                    // Flipped to the left of the node in the last stretch of
-                    // the canvas, so a name near the right edge is not clipped.
+                    // Anchored to whichever side has room. Both branches of
+                    // this used to return the same x, so the flip never moved
+                    // anything and a name near the right edge ran off the
+                    // canvas ("Breaking Poin").
                     x={
-                      position.x > geometry.width - 220
-                        ? position.x - NODE_RADIUS
-                        : position.x - NODE_RADIUS
+                      position.x > geometry.width - LABEL_ROOM
+                        ? position.x - NODE_RADIUS - 4
+                        : position.x + NODE_RADIUS + 4
                     }
-                    y={position.y - 16}
-                    textAnchor={position.x > geometry.width - 220 ? "end" : "start"}
+                    y={position.y - 14}
+                    textAnchor={
+                      position.x > geometry.width - LABEL_ROOM ? "end" : "start"
+                    }
                   >
                     {label}
                   </text>

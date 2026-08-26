@@ -190,7 +190,20 @@ describe("ProjectHistoryScreen · the loaded panel", () => {
   it("derives the commit's headline from what the work concentrated on", async () => {
     renderScreen();
     await waitFor(() => {
-      expect(screen.getByText(/Worked Drums/)).toBeInTheDocument();
+      // Every row gets one, not just the open one — a list of bare change
+      // counts says nothing about the work.
+      expect(screen.getAllByText(/Worked Drums/).length).toBeGreaterThan(0);
+    });
+  });
+
+  it("gives every row a headline, not only the selected one", async () => {
+    renderScreen();
+    await waitFor(() => {
+      const rows = Array.from(
+        screen.getByLabelText("Commits").querySelectorAll<HTMLElement>(".ph-row__name"),
+      );
+      expect(rows).toHaveLength(2);
+      expect(rows.every((row) => /Worked/.test(row.textContent ?? ""))).toBe(true);
     });
   });
 

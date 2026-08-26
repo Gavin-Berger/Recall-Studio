@@ -284,10 +284,16 @@ export function graphGeometry(
     durationMs: gap.durationMs,
   }));
 
-  const axis = scale.segments.map((segment) => ({
-    x: xOf(segment.startMs),
-    atMs: segment.startMs,
-  }));
+  // A date tick and a gap label land at almost the same x — the break sits
+  // where the dead air was removed, and the next segment starts immediately
+  // after it — so they overprinted each other ("Aug 11, 20264 days"). The gap
+  // label owns that spot because it explains the jump; the date is dropped
+  // where one is already speaking.
+  const breakXs = scale.gaps.map((gap) => xOf(gap.startMs));
+  const AXIS_CLEARANCE = 74;
+  const axis = scale.segments
+    .map((segment) => ({ x: xOf(segment.startMs), atMs: segment.startMs }))
+    .filter((tick) => !breakXs.some((breakX) => Math.abs(tick.x - breakX) < AXIS_CLEARANCE));
 
   return { width, height, nodes, edges, lanes, spans, sittings, breaks, axis, axisY };
 }

@@ -331,12 +331,22 @@ and it gets **luminance depth**, not hue. The rainbow does not come back.
 
 ### Lanes — depth by luminance
 
-One lane per `.als` version. The trunk is brightest; each branch step away from it is one
-step dimmer. Four levels, then cycle.
+One lane per **lineage**, not per version. A chain of versions where each has a single
+child stays on one lane — `v1 → v2 → v3` is one line with three nodes, the same way a
+run of commits is one line. A lane is only created when a version has a **second** child.
+
+**Which child keeps the trunk is decided by the strongest edge, not the earliest.** Git
+draws first-parent as the trunk because git is told which parent is first; nothing tells
+Recall. Taking the eldest child gets the ordinary case backwards — open `v3`, try
+something weird and save it as `v3 alt`, sleep on it, carry on in `v4`. The alt is older,
+so "eldest wins" puts the abandoned experiment on the mainline and pushes the song onto a
+branch. An observed edge outranks a filename edge, which outranks a chronological one;
+ties go to the eldest. The trunk is brightest; each fork step away from it is one step
+dimmer. Four levels, then cycle.
 
 | Token | Value | Means |
 |---|---|---|
-| `--lane-0` | `#d6dae4` | The trunk — the version lineage the song is actually on. |
+| `--lane-0` | `#d6dae4` | The trunk — the root lineage, the file the song started as and everything that directly continues it. |
 | `--lane-1` | `#98a0b1` | One branch off the trunk. |
 | `--lane-2` | `#6f7686` | Two steps out. |
 | `--lane-3` | `#4d5462` | Three or more. Cycles back to `--lane-1` beyond this. |

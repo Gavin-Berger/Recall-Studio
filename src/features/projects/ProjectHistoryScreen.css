@@ -698,3 +698,96 @@
 .ph-diff__list li.is-removed .ph-contents__label {
   color: var(--muted);
 }
+
+/* Steps -------------------------------------------------------------------- */
+
+/* The session's work in order — the part that used to mean leaving for another
+   screen. Time down the left so the sequence is scannable without reading a
+   word of it. */
+.ph-steps {
+  margin-top: var(--s4);
+  padding-top: var(--s3);
+  border-top: var(--stroke-hair) solid var(--line-soft);
+}
+
+.ph-steps__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s3);
+}
+
+.ph-step {
+  display: grid;
+  grid-template-columns: 84px minmax(0, 1fr);
+  gap: var(--s3);
+  align-items: baseline;
+}
+
+.ph-step__when {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-family: var(--font-mono);
+  font-size: var(--t-micro);
+  color: var(--faint-aa);
+  font-variant-numeric: tabular-nums;
+}
+
+/* A pause worth naming. Quieter than the clock it sits under: the time is the
+   fact, the gap is the colour. */
+.ph-step__gap {
+  color: var(--muted);
+}
+
+.ph-step__body {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s1);
+}
+
+.ph-step__title {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  flex-wrap: wrap;
+  font-size: var(--t-meta);
+  color: var(--paper);
+}
+
+.ph-step__tracks {
+  font-family: var(--font-mono);
+  font-size: var(--t-micro);
+  color: var(--faint-aa);
+}
+
+.ph-step__controls {
+  list-style: none;
+  margin: var(--s1) 0 0;
+  padding: 0 0 0 var(--s3);
+  border-left: var(--stroke-hair) solid var(--line-soft);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.ph-step__controls li {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s2);
+  flex-wrap: wrap;
+  min-width: 0;
+  font-size: var(--t-meta);
+}
+
+/* Where a control started and where it was left. The landing point is the
+   decision, so it reads brighter than the label beside it. */
+.ph-step__move {
+  font-family: var(--font-mono);
+  font-size: var(--t-micro);
+  color: var(--paper-strong);
+  white-space: nowrap;
+}

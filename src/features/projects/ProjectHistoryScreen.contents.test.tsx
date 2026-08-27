@@ -140,8 +140,30 @@ beforeEach(() => {
   getNoteEdits.mockResolvedValue([]);
   getTimelineClipEvents.mockResolvedValue([]);
   getParameterChanges.mockResolvedValue([
-    { track_name: "Drums", track_id: "t1", device_id: "d1", device_name: "Saturator", parameter_name: "Drive" },
-    { track_name: "Drums", track_id: "t1", device_id: "d1", device_name: "Saturator", parameter_name: "Drive" },
+    {
+      id: "pc1",
+      event_type: "parameter_changed",
+      track_name: "Drums",
+      track_id: "t1",
+      device_id: "d1",
+      device_name: "Saturator",
+      parameter_name: "Drive",
+      before_display_value: "0.0 dB",
+      after_display_value: "4.2 kHz",
+      changed_at_ms: start,
+    },
+    {
+      id: "pc2",
+      event_type: "parameter_changed",
+      track_name: "Drums",
+      track_id: "t1",
+      device_id: "d1",
+      device_name: "Saturator",
+      parameter_name: "Drive",
+      before_display_value: "0.0 dB",
+      after_display_value: "4.2 kHz",
+      changed_at_ms: start + 1000,
+    },
   ]);
   getProjectSchema.mockImplementation(async (sessionId: string) =>
     sessionId === "c1" ? parentStructure : commitStructure,
@@ -211,6 +233,21 @@ describe("ProjectHistoryScreen · the loaded panel", () => {
     getProjectSchema.mockResolvedValue({ ...commitStructure, has_snapshot: false });
     renderScreen();
     expect(await screen.findByText(/can.t say what changed/)).toBeInTheDocument();
+  });
+
+  it("opens the session's work in place, without sending you elsewhere", async () => {
+    // This is what used to mean leaving for the old workspace. A history is
+    // only useful if the detail of any step opens where you are standing.
+    renderScreen();
+    const steps = await screen.findByLabelText("What happened, in order");
+    expect(within(steps).getAllByRole("listitem").length).toBeGreaterThan(0);
+  });
+
+  it("shows where a control was left, not just that it moved", async () => {
+    renderScreen();
+    const steps = await screen.findByLabelText("What happened, in order");
+    // The landing point is the decision worth reading back.
+    expect(within(steps).getAllByText(/4.2 kHz/).length).toBeGreaterThan(0);
   });
 
   it("shows no diff at all for the root commit", async () => {

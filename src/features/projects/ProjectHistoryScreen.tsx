@@ -30,6 +30,11 @@ import {
 } from "../../lib/schema/api";
 import { commitRacks, RACK_CONTENTS_LIMIT, type CommitRack } from "./commitRacks";
 import {
+  describeGap as describeStepGap,
+  sessionSteps,
+  type SessionStep,
+} from "./sessionSteps";
+import {
   commitDiff,
   diffHeadline,
   diffLines,
@@ -135,8 +140,78 @@ function Rail({ row, index, shape }: { row: HistoryRow; index: number; shape: Ra
 
 type ContentsState =
   | { status: "loading" }
-  | { status: "ready"; contents: CommitContents; racks: CommitRack[]; diff: CommitDiff }
+  | {
+      status: "ready";
+      contents: CommitContents;
+      racks: CommitRack[];
+      diff: CommitDiff;
+      steps: SessionStep[];
+    }
   | { status: "error" };
+
+/**
+ * The session's work, in the order it happened.
+ *
+ * This is the part that used to mean leaving for another screen. A history is
+ * only useful if the detail of any step opens where you are standing, so the
+ * session opens in place: the summary above says what the work touched, this
+ * says what happened.
+ */
+function Steps({ steps }: { steps: SessionStep[] }) {
+  if (steps.length === 0) return null;
+  return (
+    <section className="ph-steps" aria-label="What happened, in order">
+      <h3 className="ph-contents__head">
+        Step by step
+        <span className="ph-contents__count">{steps.length}</span>
+      </h3>
+      <ol className="ph-steps__list">
+        {steps.map((step) => (
+          <li key={step.id} className="ph-step">
+            <span className="ph-step__when">
+              {formatClock(step.startMs)}
+              {step.gapBeforeMs !== null && step.gapBeforeMs > 0 && (
+                <span className="ph-step__gap">{describeStepGap(step.gapBeforeMs)}</span>
+              )}
+            </span>
+            <span className="ph-step__body">
+              <span className="ph-step__title">
+                {step.title}
+                {step.kind && <span className="ph-ref ph-ref--quiet">{step.kind}</span>}
+              </span>
+              {step.tracks.length > 0 && (
+                <span className="ph-step__tracks">{step.tracks.join(" · ")}</span>
+              )}
+              {step.controls.length > 0 && (
+                <ul className="ph-step__controls">
+                  {step.controls.map((control) => (
+                    <li key={control.key}>
+                      <span className="ph-contents__label">{control.label}</span>
+                      {/* Where it started and where it was left. The landing
+                          point is the decision; the count alone cannot tell a
+                          nudge from searching the range and committing. */}
+                      {control.from && control.to && (
+                        <span className="ph-step__move">
+                          {control.from} <span aria-hidden="true">&rarr;</span> {control.to}
+                        </span>
+                      )}
+                      {control.track && (
+                        <span className="ph-contents__ctx">{control.track}</span>
+                      )}
+                    </li>
+                  ))}
+                  {step.moreControls > 0 && (
+                    <li className="ph-contents__more">+{step.moreControls} more</li>
+                  )}
+                </ul>
+              )}
+            </span>
+          </li>
+        ))}
+      </ol>
+    </section>
+  );
+}
 
 /**
  * What changed in the set since the parent commit.
@@ -307,6 +382,7 @@ function Contents({ state }: { state: ContentsState }) {
       ))}
       </div>
       {state.racks.length > 0 && <Racks racks={state.racks} />}
+    <Steps steps={state.steps} />
     </>
   );
 }
@@ -556,7 +632,7 @@ export function ProjectHistoryScreen({
   }, []);
 
   const loadContents = useCallback(
-    (sessionId: string, parentSessionId: string | null) => {
+    (sessionId: string, parentSessionId: string | null, startedAtMs: number) => {
     if (requested.current.has(sessionId)) return;
     requested.current.add(sessionId);
     setContents((current) => ({ ...current, [sessionId]: { status: "loading" } }));
@@ -590,6 +666,7 @@ export function ProjectHistoryScreen({
             contents: summary,
             racks: commitRacks(schema?.has_snapshot ? schema : null, touched),
             diff: commitDiff(parentSchema, schema, parentSessionId !== null),
+            steps: sessionSteps(changes, notes, clips, startedAtMs),
           },
         }));
       } catch {
@@ -637,7 +714,7 @@ export function ProjectHistoryScreen({
 
   useEffect(() => {
     if (!selectedRow) return;
-    loadContents(selectedRow.commit.id, selectedRow.commit.parentId);
+    loadContents(selectedRow.commit.id, selectedRow.commit.parentId, selectedRow.commit.atMs);
   }, [selectedRow, loadContents]);
 
   useEffect(() => {

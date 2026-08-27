@@ -235,3 +235,21 @@
 .vg__label--selected {
   fill: var(--paper-strong);
 }
+
+/* Steps inside an open session ------------------------------------------- */
+
+/* A step draws smaller than the sessions around it. They are different kinds
+   of thing, and the same size would say they were peers. */
+.vg__node--step .vg__dot {
+  r: calc(var(--radius-node) - 2px);
+}
+
+/* Folded lines ------------------------------------------------------------ */
+
+/* §11's density cap. The swatch is dashed because what it stands for is not
+   drawn: lines you left behind, held back so the six that matter stay
+   readable. */
+.vg__legend-swatch--folded {
+  border-top-style: dashed;
+  opacity: 0.6;
+}

@@ -139,9 +139,12 @@ beforeEach(() => {
   materializeSessionSchema.mockResolvedValue(undefined);
   getNoteEdits.mockResolvedValue([]);
   getTimelineClipEvents.mockResolvedValue([]);
-  getParameterChanges.mockResolvedValue([
-    {
-      id: "pc1",
+  // Spread across the session on purpose: steps are cut on the pauses between
+  // work, so changes seconds apart collapse into ONE step and the expanded
+  // graph would look identical to the collapsed one.
+  getParameterChanges.mockResolvedValue(
+    [0, 95, 190].map((offsetMinutes, index) => ({
+      id: `pc${index}`,
       event_type: "parameter_changed",
       track_name: "Drums",
       track_id: "t1",
@@ -150,21 +153,9 @@ beforeEach(() => {
       parameter_name: "Drive",
       before_display_value: "0.0 dB",
       after_display_value: "4.2 kHz",
-      changed_at_ms: start,
-    },
-    {
-      id: "pc2",
-      event_type: "parameter_changed",
-      track_name: "Drums",
-      track_id: "t1",
-      device_id: "d1",
-      device_name: "Saturator",
-      parameter_name: "Drive",
-      before_display_value: "0.0 dB",
-      after_display_value: "4.2 kHz",
-      changed_at_ms: start + 1000,
-    },
-  ]);
+      changed_at_ms: start + offsetMinutes * minute,
+    })),
+  );
   getProjectSchema.mockImplementation(async (sessionId: string) =>
     sessionId === "c1" ? parentStructure : commitStructure,
   );
@@ -248,6 +239,31 @@ describe("ProjectHistoryScreen · the loaded panel", () => {
     const steps = await screen.findByLabelText("What happened, in order");
     // The landing point is the decision worth reading back.
     expect(within(steps).getAllByText(/4.2 kHz/).length).toBeGreaterThan(0);
+  });
+
+  it("draws the open session as its steps, and the rest as one node each", async () => {
+    // A whole session as one node was too coarse; one node per change would be
+    // a log. A step is the unit, and only the session you have open is drawn
+    // that finely — the others stay one node so the overview keeps its shape.
+    renderScreen();
+    await screen.findByLabelText("What happened, in order");
+
+    const graph = within(screen.getByRole("group", { name: "Project history" }));
+    const nodes = graph.getAllByRole("button");
+    // c2 is open and expands into its steps; c1 stays collapsed as one node.
+    expect(nodes.length).toBeGreaterThan(2);
+    expect(nodes.some((node) => /part of the session you have open/.test(node.getAttribute("aria-label") ?? ""))).toBe(true);
+  });
+
+  it("keeps a collapsed session clickable to open it", async () => {
+    renderScreen();
+    await screen.findByLabelText("What happened, in order");
+
+    const graph = within(screen.getByRole("group", { name: "Project history" }));
+    const collapsed = graph
+      .getAllByRole("button")
+      .filter((node) => !/part of the session/.test(node.getAttribute("aria-label") ?? ""));
+    expect(collapsed.length).toBeGreaterThan(0);
   });
 
   it("shows no diff at all for the root commit", async () => {

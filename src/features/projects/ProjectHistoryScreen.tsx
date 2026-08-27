@@ -777,6 +777,9 @@ export function ProjectHistoryScreen({
   }, [rows]);
 
   const selectedRow = rows.find((row) => row.commit.id === selectedCommitId) ?? rows[0] ?? null;
+  // The open session's detail, which the graph needs so it can draw that
+  // session as its steps instead of one node.
+  const selectedContents = selectedRow ? contents[selectedRow.commit.id] ?? null : null;
 
   useEffect(() => {
     if (!selectedRow) return;
@@ -874,8 +877,11 @@ export function ProjectHistoryScreen({
       <section className="ph__graph" aria-label="Project history">
         <CommitGraphView
           commits={commits}
-          selectedCommitId={selectedRow?.commit.id ?? null}
-          onSelectCommit={(commitId) => setSelectedCommitId(commitId)}
+          openSessionId={selectedRow?.commit.id ?? null}
+          openSteps={
+            selectedContents?.status === "ready" ? selectedContents.steps : []
+          }
+          onSelectSession={(sessionId) => setSelectedCommitId(sessionId)}
         />
       </section>
 

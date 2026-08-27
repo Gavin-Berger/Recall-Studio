@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import "./VersionGraphView.css";
-import { layoutCommits } from "./commitLayout";
 import type { ProjectCommit } from "./projectCommits";
+import type { SessionStep } from "./sessionSteps";
+import { timelineNodes, withStepCount, type TimelineNode } from "./timelineNodes";
+import { layoutTimeline } from "./timelineLayout";
 import { collapseGaps } from "./versionGraphLayout";
 import { graphGeometry, laneColorVar, NODE_RADIUS } from "./versionGraphGeometry";
 import { formatSessionDate } from "../sessionFormat";
@@ -16,8 +18,11 @@ import { formatSessionDate } from "../sessionFormat";
 
 type CommitGraphViewProps = {
   commits: ProjectCommit[];
-  selectedCommitId: string | null;
-  onSelectCommit: (commitId: string) => void;
+  /** The session whose steps are drawn; every other session stays one node. */
+  openSessionId: string | null;
+  /** That session's steps, empty while they are still being read. */
+  openSteps: SessionStep[];
+  onSelectSession: (sessionId: string) => void;
 };
 
 /** Room a selected commit's name needs before it must flip to the other side. */
@@ -33,8 +38,8 @@ function describeGap(durationMs: number): string {
 }
 
 /** How long the work ran, in the unit a producer would say. */
-function describeDuration(commit: ProjectCommit): string {
-  const ms = Math.max(0, commit.endedAtMs - commit.atMs);
+function describeDuration(node: { atMs: number; endMs: number }): string {
+  const ms = Math.max(0, node.endMs - node.atMs);
   const minutes = Math.round(ms / 60_000);
   if (minutes < 1) return "under a minute";
   if (minutes < 60) return `${minutes}m`;
@@ -42,17 +47,27 @@ function describeDuration(commit: ProjectCommit): string {
   return `${hours}h ${minutes % 60}m`;
 }
 
-function commitTitle(commit: ProjectCommit): string {
+/**
+ * The hover readout for one node.
+ *
+ * A collapsed session says how many steps are inside it, which is the fact that
+ * tells you whether opening it is worth doing. A step says what it was.
+ */
+function nodeTitle(node: TimelineNode): string {
   const changes =
-    commit.changes === 1 ? "1 recorded change" : `${commit.changes.toLocaleString()} recorded changes`;
-  const set = commit.setName ? `\n${commit.setName}` : "";
-  return `${changes}${set}\n${commit.reason}`;
+    node.changes === 1 ? "1 recorded change" : `${node.changes.toLocaleString()} recorded changes`;
+  const steps =
+    node.kind === "session" && node.stepCount !== null && node.stepCount > 0
+      ? `\n${node.stepCount} ${node.stepCount === 1 ? "step" : "steps"}`
+      : "";
+  return `${node.label}\n${changes} over ${describeDuration(node)}${steps}`;
 }
 
 export function CommitGraphView({
   commits,
-  selectedCommitId,
-  onSelectCommit,
+  openSessionId,
+  openSteps,
+  onSelectSession,
 }: CommitGraphViewProps) {
   const frameRef = useRef<HTMLDivElement | null>(null);
   const [containerWidth, setContainerWidth] = useState(900);
@@ -70,22 +85,29 @@ export function CommitGraphView({
     return () => observer.disconnect();
   }, []);
 
-  const geometry = useMemo(() => {
-    const layout = layoutCommits(commits);
+  const nodes = useMemo(() => {
+    const built = timelineNodes(commits, openSessionId, openSteps);
+    return openSessionId && openSteps.length > 0
+      ? built
+      : withStepCount(built, openSessionId ?? "", openSteps.length);
+  }, [commits, openSessionId, openSteps]);
+
+  const { geometry, layout } = useMemo(() => {
+    const built = layoutTimeline(nodes);
     // Ends go into the scale too. Measuring the axis on starts alone leaves a
-    // seven-hour commit's bar running past the right edge of the graph it was
+    // long stretch of work running past the right edge of the graph it was
     // scaled against.
     const scale = collapseGaps(
-      layout.placements.flatMap((placement) =>
+      built.placements.flatMap((placement) =>
         placement.endAtMs === undefined
           ? [placement.atMs]
           : [placement.atMs, placement.endAtMs],
       ),
     );
-    return graphGeometry(layout, scale, { containerWidth });
-  }, [commits, containerWidth]);
+    return { geometry: graphGeometry(built, scale, { containerWidth }), layout: built };
+  }, [nodes, containerWidth]);
 
-  const byId = useMemo(() => new Map(commits.map((commit) => [commit.id, commit])), [commits]);
+  const byId = useMemo(() => new Map(nodes.map((node) => [node.id, node])), [nodes]);
 
   if (commits.length === 0) {
     return (
@@ -181,36 +203,45 @@ export function CommitGraphView({
           })}
 
           {geometry.nodes.map((position) => {
-            const commit = byId.get(position.id);
-            if (!commit) return null;
-            const selected = commit.id === selectedCommitId;
-            // Only the selected node is named. Labelling every node is
-            // impossible once commits cluster — labelMaxPx collapses to zero
-            // and most names vanish, leaving one arbitrary label that reads as
-            // if that commit were special. The list below names them all; the
+            const node = byId.get(position.id);
+            if (!node) return null;
+            const open = node.sessionId === openSessionId;
+            // Only the node you are on is named. Labelling every one is
+            // impossible once they cluster — the room collapses to zero and
+            // most names vanish, leaving one arbitrary label that reads as if
+            // that node were special. The list below names them all; the
             // graph's job is the shape and where you are in it.
-            const label = selected
-              ? `${commit.setName ?? "Unsaved set"} · ${describeDuration(commit)}`
-              : null;
+            const label =
+              open && node.kind === "session"
+                ? `${node.label} · ${describeDuration(node)}`
+                : null;
 
             return (
               <g
-                key={commit.id}
-                className={`vg__node${selected ? " vg__node--selected" : ""}${
-                  commit.live ? " vg__node--live" : ""
-                }`}
+                key={node.id}
+                className={`vg__node${open ? " vg__node--selected" : ""}${
+                  node.live ? " vg__node--live" : ""
+                }${node.kind === "step" ? " vg__node--step" : ""}`}
                 role="button"
                 tabIndex={0}
-                aria-label={`${commit.setName ?? "Unsaved set"}. ${commit.reason}`}
-                aria-pressed={selected}
-                onClick={() => onSelectCommit(commit.id)}
+                aria-label={
+                  node.kind === "step"
+                    ? `${node.label}, part of the session you have open`
+                    : `${node.label}. ${
+                        node.stepCount === null
+                          ? "A stretch of work"
+                          : `${node.stepCount} steps`
+                      }`
+                }
+                aria-pressed={open}
+                onClick={() => onSelectSession(node.sessionId)}
                 onKeyDown={(event) => {
                   if (event.key !== "Enter" && event.key !== " ") return;
                   event.preventDefault();
-                  onSelectCommit(commit.id);
+                  onSelectSession(node.sessionId);
                 }}
               >
-                <title>{commitTitle(commit)}</title>
+                <title>{nodeTitle(node)}</title>
                 {/* A 7px dot is well under the 24px pointer target in §9, so the
                     hit area is widened without changing what is drawn. */}
                 <circle className="vg__hit" cx={position.x} cy={position.y} r={14} />
@@ -218,7 +249,10 @@ export function CommitGraphView({
                   className="vg__dot"
                   cx={position.x}
                   cy={position.y}
-                  r={NODE_RADIUS}
+                  // A step inside an open session draws smaller than the
+                  // sessions around it: they are different KINDS of thing, and
+                  // the same size would say they were peers.
+                  r={node.kind === "step" ? NODE_RADIUS - 2 : NODE_RADIUS}
                   style={{
                     fill: laneColorVar(position.depth),
                     stroke: laneColorVar(position.depth),
@@ -227,10 +261,6 @@ export function CommitGraphView({
                 {label ? (
                   <text
                     className="vg__label vg__label--selected"
-                    // Anchored to whichever side has room. Both branches of
-                    // this used to return the same x, so the flip never moved
-                    // anything and a name near the right edge ran off the
-                    // canvas ("Breaking Poin").
                     x={
                       position.x > geometry.width - LABEL_ROOM
                         ? position.x - NODE_RADIUS - 4
@@ -247,8 +277,20 @@ export function CommitGraphView({
               </g>
             );
           })}
+
         </svg>
       </div>
+
+      {layout.foldedLanes.length > 0 && (
+        <p className="vg__legend">
+          <span className="vg__legend-swatch vg__legend-swatch--folded" aria-hidden="true" />
+          {layout.foldedNodeIds.length}{" "}
+          {layout.foldedNodeIds.length === 1 ? "stretch" : "stretches"} of older work on{" "}
+          {layout.foldedLanes.length}{" "}
+          {layout.foldedLanes.length === 1 ? "line" : "lines"} you have left behind are not
+          drawn. Six lines is as many as this stays readable at.
+        </p>
+      )}
 
       {anyInferred ? (
         <p className="vg__legend">

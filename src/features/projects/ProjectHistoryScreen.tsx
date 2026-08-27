@@ -9,9 +9,9 @@ import { laneColorVar } from "./versionGraphGeometry";
 import {
   elbowPath,
   groupByDay,
+  historyRows,
   landingSessionId,
   laneX,
-  projectHistory,
   RAIL_COL,
   RAIL_NODE_Y,
   RAIL_ROW_H,
@@ -19,7 +19,13 @@ import {
   type HistoryRow,
   type RailShape,
 } from "./projectHistory";
-import type { ProjectArtifact } from "./projectCommits";
+import { projectCommits, type ProjectArtifact } from "./projectCommits";
+import {
+  commitsInSet,
+  defaultSetKey,
+  projectSets,
+  type ProjectSet,
+} from "./projectSets";
 import { historyKeyAction } from "./historyKeys";
 import {
   getNoteEdits,
@@ -430,6 +436,48 @@ function DayDivider({
   );
 }
 
+/**
+ * Which set the list is about.
+ *
+ * Every set in the project, most recently worked first, so the one a producer
+ * is currently in is where this opens. Shown as a row of choices rather than a
+ * dropdown because the count beside each name is itself the useful fact —
+ * where the work in this project actually went.
+ */
+function SetPicker({
+  sets,
+  focused,
+  onFocus,
+}: {
+  sets: ProjectSet[];
+  focused: ProjectSet | null;
+  onFocus: (key: string) => void;
+}) {
+  if (sets.length < 2) return null;
+  return (
+    <nav className="ph-sets" aria-label="Sets in this project">
+      {sets.map((set) => {
+        const selected = set.key === focused?.key;
+        return (
+          <button
+            key={set.key}
+            type="button"
+            className={`ph-set${selected ? " is-selected" : ""}`}
+            aria-current={selected ? "true" : undefined}
+            onClick={() => onFocus(set.key)}
+          >
+            <span className="ph-set__name">{set.name}</span>
+            <span className="ph-set__count">
+              {set.sessions} {set.sessions === 1 ? "session" : "sessions"}
+            </span>
+            {set.live && <span className="ph-ref ph-ref--live">capturing</span>}
+          </button>
+        );
+      })}
+    </nav>
+  );
+}
+
 function CommitRow({
   row,
   index,
@@ -599,19 +647,37 @@ export function ProjectHistoryScreen({
     [projects, projectId],
   );
 
-  const history = useMemo(() => projectHistory(project?.captures ?? []), [project]);
-  const { rows, artifacts, emptyCheckpoints } = history;
+  // Built once for the whole project. The graph draws all of it — that IS the
+  // relationship between the sets — while the list below narrows to one.
+  const model = useMemo(() => projectCommits(project?.captures ?? []), [project]);
+  const { artifacts, emptyCheckpoints } = model;
+  const sets = useMemo(() => projectSets(model.commits), [model]);
+
+  const [focusedSetKey, setFocusedSetKey] = useState<string | null>(null);
+  const focusedSet =
+    sets.find((candidate) => candidate.key === focusedSetKey) ?? sets[0] ?? null;
+
+  // A producer sits down inside ONE set and makes decisions there. Pouring
+  // every set's work into one stream read as one long undifferentiated day.
+  const rows = useMemo(
+    () => historyRows(commitsInSet(model.commits, focusedSet?.key ?? null)),
+    [model, focusedSet],
+  );
   const shape = useMemo(() => railShape(rows), [rows]);
   const days = useMemo(() => groupByDay(rows), [rows]);
-  const commits = useMemo(() => rows.map((row) => row.commit), [rows]);
+  const commits = model.commits;
 
   // Captured once per project rather than per row, so every "3d ago" on screen
   // is measured from the same instant.
   const nowMs = useMemo(() => Date.now(), [project?.id, rows.length]);
 
   useEffect(() => {
+    setFocusedSetKey(defaultSetKey(sets));
+  }, [project?.id, sets.length]);
+
+  useEffect(() => {
     setSelectedCommitId(rows[0]?.commit.id ?? null);
-  }, [project?.id, rows.length]);
+  }, [focusedSet?.key, rows.length]);
 
   /**
    * The set's structure for one session.
@@ -751,12 +817,30 @@ export function ProjectHistoryScreen({
     <div className="ph">
       <header className="ph__bar">
         <div className="ph__title">
-          <h1>{project?.display_name ?? "History"}</h1>
+          <h1>{focusedSet?.name ?? project?.display_name ?? "History"}</h1>
           <span className="ph__subtitle">
             {rows.length} {rows.length === 1 ? "session" : "sessions"}
             {branches > 0 && ` · ${branches} other ${branches === 1 ? "line" : "lines"}`}
             {emptyCheckpoints > 0 && ` · ${emptyCheckpoints} empty`}
           </span>
+          {/* Where this set came from. The relationship between sets is
+              context for the decisions below, not another entry in the list —
+              and it says outright when it was inferred rather than watched. */}
+          {focusedSet?.cameFrom && (
+            <p className="ph__origin">
+              {focusedSet.cameFromInferred ? "Most likely came off" : "Came off"}{" "}
+              <button
+                type="button"
+                className="ph__origin-link"
+                onClick={() => {
+                  const origin = sets.find((set) => set.name === focusedSet.cameFrom);
+                  if (origin) setFocusedSetKey(origin.key);
+                }}
+              >
+                {focusedSet.cameFrom}
+              </button>
+            </p>
+          )}
           {/* A shortcut nobody knows about is not a feature. Stated once, in
               the quietest type on the surface, next to what it acts on. */}
           {rows.length > 1 && (
@@ -784,6 +868,8 @@ export function ProjectHistoryScreen({
           </label>
         )}
       </header>
+
+      <SetPicker sets={sets} focused={focusedSet} onFocus={setFocusedSetKey} />
 
       <section className="ph__graph" aria-label="Project history">
         <CommitGraphView

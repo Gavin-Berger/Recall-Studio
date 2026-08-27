@@ -120,11 +120,42 @@ function commitRows(): HTMLElement[] {
 }
 
 describe("ProjectHistoryScreen", () => {
-  it("draws one node and one row per captured stretch of work", () => {
+  it("draws every session in the project on the graph", () => {
+    // The graph is the whole project — that IS the relationship between the
+    // sets, and it is why the list can afford to narrow.
     renderScreen();
-    // Five commits across two sets. The old model drew two file nodes.
     expect(graph().getAllByRole("button")).toHaveLength(5);
-    expect(commitRows()).toHaveLength(5);
+  });
+
+  it("narrows the list to the set being worked", () => {
+    // A producer sits down inside ONE set and makes decisions there. Pouring
+    // every set's work into one stream read as one undifferentiated day.
+    // `nightfall` holds c1, c4 and c5; `nightfall v2` holds c2 and c3.
+    renderScreen();
+    expect(commitRows()).toHaveLength(3);
+  });
+
+  it("opens on the set worked most recently", () => {
+    renderScreen();
+    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("nightfall");
+  });
+
+  it("switches the list when another set is chosen", async () => {
+    const user = userEvent.setup();
+    renderScreen();
+    const picker = screen.getByLabelText("Sets in this project");
+
+    await user.click(within(picker).getByRole("button", { name: /nightfall v2/ }));
+
+    expect(commitRows()).toHaveLength(2);
+  });
+
+  it("says where the set came from, without listing it as work", () => {
+    // The relationship between sets is context for the decisions below, not
+    // another entry in the list.
+    renderScreen();
+    const picker = screen.getByLabelText("Sets in this project");
+    expect(picker).toBeInTheDocument();
   });
 
   it("puts the commit's size in the metadata, once", () => {
@@ -163,28 +194,22 @@ describe("ProjectHistoryScreen", () => {
     expect(within(commitRows()[0]!).getByText("latest")).toBeInTheDocument();
   });
 
-  it("says where the history branched", () => {
+  it("keeps the fork between sets on the graph, where it belongs", () => {
+    // Within one set the sessions are a straight chain — you keep going in the
+    // file you are in. The branching is between SETS, which is the graph's
+    // job and the reason it still draws the whole project.
     renderScreen();
-    const branchPoint = commitRows().find((row) => within(row).queryByText("went two ways"));
-    expect(branchPoint).toBeDefined();
+    const edges = document.body.querySelectorAll(".vg__edge");
+    expect(edges.length).toBeGreaterThan(0);
   });
 
-  it("renders a real elbow connector where a branch leaves its parent", () => {
+  it("draws the rail as one line when the set never forked", () => {
+    // A focused set is a straight chain by construction, so there is nothing
+    // to connect across lanes. The elbow geometry is still proved directly in
+    // projectHistory.test.ts, where rows can span sets.
     renderScreen();
-    const container = document.body;
-    // A vertical stripe is not a git graph. The fork has to be drawn as an
-    // orthogonal path from the child's lane across to its parent's.
-    const elbows = container.querySelectorAll(".ph-rail__elbow");
-    expect(elbows.length).toBeGreaterThan(0);
-    const d = elbows[0]!.getAttribute("d") ?? "";
-    expect(d).toMatch(/^M .* L .* A .* L /);
-  });
-
-  it("dashes an inferred connector and leaves an observed one solid", () => {
-    renderScreen();
-    // `branched` is a guess and draws dashed; `continued` was watched.
-    const inferred = document.body.querySelectorAll(".ph-rail__elbow--inferred");
-    expect(inferred.length).toBeGreaterThan(0);
+    expect(document.body.querySelectorAll(".ph-rail__elbow")).toHaveLength(0);
+    expect(document.body.querySelectorAll(".ph-rail__line").length).toBeGreaterThan(0);
   });
 
   it("moves the graph selection when a row is picked", async () => {
@@ -196,7 +221,7 @@ describe("ProjectHistoryScreen", () => {
 
     // Each row carries three buttons (select, Report, Workspace); the row
     // itself is the select target.
-    await user.click(commitRows()[3]!.querySelector(".ph-row__hit") as HTMLElement);
+    await user.click(commitRows()[2]!.querySelector(".ph-row__hit") as HTMLElement);
 
     const pressed = nodes().filter((node) => node.getAttribute("aria-pressed") === "true");
     expect(pressed).toHaveLength(1);
@@ -293,32 +318,31 @@ describe("ProjectHistoryScreen", () => {
     expect(commitRows()[1]!.className).toContain("is-selected");
   });
 
-  it("follows the lineage with p instead of stepping down the page", async () => {
+  it("walks back through what a session came from", async () => {
     const user = userEvent.setup();
     renderScreen();
 
-    // Rows run c5, c4, c3, c2, c1. Row 1 is c4, which continued c1 — four rows
-    // down — while c3 and c2 (the v2 branch) are printed in between. Stepping
-    // down from row 1 lands on c3, a different lineage entirely. This is the
-    // move a flat list cannot offer.
+    // The focused set runs c5, c4, c1 — a straight chain, because inside one
+    // set you keep going in the file you are in. So here `p` and the down
+    // arrow agree; the case where they DIVERGE needs rows spanning sets and is
+    // proved directly in historyKeys.test.ts.
     await user.click(commitRows()[1]!.querySelector(".ph-row__hit") as HTMLElement);
     await user.keyboard("p");
 
     const rows = commitRows();
-    const selectedIndex = rows.findIndex((row) => row.className.includes("is-selected"));
-    expect(selectedIndex).toBe(4);
+    expect(rows.findIndex((row) => row.className.includes("is-selected"))).toBe(2);
   });
 
   it("does nothing on p at a root", async () => {
     const user = userEvent.setup();
     renderScreen();
 
-    // The last row is the first work Recall captured; it has no parent, and
-    // silence beats moving somewhere arbitrary.
-    await user.click(commitRows()[4]!.querySelector(".ph-row__hit") as HTMLElement);
+    // The last row is the first work Recall captured in this set; it has
+    // nothing before it, and silence beats moving somewhere arbitrary.
+    await user.click(commitRows()[2]!.querySelector(".ph-row__hit") as HTMLElement);
     await user.keyboard("p");
 
-    expect(commitRows()[4]!.className).toContain("is-selected");
+    expect(commitRows()[2]!.className).toContain("is-selected");
   });
 
   it("opens the Report on Enter and the workspace on Shift+Enter", async () => {

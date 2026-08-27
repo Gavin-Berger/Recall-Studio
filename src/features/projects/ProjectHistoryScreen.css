@@ -791,3 +791,79 @@
   color: var(--paper-strong);
   white-space: nowrap;
 }
+
+/* Sets --------------------------------------------------------------------- */
+
+/* Which set the list is about. A row of choices rather than a dropdown,
+   because the count beside each name is itself the useful fact — it says where
+   the work in this project actually went. */
+.ph-sets {
+  display: flex;
+  gap: var(--s2);
+  flex-wrap: wrap;
+  margin-top: calc(var(--s3) * -1);
+}
+
+.ph-set {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s2);
+  padding: var(--s2) var(--s3);
+  border: var(--stroke-hair) solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--panel);
+  color: var(--muted);
+  font: inherit;
+  cursor: pointer;
+}
+
+.ph-set:hover {
+  color: var(--paper);
+}
+
+.ph-set:focus-visible {
+  outline: 2px solid var(--signal);
+  outline-offset: 2px;
+}
+
+.ph-set.is-selected {
+  background: var(--panel-3);
+  border-color: rgba(var(--signal-rgb), 0.45);
+  color: var(--paper-strong);
+}
+
+.ph-set__name {
+  font-size: var(--t-meta);
+  font-weight: 600;
+}
+
+.ph-set__count {
+  font-family: var(--font-mono);
+  font-size: var(--t-micro);
+  color: var(--faint-aa);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Where this set came from. Context for the decisions below, not an entry in
+   the list — so it reads as a caption, not as a row. */
+.ph__origin {
+  margin: var(--s1) 0 0;
+  font-size: var(--t-meta);
+  color: var(--muted);
+}
+
+.ph__origin-link {
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: var(--signal-soft);
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.ph__origin-link:focus-visible {
+  outline: 2px solid var(--signal);
+  outline-offset: 2px;
+}

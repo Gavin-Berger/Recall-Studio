@@ -56,8 +56,26 @@ export type ProjectHistory = {
  */
 export function projectHistory(captures: SavedSessionMetadata[]): ProjectHistory {
   const model = projectCommits(captures);
+  return {
+    rows: historyRows(model.commits),
+    artifacts: model.artifacts,
+    emptyCheckpoints: model.emptyCheckpoints,
+  };
+}
+
+/**
+ * The rows for a given set of sessions.
+ *
+ * Split out from `projectHistory` so the list can be narrowed to ONE set while
+ * the graph above still draws the whole project. Lanes and the rail are
+ * computed over whatever is passed in, which is what keeps them correct: rows
+ * filtered after the fact would carry lane and row numbers that referred to a
+ * longer list, and the connectors would point at rows that are no longer there.
+ */
+export function historyRows(commits: ProjectCommit[]): HistoryRow[] {
+  const model = { commits };
   if (model.commits.length === 0) {
-    return { rows: [], artifacts: model.artifacts, emptyCheckpoints: model.emptyCheckpoints };
+    return [];
   }
 
   const layout = layoutCommits(model.commits);
@@ -140,7 +158,7 @@ export function projectHistory(captures: SavedSessionMetadata[]): ProjectHistory
       .sort((a, b) => a - b);
   });
 
-  return { rows, artifacts: model.artifacts, emptyCheckpoints: model.emptyCheckpoints };
+  return rows;
 }
 
 /** Horizontal pitch between lane columns, and the drawn height of one row. */

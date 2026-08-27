@@ -151,14 +151,14 @@ beforeEach(() => {
 describe("ProjectHistoryScreen · the loaded panel", () => {
   it("shows what changed in the set since the parent commit", async () => {
     renderScreen();
-    const diff = await screen.findByLabelText("Changed since the previous commit");
+    const diff = await screen.findByLabelText("What changed in the set");
     expect(within(diff).getByText("Bass")).toBeInTheDocument();
     expect(within(diff).getByText("Saturator")).toBeInTheDocument();
   });
 
   it("compares against the PARENT, not against nothing", async () => {
     renderScreen();
-    await screen.findByLabelText("Changed since the previous commit");
+    await screen.findByLabelText("What changed in the set");
     // Both sides are fetched, or there is no comparison to make.
     expect(getProjectSchema).toHaveBeenCalledWith("c2");
     expect(getProjectSchema).toHaveBeenCalledWith("c1");
@@ -166,7 +166,7 @@ describe("ProjectHistoryScreen · the loaded panel", () => {
 
   it("materializes before reading, or the snapshot reports as missing", async () => {
     renderScreen();
-    await screen.findByLabelText("Changed since the previous commit");
+    await screen.findByLabelText("What changed in the set");
     expect(materializeSessionSchema).toHaveBeenCalledWith("c2");
   });
 
@@ -200,7 +200,7 @@ describe("ProjectHistoryScreen · the loaded panel", () => {
     renderScreen();
     await waitFor(() => {
       const rows = Array.from(
-        screen.getByLabelText("Commits").querySelectorAll<HTMLElement>(".ph-row__name"),
+        screen.getByLabelText("Sessions").querySelectorAll<HTMLElement>(".ph-row__name"),
       );
       expect(rows).toHaveLength(2);
       expect(rows.every((row) => /Worked/.test(row.textContent ?? ""))).toBe(true);
@@ -215,17 +215,17 @@ describe("ProjectHistoryScreen · the loaded panel", () => {
 
   it("shows no diff at all for the root commit", async () => {
     renderScreen();
-    await screen.findByLabelText("Changed since the previous commit");
+    await screen.findByLabelText("What changed in the set");
 
     // Select the oldest commit, which has no parent.
     const rows = Array.from(
-      screen.getByLabelText("Commits").querySelectorAll<HTMLElement>(".ph-row"),
+      screen.getByLabelText("Sessions").querySelectorAll<HTMLElement>(".ph-row"),
     );
     (rows[rows.length - 1]!.querySelector(".ph-row__hit") as HTMLElement).click();
 
     await waitFor(() => {
       expect(
-        screen.queryByLabelText("Changed since the previous commit"),
+        screen.queryByLabelText("What changed in the set"),
       ).not.toBeInTheDocument();
     });
   });

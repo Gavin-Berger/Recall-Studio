@@ -115,7 +115,7 @@ function graph() {
  */
 function commitRows(): HTMLElement[] {
   return Array.from(
-    screen.getByLabelText("Commits").querySelectorAll<HTMLElement>(".ph-row"),
+    screen.getByLabelText("Sessions").querySelectorAll<HTMLElement>(".ph-row"),
   );
 }
 
@@ -141,7 +141,7 @@ describe("ProjectHistoryScreen", () => {
     renderScreen();
     // Scoped to the list: the graph's hover titles still carry the full
     // reason, which is the right place for it.
-    const repeated = within(screen.getByLabelText("Commits")).queryAllByText(
+    const repeated = within(screen.getByLabelText("Sessions")).queryAllByText(
       /Picked up .* where the earlier session left it/,
     );
     expect(repeated).toHaveLength(0);
@@ -165,7 +165,7 @@ describe("ProjectHistoryScreen", () => {
 
   it("says where the history branched", () => {
     renderScreen();
-    const branchPoint = commitRows().find((row) => within(row).queryByText("branched here"));
+    const branchPoint = commitRows().find((row) => within(row).queryByText("went two ways"));
     expect(branchPoint).toBeDefined();
   });
 
@@ -344,7 +344,36 @@ describe("ProjectHistoryScreen", () => {
 
   it("tells the reader the shortcuts exist", () => {
     renderScreen();
-    expect(screen.getByText(/parent/)).toBeInTheDocument();
+    expect(screen.getByText(/came from/)).toBeInTheDocument();
+  });
+
+  it("uses no git or programming words on screen", () => {
+    // DESIGN.md §10: producer vocabulary, always. This surface is modelled on
+    // a git history, which makes it the easiest place in the app for "commit",
+    // "branch", "repository" and "projection" to leak out of the code and into
+    // what a producer reads. Named here so they cannot creep back.
+    //
+    // Whole words, compared against a split of the rendered text rather than
+    // with regex boundaries — the point is that "commit" never appears, not
+    // that some pattern happens to miss it.
+    renderScreen();
+    const shown = new Set(
+      (document.body.textContent ?? "").toLowerCase().split(/[^a-z]+/),
+    );
+    const banned = [
+      "commit",
+      "commits",
+      "branch",
+      "branches",
+      "branched",
+      "repository",
+      "projection",
+      "schema",
+      "parent",
+      "node",
+      "nodes",
+    ];
+    expect(banned.filter((word) => shown.has(word))).toEqual([]);
   });
 
   it("says what to do when there are no projects at all", () => {

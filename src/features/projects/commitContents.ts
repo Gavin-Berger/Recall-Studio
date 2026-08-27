@@ -205,7 +205,7 @@ export function summarizeCommit(
  * concentrated on, and says plainly when there is not enough to characterise.
  */
 export function commitHeadline(contents: CommitContents): string {
-  if (contents.empty) return "Recorded work with nothing summarised yet";
+  if (contents.empty) return "Work with no detail kept";
 
   const parts: string[] = [];
   const lead = contents.tracks[0];

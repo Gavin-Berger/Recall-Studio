@@ -152,20 +152,20 @@ function Diff({ state }: { state: CommitDiff }) {
   if (state.status === "unknown") {
     return (
       <p className="ph-diff__quiet">
-        No structure snapshot on one side of this, so Recall can&rsquo;t say what changed in
-        the set.
+        Recall didn&rsquo;t get a look at the set on both sides of this, so it can&rsquo;t
+        say what changed.
       </p>
     );
   }
   if (state.status === "unchanged") {
-    return <p className="ph-diff__quiet">Same tracks and devices as before this.</p>;
+    return <p className="ph-diff__quiet">Same tracks and devices as before.</p>;
   }
 
   const { lines, total } = diffLines(state.diff);
   return (
-    <section className="ph-diff" aria-label="Changed since the previous commit">
+    <section className="ph-diff" aria-label="What changed in the set">
       <h3 className="ph-contents__head">
-        Since the commit before
+        What changed in the set
         <span className="ph-contents__count">{diffHeadline(state.diff)}</span>
       </h3>
       <ul className="ph-diff__list">
@@ -247,8 +247,8 @@ function Contents({ state }: { state: ContentsState }) {
   if (contents.empty) {
     return (
       <p className="ph-contents__quiet">
-        Recall recorded work here but has no breakdown for it — the detail predates the
-        projection, or the capture only saw counts.
+        Recall counted the work here but kept no detail about it, so there is nothing to
+        break down.
       </p>
     );
   }
@@ -412,8 +412,8 @@ function CommitRow({
             )}
             {row.live && <span className="ph-ref ph-ref--live">capturing</span>}
             {row.latest && !row.live && <span className="ph-ref ph-ref--latest">latest</span>}
-            {row.branchPoint && <span className="ph-ref">branched here</span>}
-            {row.depth > 0 && <span className="ph-ref ph-ref--quiet">branch</span>}
+            {row.branchPoint && <span className="ph-ref">went two ways</span>}
+            {row.depth > 0 && <span className="ph-ref ph-ref--quiet">other line</span>}
           </span>
 
           {/* Only when it says something.
@@ -660,8 +660,8 @@ export function ProjectHistoryScreen({
       <div className="ph ph--empty">
         <strong>No projects yet.</strong>
         <p>
-          A project is the repository and every stretch of captured work is a point in its
-          history. Create one and open it in Ableton with Recall running.
+          Recall keeps everything you do in a project — every stretch of work, in the
+          order it happened. Create one and open it in Ableton with Recall running.
         </p>
         <button type="button" className="px-btn px-btn--primary" onClick={onOpenProjects}>
           Go to Projects
@@ -676,8 +676,8 @@ export function ProjectHistoryScreen({
         <div className="ph__title">
           <h1>{project?.display_name ?? "History"}</h1>
           <span className="ph__subtitle">
-            {rows.length} {rows.length === 1 ? "commit" : "commits"}
-            {branches > 0 && ` · ${branches} ${branches === 1 ? "branch" : "branches"}`}
+            {rows.length} {rows.length === 1 ? "session" : "sessions"}
+            {branches > 0 && ` · ${branches} other ${branches === 1 ? "line" : "lines"}`}
             {emptyCheckpoints > 0 && ` · ${emptyCheckpoints} empty`}
           </span>
           {/* A shortcut nobody knows about is not a feature. Stated once, in
@@ -685,7 +685,7 @@ export function ProjectHistoryScreen({
           {rows.length > 1 && (
             <p className="ph__keys">
               <kbd>↑</kbd>
-              <kbd>↓</kbd> move · <kbd>p</kbd> parent · <kbd>↵</kbd> report ·{" "}
+              <kbd>↓</kbd> move · <kbd>p</kbd> came from · <kbd>↵</kbd> report ·{" "}
               <kbd>⇧↵</kbd> workspace
             </p>
           )}
@@ -719,7 +719,7 @@ export function ProjectHistoryScreen({
       {rows.length > 0 && (
         <section
           className="ph__list"
-          aria-label="Commits"
+          aria-label="Sessions"
           onKeyDown={(event) => {
             const index = rows.findIndex((row) => row.commit.id === selectedRow?.commit.id);
             const action = historyKeyAction(event, {

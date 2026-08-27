@@ -92,8 +92,8 @@ export function CommitGraphView({
       <div className="vg vg--empty">
         <p className="vg__empty-title">Nothing captured yet</p>
         <p className="vg__empty-body">
-          Open this project in Ableton with Recall running. Every stretch of work becomes a
-          point in its history.
+          Open this project in Ableton with Recall running. Every stretch of work you do
+          lands here, in the order it happened.
         </p>
       </div>
     );

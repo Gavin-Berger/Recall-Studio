@@ -309,6 +309,6 @@ describe("commitHeadline", () => {
   it("says plainly when it cannot characterise the work", () => {
     // Honest degradation: a commit Recall recorded but cannot break down must
     // not get a headline that implies it knows more than it does.
-    expect(commitHeadline(summarizeCommit([], [], []))).toMatch(/nothing summarised/i);
+    expect(commitHeadline(summarizeCommit([], [], []))).toMatch(/no detail kept/i);
   });
 });

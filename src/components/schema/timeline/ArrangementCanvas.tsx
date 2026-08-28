@@ -33,44 +33,12 @@ function gestureKind(activity: Activity): string {
   return activity.automation ? "Automation write" : activity.deviceName === "Mixer" ? "Mixer gesture" : "Parameter gesture";
 }
 
-function regionStyle(events: Activity[]): RegionStyle {
-  if (events.some((event) => event.kind === "memory" && event.memoryCategory === "song")) {
-    return { accent: "#d2b46e" };
-  }
-  if (events.some((event) => event.kind === "memory" && event.memoryCategory === "recording")) {
-    return { accent: "#dc8f8b" };
-  }
-  if (events.some((event) => event.kind === "memory" && event.memoryCategory === "structure")) {
-    return { accent: "#75c5bd" };
-  }
-  if (events.some((event) => event.kind === "memory" && event.memoryCategory === "automation")) {
-    return { accent: "#9ba8ff" };
-  }
-  if (events.some((event) => event.kind === "memory" && event.memoryCategory === "mix")) {
-    return { accent: "#82b9e8" };
-  }
-  if (events.some((event) => event.kind === "memory" && event.memoryCategory === "performance")) {
-    return { accent: "#c29bea" };
-  }
-  if (events.some((event) => event.kind === "memory" && event.memoryCategory === "project")) {
-    return { accent: "#a8b2c8" };
-  }
-  if (events.some((event) => event.kind === "clip")) {
-    return { accent: "#79c7cf" };
-  }
-  if (events.some((event) => event.kind === "noteEdit")) {
-    return { accent: "#baa7ff" };
-  }
-  if (events.some((event) => event.kind === "note")) {
-    return { accent: "#d8b66f" };
-  }
-  if (events.some((event) => event.automation)) {
-    return { accent: "#9ba8ff" };
-  }
-  if (events.some((event) => event.deviceName === "Mixer")) {
-    return { accent: "#82b9e8" };
-  }
-  return { accent: "#9daeff" };
+function regionStyle(_events: Activity[]): RegionStyle {
+  // The arrangement answers *where* work happened. Colour must not also claim
+  // that a clip, mix move, note, or device is a different kind of importance.
+  // Interaction and selection own violet elsewhere; the rendered record stays
+  // one calm, high-contrast instrument tone.
+  return { accent: "#a6b3c7" };
 }
 
 function useWidth() {

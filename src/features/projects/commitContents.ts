@@ -64,6 +64,17 @@ export type CommitContents = {
   notes: { key: string; label: string; context: string | null }[];
   /** Clips and samples brought into the set. */
   added: { key: string; label: string; context: string | null }[];
+  /**
+   * Every captured item in each group. The short lists above remain the
+   * glance, while these let a producer deliberately open the counted tail.
+   */
+  all: {
+    tracks: ContentsEntry[];
+    devices: ContentsEntry[];
+    parameters: ContentsEntry[];
+    notes: { key: string; label: string; context: string | null }[];
+    added: { key: string; label: string; context: string | null }[];
+  };
   totals: {
     tracks: number;
     devices: number;
@@ -85,10 +96,14 @@ export type CommitContents = {
  * its size and says the touches were spread evenly rather than naming five at
  * random.
  */
-function rank(map: Map<string, ContentsEntry>): ContentsEntry[] {
-  const ordered = [...map.values()].sort(
+function orderedEntries(map: Map<string, ContentsEntry>): ContentsEntry[] {
+  return [...map.values()].sort(
     (a, b) => b.changes - a.changes || a.label.localeCompare(b.label),
   );
+}
+
+function rank(map: Map<string, ContentsEntry>): ContentsEntry[] {
+  const ordered = orderedEntries(map);
   const notable = ordered.filter((entry) => entry.changes > 1);
   return notable.slice(0, CONTENTS_LIMIT);
 }
@@ -147,18 +162,16 @@ export function summarizeCommit(
     }
   }
 
-  const noteRows = [...notes]
+  const allNotes = [...notes]
     .sort((a, b) => b.changed_at_ms - a.changed_at_ms)
-    .slice(0, CONTENTS_LIMIT)
     .map((note) => ({
       key: note.id,
       label: note.summary?.trim() || "Notes edited",
       context: note.track_name?.trim() || note.clip_name?.trim() || null,
     }));
 
-  const addedRows = [...clips]
+  const allAdded = [...clips]
     .sort((a, b) => b.changed_at_ms - a.changed_at_ms)
-    .slice(0, CONTENTS_LIMIT)
     .map((clip) => ({
       key: clip.id,
       label: clip.sample_name?.trim() || clip.clip_name?.trim() || "Clip added",
@@ -185,8 +198,15 @@ export function summarizeCommit(
     tracks: rank(tracks),
     devices: rank(devices),
     parameters: rank(parameters),
-    notes: noteRows,
-    added: addedRows,
+    notes: allNotes.slice(0, CONTENTS_LIMIT),
+    added: allAdded.slice(0, CONTENTS_LIMIT),
+    all: {
+      tracks: orderedEntries(tracks),
+      devices: orderedEntries(devices),
+      parameters: orderedEntries(parameters),
+      notes: allNotes,
+      added: allAdded,
+    },
     totals,
     empty:
       totals.tracks === 0 &&

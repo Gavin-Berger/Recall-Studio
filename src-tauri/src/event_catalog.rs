@@ -836,6 +836,56 @@ pub fn is_creative(event_type: &str) -> bool {
     !NON_CREATIVE_EVENT_TYPES.contains(&event_type)
 }
 
+/// The signature of a Live API object that was never turned into a value.
+///
+/// Live hands the remote script objects, not strings, for some properties —
+/// routing channels above all. Where the script could not find a readable name
+/// on one, Python's default `repr` was recorded instead:
+///
+/// ```text
+/// "input_routing_channel": "<Track.RoutingChannel object at 0x000000002B0AF110>"
+/// ```
+///
+/// That is a memory address. It differs on every read of the SAME unchanged
+/// route, so each refresh compares unequal and reports as a change. One real
+/// session recorded 195 `track_routing_changed` inside a single second at
+/// capture start this way — 45% of everything it captured — and every one of
+/// them counted as producer work. Across the library, 2,700 of 21,400 events
+/// carry this signature.
+///
+/// Script 0.7.2 stopped producing them, but the recorded history cannot be
+/// un-recorded, and Recall must not keep reporting it as work in the meantime.
+const UNREADABLE_VALUE_MARKER: &str = "object at 0x";
+
+/// Whether one recorded event counts as producer work.
+///
+/// Two rules, not one. The event's TYPE has to be a kind of work (`is_creative`)
+/// and its recorded VALUE has to be something Recall could actually read. An
+/// event whose value is a memory address is not evidence of anything: it says
+/// only that Recall looked, not that the producer acted. §1 — Recall states what
+/// it knows, and it does not know what that route was.
+///
+/// The type is deliberately not reclassified to get this: re-routing a track IS
+/// a decision when a human does it, and blanket-excluding `track_routing_changed`
+/// would throw the real ones away with the noise.
+pub fn counts_as_work(event_type: &str, payload: Option<&str>) -> bool {
+    is_creative(event_type) && !carries_unreadable_value(payload)
+}
+
+/// True when an event's payload records a Live object Recall could not read.
+pub fn carries_unreadable_value(payload: Option<&str>) -> bool {
+    payload.is_some_and(|body| body.contains(UNREADABLE_VALUE_MARKER))
+}
+
+/// The value rule as a SQL predicate, for the ONE place it is still asked in
+/// SQL: the migration that backfills `events.value_unreadable` for rows written
+/// before the flag existed. Every read since answers from the flag instead —
+/// the counting aggregate runs once a second and must not scan 152MB of payload
+/// to do it.
+pub fn unreadable_value_sql_predicate() -> String {
+    format!("payload LIKE '%{}%'", UNREADABLE_VALUE_MARKER)
+}
+
 /// The non-creative event types as a SQL literal list, e.g. `'heartbeat','...'`.
 ///
 /// Exists so the counting query and `is_creative` can never disagree. The names
@@ -1078,6 +1128,34 @@ mod tests {
     // The counting query builds its NOT IN list from the same constant
     // `is_creative` reads. If these ever disagree, the number on screen stops
     // matching the rule the code believes it is applying.
+    #[test]
+    fn the_value_rule_is_the_same_in_rust_and_in_sql() {
+        // Two definitions of "work" in two languages is how the first one drifted.
+        let repr = "{\"input_routing_channel\":\"<Track.RoutingChannel object at 0x2B0AF110>\"}";
+        assert!(carries_unreadable_value(Some(repr)));
+        assert!(unreadable_value_sql_predicate().contains(UNREADABLE_VALUE_MARKER));
+    }
+
+    #[test]
+    fn a_route_recall_could_actually_read_still_counts_as_work() {
+        // The type is not the problem and must not be blamed for it: re-routing
+        // a track IS a decision when a human does it.
+        assert!(counts_as_work(
+            "track_routing_changed",
+            Some("{\"input_routing_channel\":\"Ext. In 1\"}")
+        ));
+        assert!(!counts_as_work(
+            "track_routing_changed",
+            Some("{\"input_routing_channel\":\"<Track.RoutingChannel object at 0x1>\"}")
+        ));
+    }
+
+    #[test]
+    fn an_event_with_no_payload_at_all_is_judged_on_its_type_alone() {
+        assert!(counts_as_work("parameter_changed", None));
+        assert!(!counts_as_work("heartbeat", None));
+    }
+
     #[test]
     fn the_sql_exclusion_list_matches_is_creative() {
         let sql = non_creative_sql_list();

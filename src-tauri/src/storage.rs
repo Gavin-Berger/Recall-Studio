@@ -590,6 +590,7 @@ impl StorageState {
         // NON_CREATIVE_EVENT_TYPES for why noise is the enumerated side.
         let non_creative = crate::event_catalog::non_creative_sql_list();
 
+
         let mut statement = connection
             .prepare(
                 &format!(
@@ -621,7 +622,11 @@ impl StorageState {
                         sessions.created_at_ms
                     ) AS last_updated_at_ms,
                     COUNT(events.id) AS event_count,
-                    SUM(CASE WHEN events.id IS NOT NULL AND events.event_type NOT IN ({non_creative}) THEN 1 ELSE 0 END) AS creative_event_count,
+                    -- Both halves of the work rule, mirroring `counts_as_work`:
+                    -- the TYPE has to be work, and the VALUE has to be one Recall
+                    -- could read. The value half is a stored flag, not a scan of
+                    -- the payload — this aggregate runs once a second.
+                    SUM(CASE WHEN events.id IS NOT NULL AND events.event_type NOT IN ({non_creative}) AND events.value_unreadable = 0 THEN 1 ELSE 0 END) AS creative_event_count,
                     SUM(CASE WHEN events.id IS NOT NULL AND events.event_type = 'heartbeat' THEN 1 ELSE 0 END) AS heartbeat_count
                 FROM sessions
                 LEFT JOIN events ON events.session_id = sessions.id
@@ -870,6 +875,24 @@ impl StorageState {
             .collect::<Result<Vec<_>, _>>()
             .map_err(|error| format!("Failed to collect saved session events: {}", error))?;
 
+        // `list_saved_sessions` and this event read use separate SQLite
+        // statements. A live capture can append an event in the tiny window
+        // between them, so its metadata count can be one tick behind this
+        // actual record. The loaded event list is the report's source of truth:
+        // derive every count returned with it from that same list so the metric,
+        // the raw-record disclosure, and the report header cannot disagree.
+        let event_count = events.len();
+        let creative_event_count = events
+            .iter()
+            .filter(|event| {
+                crate::event_catalog::counts_as_work(&event.event_type, event.payload.as_deref())
+            })
+            .count();
+        let heartbeat_count = events
+            .iter()
+            .filter(|event| event.event_type == "heartbeat")
+            .count();
+
         Ok(SavedSession {
             id: metadata.id,
             name: metadata.name,
@@ -884,9 +907,9 @@ impl StorageState {
             started_at_ms: metadata.started_at_ms,
             ended_at_ms: metadata.ended_at_ms,
             last_updated_at_ms: metadata.last_updated_at_ms,
-            event_count: metadata.event_count,
-            creative_event_count: metadata.creative_event_count,
-            heartbeat_count: metadata.heartbeat_count,
+            event_count,
+            creative_event_count,
+            heartbeat_count,
             events,
         })
     }
@@ -2021,12 +2044,13 @@ impl StorageState {
                         file_path,
                         bpm,
                         playing,
-                        created_at_ms
+                        created_at_ms,
+                        value_unreadable
                     )
                     VALUES (
                         ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
                         ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20,
-                        ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28
+                        ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29
                     )
                     ",
                 )
@@ -2072,6 +2096,10 @@ impl StorageState {
                         // SQLite has no boolean type; store playing as 0/1, NULL if absent.
                         event.playing.map(|playing| playing as i64),
                         now_ms() as i64,
+                        // Decided once, at write. The counting aggregate runs on a
+                        // 1Hz timer and must never read this payload to answer it.
+                        crate::event_catalog::carries_unreadable_value(event.payload.as_deref())
+                            as i64,
                     ])
                     .map_err(|error| format!("Failed to save event in batch: {}", error))?;
 
@@ -4091,6 +4119,35 @@ fn migrate_event_columns(connection: &Connection) -> rusqlite::Result<()> {
         }
     }
 
+    // Whether this event's recorded value is a Live object Recall could not read
+    // (see `event_catalog::carries_unreadable_value`).
+    //
+    // Stored rather than tested at read time, because the library refreshes ONCE
+    // A SECOND and the payload column holds 152MB — 142MB of it `live_set_snapshot`
+    // JSON. Asking `payload NOT LIKE '%object at 0x%'` in the session-counting
+    // aggregate turned a metadata-only scan into a full read of every payload in
+    // the database, three times the cost, on a 1Hz timer. The answer never changes
+    // once an event is written, so it is computed once, here and at ingest.
+    if !existing.contains("value_unreadable") {
+        connection.execute_batch(
+            "ALTER TABLE events ADD COLUMN value_unreadable INTEGER NOT NULL DEFAULT 0;",
+        )?;
+        connection.execute_batch(&format!(
+            "UPDATE events SET value_unreadable = 1 WHERE {};",
+            crate::event_catalog::unreadable_value_sql_predicate()
+        ))?;
+    }
+
+    // Everything the session-counting aggregate reads from `events`, in one
+    // index, so that query never touches a row. It runs on the library refresh
+    // timer, so its cost is paid continuously rather than once. Declared here
+    // rather than beside the other indexes because it names a column that only
+    // exists after the migration above.
+    connection.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_events_session_counts
+         ON events(session_id, event_type, value_unreadable);",
+    )?;
+
     Ok(())
 }
 
@@ -4354,6 +4411,153 @@ mod tests {
         assert_eq!(event.device_chain.as_deref(), Some("Serum 2 : Saturator"));
         assert_eq!(event.bpm, Some(124.0));
         assert_eq!(event.playing, Some(true));
+
+        cleanup(&path);
+    }
+
+    #[test]
+    fn loaded_capture_counts_match_its_raw_event_record() {
+        let (storage, path) = temp_storage();
+        let session = storage.resume_or_create_active_session().unwrap();
+        let session_id = session.session_id.clone().unwrap();
+
+        storage
+            .save_events_batch(&[
+                event(&session_id, "heartbeat"),
+                event(&session_id, "focus_changed"),
+                event(&session_id, "parameter_changed"),
+            ])
+            .unwrap();
+
+        let listed = storage
+            .list_saved_sessions()
+            .unwrap()
+            .into_iter()
+            .find(|capture| capture.id == session_id)
+            .expect("listed capture");
+        let loaded = storage.load_session(&session_id).unwrap();
+
+        assert_eq!(listed.event_count, loaded.events.len());
+        assert_eq!(loaded.event_count, loaded.events.len());
+        assert_eq!(listed.creative_event_count, loaded.creative_event_count);
+        assert_eq!(
+            loaded.creative_event_count,
+            loaded
+                .events
+                .iter()
+                .filter(|event| {
+                    crate::event_catalog::counts_as_work(
+                        &event.event_type,
+                        event.payload.as_deref(),
+                    )
+                })
+                .count(),
+        );
+        assert_eq!(
+            loaded.heartbeat_count,
+            loaded
+                .events
+                .iter()
+                .filter(|event| event.event_type == "heartbeat")
+                .count(),
+        );
+
+        cleanup(&path);
+    }
+
+    #[test]
+    fn an_event_whose_value_recall_could_not_read_is_not_counted_as_work() {
+        // Live hands the script objects for some properties. Where no readable
+        // name was found, Python's repr went into the record — a memory address
+        // that differs on every read, so an UNCHANGED route reported as a change
+        // on every refresh. One real session logged 195 of these inside a single
+        // second at capture start and called all 195 producer work.
+        //
+        // Both count sites are asserted because they are separate code: one is
+        // SQL in `list_saved_sessions`, the other is Rust in `load_session`, and
+        // a rule that only half of them applies is how the numbers on two
+        // surfaces come to disagree.
+        let (storage, path) = temp_storage();
+        let session = storage.resume_or_create_active_session().unwrap();
+        let session_id = session.session_id.clone().unwrap();
+
+        let mut unreadable = event(&session_id, "track_routing_changed");
+        unreadable.payload = Some(
+            "{\"input_routing_channel\":\"<Track.RoutingChannel object at 0x000000002B0AF110>\"}"
+                .into(),
+        );
+        let mut readable = event(&session_id, "track_routing_changed");
+        readable.payload = Some("{\"input_routing_channel\":\"Ext. In 1\"}".into());
+
+        storage
+            .save_events_batch(&[unreadable, readable, event(&session_id, "parameter_changed")])
+            .unwrap();
+
+        let listed = storage
+            .list_saved_sessions()
+            .unwrap()
+            .into_iter()
+            .find(|capture| capture.id == session_id)
+            .expect("listed capture");
+        let loaded = storage.load_session(&session_id).unwrap();
+
+        // All three were recorded. Nothing is thrown away — the record is the
+        // record, and §1 forbids quietly dropping what was captured.
+        assert_eq!(listed.event_count, 3);
+        assert_eq!(loaded.events.len(), 3);
+
+        // Two of them are work: the readable route and the parameter move.
+        assert_eq!(listed.creative_event_count, 2);
+        assert_eq!(loaded.creative_event_count, 2);
+
+        cleanup(&path);
+    }
+
+    #[test]
+    fn the_migration_flags_unreadable_values_already_in_the_database() {
+        // 2,700 events were written before the flag existed. If the backfill did
+        // not run over them, every count in the app would still be inflated by
+        // history no future write can correct.
+        let (storage, path) = temp_storage();
+        let session = storage.resume_or_create_active_session().unwrap();
+        let session_id = session.session_id.clone().unwrap();
+
+        {
+            let connection = Connection::open(&path).unwrap();
+            connection
+                .execute(
+                    "INSERT INTO events
+                     (session_id, protocol, source, event_type, timestamp_ms, title, description, payload, created_at_ms, value_unreadable)
+                     VALUES (?1, 'recall.v2', 'control_surface', 'track_routing_changed', 1, 'T', 'D', ?2, 1, 0)",
+                    params![
+                        session_id,
+                        r#"{"input_routing_channel":"<Track.RoutingChannel object at 0x2B0AF110>"}"#
+                    ],
+                )
+                .unwrap();
+            // A real pre-flag database does not have the column at all, and the
+            // backfill only runs when the ALTER does — once, not on every launch,
+            // because the scan it performs is the 152MB read this flag exists to
+            // avoid repeating.
+            // The index over the flag has to go first: SQLite refuses to drop a
+            // column an index depends on. A pre-flag database had neither.
+            connection
+                .execute_batch(
+                    "DROP INDEX IF EXISTS idx_events_session_counts;
+                     ALTER TABLE events DROP COLUMN value_unreadable;",
+                )
+                .unwrap();
+            migrate_event_columns(&connection).unwrap();
+        }
+
+        let listed = storage
+            .list_saved_sessions()
+            .unwrap()
+            .into_iter()
+            .find(|capture| capture.id == session_id)
+            .expect("listed capture");
+        assert_eq!(listed.event_count, 1);
+        assert_eq!(listed.creative_event_count, 0);
 
         cleanup(&path);
     }

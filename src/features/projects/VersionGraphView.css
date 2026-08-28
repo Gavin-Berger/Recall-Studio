@@ -9,6 +9,78 @@
   gap: var(--s3);
 }
 
+.vg__controls {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--s1);
+  min-height: 28px;
+}
+
+.vg__controls-label,
+.vg__zoom-value {
+  color: var(--faint-aa);
+  font-family: var(--font-mono);
+  font-size: var(--t-micro);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.04em;
+}
+
+.vg__controls-label {
+  margin-right: var(--s1);
+  text-transform: uppercase;
+}
+
+.vg__zoom {
+  width: 84px;
+  height: 18px;
+  accent-color: var(--signal);
+  cursor: pointer;
+}
+
+.vg__zoom-value {
+  min-width: 34px;
+  text-align: right;
+}
+
+.vg__control {
+  display: inline-grid;
+  width: 28px;
+  min-height: 28px;
+  place-items: center;
+  padding: 0;
+  border: var(--stroke-hair) solid var(--line);
+  border-radius: var(--radius-sm);
+  background: rgb(255 255 255 / 0.025);
+  color: var(--paper);
+  font: inherit;
+  cursor: pointer;
+}
+
+.vg__control:hover:not(:disabled) {
+  border-color: rgba(var(--signal-rgb), 0.48);
+  background: rgb(var(--signal-rgb) / 0.1);
+  color: var(--paper-strong);
+}
+
+.vg__control:focus-visible,
+.vg__zoom:focus-visible {
+  outline: 2px solid var(--signal);
+  outline-offset: 2px;
+}
+
+.vg__control:disabled {
+  cursor: default;
+  opacity: 0.42;
+}
+
+.vg__control--fit {
+  width: auto;
+  padding: 0 var(--s2);
+  font-family: var(--font-mono);
+  font-size: var(--t-micro);
+}
+
 /* §8: a graph is a drawing, not a column. It fills the width it is given and
    scrolls past that rather than compressing — a squeezed graph claims events
    were closer together than they were. */
@@ -16,10 +88,128 @@
   overflow-x: auto;
   overflow-y: hidden;
   padding-bottom: var(--s2);
+  cursor: grab;
+  touch-action: pan-y;
+  user-select: none;
+}
+
+.vg__scroll.is-panning {
+  cursor: grabbing;
 }
 
 .vg__canvas {
   display: block;
+}
+
+/* The SVG's intrinsic width is deliberately not stretched to its scroll frame:
+   time cannot be compressed just to fill empty room. At a zoomed-out scale,
+   `vg__stage` carries the bounded horizontal camera offset applied by the drag
+   gesture; once the drawing is wider than its frame, normal scrolling takes
+   over. */
+.vg__stage {
+  width: max-content;
+  will-change: transform;
+}
+
+/* The project HISTORY is a revision tree rather than the horizontal version
+   graph used elsewhere. Its fixed vertical rows preserve sequence without
+   pretending that physical distance is elapsed time. */
+.vg--history-tree .vg__scroll {
+  width: min(100%, 1120px);
+  margin-inline: auto;
+  max-height: min(520px, 48vh);
+  overflow: auto;
+  padding: var(--s2);
+  border: var(--stroke-hair) solid var(--line-soft);
+  border-radius: var(--radius-sm);
+  background: rgb(3 5 12 / 0.28);
+  touch-action: none;
+  scrollbar-color: var(--line) transparent;
+}
+
+.vg--history-tree .vg__stage {
+  position: relative;
+  will-change: auto;
+}
+
+/* The left rail is a drawing; the work it represents is an actual information
+   row beside it. This is the same division that makes a git log effortless to
+   scan: follow the line with your eye, then read a durable name and facts. */
+.vg--history-tree .vg__records {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.vg--history-tree .vg__record {
+  position: absolute;
+  width: min(700px, calc(100% - 180px));
+  display: grid;
+  gap: 2px;
+  min-height: 36px;
+  padding: 8px var(--s3);
+  border: var(--stroke-hair) solid transparent;
+  border-left-width: 2px;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  transform: translateY(-50%);
+  cursor: pointer;
+  pointer-events: auto;
+}
+
+.vg--history-tree .vg__controls {
+  width: min(100%, 1120px);
+  margin-inline: auto;
+}
+
+.vg--history-tree .vg__record:hover,
+.vg--history-tree .vg__record.is-focused,
+.vg--history-tree .vg__record.is-selected {
+  border-color: rgb(var(--signal-rgb) / 0.36);
+  background: rgb(var(--signal-rgb) / 0.07);
+}
+
+.vg--history-tree .vg__record.is-selected {
+  border-left-color: var(--signal);
+  background: rgb(var(--signal-rgb) / 0.11);
+}
+
+.vg__record-title {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--paper);
+  font-size: var(--t-meta);
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.vg__record-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s1);
+  color: var(--faint-aa);
+  font-family: var(--font-mono);
+  font-size: var(--t-micro);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.03em;
+}
+
+.vg--history-tree .vg__record.is-selected .vg__record-title {
+  color: var(--paper-strong);
+}
+
+.vg--history-tree .vg__record.is-selected .vg__record-meta {
+  color: var(--signal-soft);
+}
+
+.vg--history-tree .vg__record:focus-visible {
+  outline: 2px solid var(--signal);
+  outline-offset: 2px;
 }
 
 /* Lanes and edges ------------------------------------------------------- */
@@ -71,12 +261,9 @@
   cursor: pointer;
 }
 
-/* Left-anchored, not centred. `labelMaxPx` measures the run from a node to the
-   next one on its lane, which is the room a label has only if it grows
-   RIGHTWARDS. Centred text spends half that room growing left instead, so the
-   leftmost node — sitting at padX — pushed its name off the canvas and had it
-   clipped ("eaking Point"). Anchoring left makes the geometry and the drawing
-   agree, and it reads the way a git graph labels a branch anyway. */
+/* VersionGraphView also uses this file for the horizontal, file-level graph.
+   Keep its single selected-node label treatment independent from the history
+   tree's per-row labels. */
 .vg__label {
   fill: var(--faint-aa);
   font-family: var(--font-mono);
@@ -162,7 +349,10 @@
   padding: var(--s7) var(--s5);
   border: var(--stroke-hair) solid var(--line);
   border-radius: var(--radius);
-  background: var(--panel);
+  background:
+    linear-gradient(145deg, rgb(var(--signal-rgb) / 0.1), transparent 48%),
+    var(--panel);
+  box-shadow: var(--glass-elevation);
   text-align: center;
 }
 
@@ -252,4 +442,22 @@
 .vg__legend-swatch--folded {
   border-top-style: dashed;
   opacity: 0.6;
+}
+
+/* Keyboard focus on the map ------------------------------------------------ */
+
+/* The map is one tab stop; arrows move between points inside it. The point the
+   keyboard is on needs a ring of its own, because it is not necessarily the
+   point that is OPEN — you can walk past several before choosing one.
+   --signal at 2px, the same ring §9 asks for everywhere else. */
+.vg__scroll:focus-visible {
+  outline: 2px solid var(--signal);
+  outline-offset: -2px;
+  border-radius: var(--radius-sm);
+}
+
+.vg__node--focused .vg__dot {
+  stroke: var(--signal);
+  stroke-width: var(--stroke-trunk);
+  paint-order: stroke;
 }

@@ -4,6 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type { DailyPlanReminderSettings } from "../types";
 import type { ConnectionStatus } from "../types/recall";
 import { versionRows, versionVerdict, type VersionFacts } from "../features/setup/versionStatus";
+import { LoadingSpinner } from "./LoadingSpinner";
 
 export type StudioTheme = "blue" | "mono";
 
@@ -266,10 +267,11 @@ export function SettingsDialog({
                 </label>
                 <button
                   type="button"
-                  className="settings-dialog__test-reminder"
+                  className={`settings-dialog__test-reminder ${testingReminder ? "px-loading-inline" : ""}`}
                   disabled={!dailyPlanReminder.enabled || testingReminder}
                   onClick={() => void handleTestReminder()}
                 >
+                  {testingReminder && <LoadingSpinner />}
                   {testingReminder ? "Sending…" : "Send test"}
                 </button>
               </div>

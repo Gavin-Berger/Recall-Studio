@@ -62,11 +62,11 @@
 }
 
 .session-report__header {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
-  justify-content: space-between;
-  gap: var(--s5);
-  padding: var(--s5);
+  gap: var(--s4) var(--s5);
+  padding: var(--s4) var(--s5);
   border: 1px solid var(--line);
   border-radius: var(--radius);
   background:
@@ -80,10 +80,10 @@
 
 .session-report__identity h1 {
   overflow: hidden;
-  margin: var(--s1) 0 var(--s2);
+  margin: 2px 0 var(--s1);
   color: var(--paper-strong);
   font-family: var(--font-sans);
-  font-size: clamp(22px, 3vw, 32px);
+  font-size: clamp(22px, 2.3vw, 28px);
   font-weight: 600;
   letter-spacing: -0.02em;
   text-overflow: ellipsis;
@@ -118,9 +118,9 @@
 
 .session-report__header-tools {
   display: flex;
-  align-items: flex-end;
+  align-items: center;
   justify-content: flex-end;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: var(--s2);
 }
 
@@ -166,12 +166,12 @@
   grid-template-columns: auto auto minmax(0, 1fr);
   align-items: center;
   gap: var(--s2);
-  min-height: 34px;
-  padding: var(--s2) var(--s3);
-  border: 1px solid var(--line-soft);
-  border-radius: var(--radius-sm);
+  min-height: 26px;
+  padding: 0 var(--s1);
+  border: 0;
+  border-radius: 0;
   color: var(--muted);
-  background: rgb(255 255 255 / 0.015);
+  background: transparent;
   font-size: var(--t-meta);
 }
 
@@ -187,7 +187,7 @@
 }
 
 .session-report__trust.is-partial {
-  border-color: rgb(227 182 103 / 0.28);
+  color: var(--muted);
 }
 
 .session-report__trust.is-partial .session-report__trust-mark {
@@ -206,8 +206,9 @@
   grid-template-columns: repeat(5, minmax(0, 1fr));
   overflow: hidden;
   border: 1px solid var(--line);
-  border-radius: var(--radius-sm);
-  background: var(--panel);
+  border-radius: var(--radius);
+  background: linear-gradient(90deg, rgb(var(--signal-rgb) / 0.035), transparent 34%), var(--panel);
+  box-shadow: 0 12px 26px rgb(0 0 0 / 0.12);
 }
 
 .session-report__tabs button {
@@ -215,14 +216,14 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: var(--s2);
-  min-height: 46px;
+  gap: 10px;
+  min-height: 58px;
   padding: 0 var(--s3);
   border: 0;
   border-right: 1px solid var(--line-soft);
   color: var(--muted);
   background: transparent;
-  font-size: var(--t-meta);
+  font-size: var(--t-body);
   font-weight: 600;
   cursor: pointer;
 }
@@ -233,8 +234,8 @@
   display: grid;
   place-items: center;
   flex: 0 0 auto;
-  width: 18px;
-  height: 18px;
+  width: 23px;
+  height: 23px;
   border: 1px solid var(--line);
   border-radius: 50%;
   color: var(--faint-aa);
@@ -269,7 +270,7 @@
 
 .session-report__tabs button.is-active {
   color: var(--paper-strong);
-  background: rgb(var(--signal-rgb) / 0.08);
+  background: linear-gradient(135deg, rgb(var(--signal-rgb) / 0.2), rgb(var(--signal-rgb) / 0.06));
 }
 
 .session-report__tabs button.is-active::after {
@@ -334,105 +335,6 @@
   text-transform: uppercase;
 }
 
-/* A compact audit of what the capture total means. */
-.report-ledger-note {
-  display: grid;
-  margin: calc(var(--s3) * -1) 0 0;
-  padding: 0 var(--s4);
-  grid-template-columns: minmax(176px, 0.72fr) minmax(0, 1.24fr) minmax(230px, 0.9fr);
-  align-items: stretch;
-  border: 1px solid var(--line-soft);
-  border-radius: var(--radius-sm);
-  background: var(--panel);
-}
-
-.report-ledger-note__heading,
-.report-ledger-note__rules {
-  display: flex;
-  justify-content: center;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.report-ledger-note__heading {
-  min-width: 0;
-  padding: var(--s3) var(--s4) var(--s3) 0;
-  border-right: 1px solid var(--line-soft);
-}
-
-.report-ledger-note__heading > span,
-.report-ledger-note__breakdown small,
-.report-ledger-note__rules {
-  color: var(--faint-aa);
-  font-family: var(--font-mono);
-  font-size: var(--t-micro);
-  font-weight: 500;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
-
-.report-ledger-note__heading strong {
-  color: var(--paper);
-  font-size: var(--t-meta);
-  font-weight: 600;
-  line-height: 1.35;
-}
-
-.report-ledger-note__breakdown {
-  display: grid;
-  min-width: 0;
-  grid-auto-columns: minmax(0, 1fr);
-  grid-auto-flow: column;
-}
-
-.report-ledger-note__breakdown > span {
-  display: flex;
-  min-width: 0;
-  padding: var(--s3) var(--s4);
-  /* Number over label, matching the metric cards directly above. Set side by
-     side the label got only the leftover width and every one of them ellipsed
-     away — "LIVE OBSE…" hides the very thing the number counts, which §1's
-     "never pretends" rule does not allow. */
-  flex-direction: column;
-  gap: var(--s1);
-  border-right: 1px solid var(--line-soft);
-}
-
-.report-ledger-note__breakdown b {
-  color: var(--paper-strong);
-  font-family: var(--font-mono);
-  font-size: clamp(18px, 1.45vw, 26px);
-  font-weight: 500;
-  line-height: 1;
-}
-
-.report-ledger-note__breakdown small {
-  /* These are fixed labels, not user content, so there is nothing legitimate to
-     truncate — at the ~900px target "Live observed" needed 97px of an 82px cell
-     and simply vanished. Stacked under the number they have room to wrap. */
-  line-height: 1.25;
-  text-wrap: balance;
-}
-
-.report-ledger-note__breakdown .is-hands-on b { color: var(--signal-soft); }
-.report-ledger-note__breakdown .is-reported b { color: #aebbd7; }
-.report-ledger-note__breakdown .is-moment b { color: var(--moment); }
-
-.report-ledger-note__rules {
-  padding: var(--s3) 0 var(--s3) var(--s4);
-  letter-spacing: 0.025em;
-  text-transform: none;
-}
-
-.report-ledger-note__rules span {
-  line-height: 1.35;
-}
-
-.report-ledger-note__rules b {
-  color: var(--paper);
-  font-weight: 600;
-}
-
 .report-next-step {
   margin: 0;
   color: var(--faint-aa);
@@ -455,53 +357,6 @@
   gap: var(--s3);
 }
 
-.report-metrics {
-  display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  background: var(--panel);
-}
-
-.report-metrics > div {
-  min-width: 0;
-  padding: var(--s4);
-  border-right: 1px solid var(--line-soft);
-}
-
-.report-metrics > div:last-child {
-  border-right: 0;
-}
-
-.report-metrics strong,
-.report-metrics span {
-  display: block;
-}
-
-.report-metrics strong {
-  overflow: hidden;
-  color: var(--paper-strong);
-  font-family: var(--font-mono);
-  font-size: clamp(17px, 2vw, 24px);
-  font-weight: 500;
-  font-variant-numeric: tabular-nums;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.report-metrics span {
-  margin-top: var(--s1);
-  color: var(--faint-aa);
-  font-family: var(--font-mono);
-  font-size: var(--t-micro);
-  letter-spacing: 0.07em;
-  text-transform: uppercase;
-}
-
-.report-metrics .is-moment strong {
-  color: var(--moment);
-}
-
 .report-score,
 .report-work-map,
 .report-learning,
@@ -510,6 +365,7 @@
 .report-ledger,
 .report-track-table,
 .report-decision-summary,
+.report-raw-capture,
 .report-chart,
 .report-focus-graph,
 .report-compare__metrics,
@@ -1012,6 +868,378 @@
 .report-score__read,
 .report-score__work {
   animation: reportScoreSettle var(--m-develop) var(--ease-arrive) both;
+}
+
+/* One active track is not a constellation. Showing a single node inside a
+   physics field made a narrow capture look more complicated than it was; this
+   panel turns that space into the track, devices, and controls the producer
+   can actually reopen. */
+.report-focused-track {
+  display: flex;
+  min-width: 0;
+  min-height: 260px;
+  padding: var(--s4);
+  flex-direction: column;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background:
+    linear-gradient(145deg, rgb(var(--signal-rgb) / 0.09), transparent 58%),
+    rgb(255 255 255 / 0.012);
+}
+
+.report-focused-track > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s3);
+}
+
+.report-focused-track__number {
+  color: var(--signal-soft);
+  font-family: var(--font-mono);
+  font-size: var(--t-body);
+}
+
+.report-focused-track > strong {
+  overflow: hidden;
+  margin-top: var(--s3);
+  color: var(--paper-strong);
+  font-size: clamp(24px, 2vw, 32px);
+  font-weight: 600;
+  letter-spacing: -0.03em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.report-focused-track > p {
+  margin: var(--s1) 0 0;
+  color: var(--muted);
+  font-size: var(--t-meta);
+}
+
+.report-focused-track__section {
+  margin-top: var(--s4);
+  padding-top: var(--s3);
+  border-top: 1px solid var(--line-soft);
+}
+
+.report-focused-track__section > small {
+  display: block;
+  margin-top: var(--s2);
+  color: var(--faint-aa);
+  font-size: var(--t-micro);
+}
+
+.report-focused-track__devices {
+  display: flex;
+  margin-top: var(--s2);
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.report-focused-track__devices span {
+  max-width: 100%;
+  padding: 4px 7px;
+  overflow: hidden;
+  border: 1px solid var(--line-soft);
+  border-radius: 999px;
+  color: var(--muted);
+  background: rgb(0 0 0 / 0.12);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.report-focused-track__controls {
+  display: grid;
+  margin: var(--s2) 0 0;
+  padding: 0;
+  gap: 2px;
+  list-style: none;
+}
+
+.report-focused-track__controls button {
+  display: grid;
+  width: 100%;
+  padding: 7px 0;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--s3);
+  border: 0;
+  color: var(--paper);
+  background: transparent;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+
+.report-focused-track__controls button:hover strong,
+.report-focused-track__controls button:focus-visible strong {
+  color: var(--signal-soft);
+}
+
+.report-focused-track__controls button > span {
+  min-width: 0;
+}
+
+.report-focused-track__controls strong,
+.report-focused-track__controls small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.report-focused-track__controls strong {
+  color: inherit;
+  font-size: var(--t-meta);
+  font-weight: 500;
+}
+
+.report-focused-track__controls small {
+  margin-top: 2px;
+  color: var(--faint-aa);
+  font-size: var(--t-micro);
+}
+
+.report-focused-track__controls b {
+  color: var(--faint-aa);
+  font-family: var(--font-mono);
+  font-size: var(--t-micro);
+  font-weight: 500;
+}
+
+.report-focused-track__action {
+  margin-top: auto;
+  align-self: flex-start;
+}
+
+.report-session-story,
+.report-coverage-next,
+.report-next-pass {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel);
+}
+
+.report-session-story {
+  padding: var(--s5);
+}
+
+.report-session-story > ol {
+  display: grid;
+  margin: var(--s5) 0 0;
+  padding: 0;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--s2);
+  list-style: none;
+}
+
+.report-session-story li {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: var(--s3);
+  align-items: start;
+  padding: var(--s3);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-sm);
+  background: rgb(0 0 0 / 0.11);
+}
+
+.report-session-story time {
+  padding-top: 2px;
+  color: var(--signal-soft);
+  font-family: var(--font-mono);
+  font-size: var(--t-micro);
+}
+
+.report-session-story button {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+  border: 0;
+  color: var(--paper);
+  background: transparent;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+
+.report-session-story button:hover strong,
+.report-session-story button:focus-visible strong {
+  color: var(--signal-soft);
+}
+
+.report-session-story button > span,
+.report-session-story button > small {
+  color: var(--faint-aa);
+  font-family: var(--font-mono);
+  font-size: var(--t-micro);
+}
+
+.report-session-story button > strong,
+.report-session-story button > small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.report-session-story button > strong {
+  color: var(--paper-strong);
+  font-size: var(--t-meta);
+  font-weight: 600;
+}
+
+.report-coverage-next {
+  display: grid;
+  padding: var(--s4) var(--s5);
+  grid-template-columns: minmax(160px, 0.35fr) minmax(0, 1fr);
+  gap: var(--s4);
+  border-color: rgb(227 182 103 / 0.3);
+  background: linear-gradient(110deg, rgb(227 182 103 / 0.07), transparent 46%), var(--panel);
+}
+
+.report-coverage-next > .eyebrow {
+  color: var(--moment);
+}
+
+.report-coverage-next strong {
+  color: var(--paper);
+  font-size: var(--t-body);
+  font-weight: 600;
+}
+
+.report-coverage-next p {
+  margin: var(--s1) 0 0;
+  color: var(--muted);
+  font-size: var(--t-meta);
+  line-height: 1.5;
+}
+
+.report-next-pass {
+  display: grid;
+  padding: var(--s5);
+  grid-template-columns: minmax(220px, 0.7fr) minmax(0, 1.3fr);
+  gap: var(--s5);
+  background: linear-gradient(115deg, rgb(var(--signal-rgb) / 0.065), transparent 43%), var(--panel);
+}
+
+.report-next-pass h2 {
+  margin: var(--s1) 0 0;
+  color: var(--paper-strong);
+  font-size: var(--t-h2);
+}
+
+.report-next-pass p {
+  margin: var(--s3) 0 0;
+  color: var(--muted);
+  font-size: var(--t-meta);
+  line-height: 1.55;
+}
+
+.report-next-pass form {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--s3);
+  align-content: start;
+}
+
+.report-next-pass label {
+  display: grid;
+  min-width: 0;
+  gap: var(--s1);
+}
+
+.report-next-pass label > span {
+  color: var(--faint-aa);
+  font-family: var(--font-mono);
+  font-size: var(--t-micro);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+/* The summary opens with just the three facts needed to orient a producer.
+   The detailed event total remains in the capture header and Work changes tab,
+   where it can be read without competing with the session story. */
+.report-capture-line {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--s2);
+  min-height: 28px;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: var(--t-meta);
+  font-weight: 500;
+}
+
+.report-capture-line > i {
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: var(--faint-aa);
+}
+
+.report-capture-line > span:first-child {
+  color: var(--signal-soft);
+}
+
+.report-next-pass input {
+  width: 100%;
+  min-height: 38px;
+  padding: 0 var(--s3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  outline: 0;
+  color: var(--paper);
+  background: rgb(0 0 0 / 0.14);
+  font: inherit;
+  font-size: var(--t-meta);
+}
+
+.report-next-pass input::placeholder {
+  color: var(--faint);
+}
+
+.report-next-pass input:focus {
+  border-color: var(--signal);
+  box-shadow: 0 0 0 2px rgb(var(--signal-rgb) / 0.14);
+}
+
+.report-next-pass__actions {
+  display: flex;
+  grid-column: 1 / -1;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--s3);
+}
+
+.report-next-pass__actions output {
+  color: var(--signal-soft);
+  font-size: var(--t-meta);
+}
+
+@media (max-width: 860px) {
+  .report-session-story > ol {
+    grid-template-columns: 1fr;
+  }
+
+  .report-coverage-next,
+  .report-next-pass {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 620px) {
+  .report-next-pass {
+    padding: var(--s4);
+  }
+
+  .report-next-pass form {
+    grid-template-columns: 1fr;
+  }
 }
 
 .report-score__read { animation-delay: 60ms; }
@@ -1881,6 +2109,144 @@
   font-size: var(--t-micro);
 }
 
+/* The summary deliberately excludes capture context such as opening state and
+   transport. This keeps that complete source record available without making
+   every report open as hundreds of low-level rows. */
+.report-raw-capture {
+  overflow: hidden;
+}
+
+.report-raw-capture__toggle {
+  display: grid;
+  width: 100%;
+  min-width: 0;
+  padding: var(--s3) var(--s4);
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--s4);
+  border: 0;
+  color: var(--paper);
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+
+.report-raw-capture__toggle:hover,
+.report-raw-capture__toggle[aria-expanded="true"] {
+  background: rgb(var(--signal-rgb) / 0.055);
+}
+
+.report-raw-capture__toggle > span {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.report-raw-capture__toggle small,
+.report-raw-capture__toggle > span:last-child {
+  color: var(--faint-aa);
+  font-family: var(--font-mono);
+  font-size: var(--t-micro);
+  letter-spacing: 0.075em;
+  text-transform: uppercase;
+}
+
+.report-raw-capture__toggle strong {
+  overflow: hidden;
+  color: var(--paper-strong);
+  font-size: var(--t-meta);
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.report-raw-capture__toggle > span:last-child {
+  align-items: flex-end;
+  letter-spacing: 0.025em;
+  text-align: right;
+  text-transform: none;
+}
+
+.report-raw-capture__toggle b {
+  color: var(--signal-soft);
+  font-size: var(--t-meta);
+  font-weight: 600;
+}
+
+.report-raw-capture__body {
+  border-top: 1px solid var(--line-soft);
+}
+
+.report-raw-capture__body > p {
+  max-width: 78ch;
+  margin: 0;
+  padding: var(--s3) var(--s4);
+  color: var(--muted);
+  font-size: var(--t-meta);
+  line-height: 1.5;
+}
+
+.report-raw-capture__body > ol {
+  overflow: auto;
+  max-height: min(520px, 58vh);
+  margin: 0;
+  padding: 0;
+  border-top: 1px solid var(--line-soft);
+  list-style: none;
+  scrollbar-color: var(--line) transparent;
+}
+
+.report-raw-capture__body li {
+  display: grid;
+  min-width: 0;
+  padding: var(--s2) var(--s4);
+  grid-template-columns: 76px minmax(0, 1fr) minmax(150px, 0.48fr);
+  align-items: baseline;
+  gap: var(--s3);
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.report-raw-capture__body li:last-child {
+  border-bottom: 0;
+}
+
+.report-raw-capture__body time,
+.report-raw-capture__body code {
+  color: var(--faint-aa);
+  font-family: var(--font-mono);
+  font-size: var(--t-micro);
+}
+
+.report-raw-capture__body > ol span {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.report-raw-capture__body strong {
+  overflow: hidden;
+  color: var(--paper);
+  font-size: var(--t-meta);
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.report-raw-capture__body span small {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: var(--t-micro);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.report-raw-capture__body code {
+  overflow-wrap: anywhere;
+  text-align: right;
+}
+
 .report-clear {
   padding: 0;
   border: 0;
@@ -2515,32 +2881,30 @@
 
 .report-loading {
   display: grid;
-  grid-template-columns: minmax(160px, auto) repeat(3, minmax(80px, 1fr));
-  align-items: center;
-  gap: var(--s3);
-  min-height: 96px;
-  padding: var(--s5);
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  color: var(--muted);
-  background: var(--panel);
-  font-size: var(--t-meta);
+  place-items: center;
+  min-height: 104px;
+  padding: var(--s3) 0;
+  color: var(--paper);
+}
+
+.report-loading__status-line {
+  display: grid;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  justify-self: center;
 }
 
 .report-loading.is-compact {
   min-height: 64px;
-  padding: var(--s3);
+  padding: var(--s2) 0;
 }
 
-.report-loading i {
-  display: block;
-  height: 5px;
-  border-radius: 999px;
-  background: var(--panel-3);
+.report-loading.is-compact .report-loading__spinner {
+  width: 14px;
+  height: 14px;
 }
 
-.report-loading i:nth-child(3) { max-width: 70%; }
-.report-loading i:nth-child(4) { max-width: 45%; }
 
 .session-report__error {
   display: grid;
@@ -2629,6 +2993,7 @@
 
 .report-evidence__controls {
   display: flex;
+  align-items: center;
   flex: 0 0 auto;
   gap: var(--s2);
 }
@@ -2651,6 +3016,27 @@
 .report-evidence__controls button:hover {
   border-color: rgb(var(--signal-rgb) / 0.52);
   background: rgb(var(--signal-rgb) / 0.11);
+  color: var(--signal-soft);
+}
+
+/* Only shown once the drawer is wide enough to read the evidence as a working
+   list. It expands the details, not the panel itself — keeping those two
+   actions separate makes the control's result predictable. */
+.report-evidence__controls .report-evidence__expand-all {
+  display: inline-flex;
+  width: auto;
+  min-width: 0;
+  padding: 0 var(--s3);
+  align-items: center;
+  justify-content: center;
+  color: var(--faint-aa);
+  font-family: var(--font-mono);
+  font-size: var(--t-micro);
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+
+.report-evidence__controls .report-evidence__expand-all:hover {
   color: var(--signal-soft);
 }
 
@@ -2859,70 +3245,6 @@
 .session-report__trust-mark svg {
   width: 13px;
   height: 13px;
-}
-
-.report-metrics > div {
-  position: relative;
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  gap: var(--s3);
-  align-items: center;
-  overflow: hidden;
-}
-
-.report-metrics > div::after {
-  content: "";
-  position: absolute;
-  inset: auto 0 0;
-  height: 2px;
-  background: linear-gradient(90deg, rgb(var(--signal-rgb) / 0.8), transparent 78%);
-}
-
-.report-metrics > div.is-moment::after {
-  background: linear-gradient(90deg, var(--moment), transparent 78%);
-}
-
-.report-metrics .report-metric__icon {
-  display: grid;
-  width: 36px;
-  height: 36px;
-  margin: 0;
-  place-items: center;
-  border: 1px solid rgb(var(--signal-rgb) / 0.28);
-  border-radius: 9px;
-  color: var(--signal-soft);
-  background: rgb(var(--signal-rgb) / 0.07);
-}
-
-.report-metrics .is-moment .report-metric__icon {
-  color: var(--moment);
-  border-color: rgb(211 165 82 / 0.3);
-  background: rgb(211 165 82 / 0.07);
-}
-
-.report-metric__icon svg {
-  width: 19px;
-  height: 19px;
-}
-
-.report-metrics .report-metric__value {
-  display: flex;
-  min-width: 0;
-  margin: 0;
-  flex-direction: column;
-}
-
-.report-metrics .report-metric__value strong {
-  line-height: 1.05;
-}
-
-.report-metrics .report-metric__value small {
-  margin-top: 5px;
-  color: var(--faint-aa);
-  font-family: var(--font-mono);
-  font-size: var(--t-micro);
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
 }
 
 .report-work-map__intro {
@@ -3539,29 +3861,17 @@
 .report-compare__meter i { background: var(--faint); }
 .report-compare__meter b { background: var(--signal); }
 
-/* The navigation rail consumes part of the viewport, so the report reaches its
-   compact content width before the outer window reaches a tablet breakpoint. */
+/* The navigation rail consumes part of the viewport, but the report header and
+   overview stay horizontal until a truly narrow layout needs to stack them. */
 @media (max-width: 1360px) {
   .session-report__header {
-    align-items: flex-start;
-    flex-direction: column;
+    align-items: center;
+    grid-template-columns: minmax(0, 1fr) auto;
   }
 
   .session-report__header-tools {
-    justify-content: flex-start;
-    width: 100%;
-  }
-
-  .report-metrics {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
-
-  .report-metrics > div:nth-child(3) {
-    border-right: 0;
-  }
-
-  .report-metrics > div:nth-child(-n + 3) {
-    border-bottom: 1px solid var(--line-soft);
+    justify-content: flex-end;
+    width: auto;
   }
 
   .report-track-table__head,
@@ -3603,25 +3913,23 @@
     flex: 1 0 122px;
   }
 
-  .report-overview__grid,
-  .report-compare__grid {
+  .session-report__header {
     grid-template-columns: 1fr;
+    align-items: start;
   }
+
+  .session-report__header-tools {
+    justify-content: flex-start;
+    flex-wrap: wrap;
+    width: 100%;
+  }
+
+  .report-overview__grid,
+  .report-compare__grid,
+  .report-loading { grid-template-columns: 1fr; }
 
   .report-learning__grid {
     grid-template-columns: 1fr;
-  }
-
-  .report-ledger-note {
-    grid-template-columns: minmax(154px, 0.7fr) minmax(0, 1.3fr);
-  }
-
-  .report-ledger-note__rules {
-    grid-column: 1 / -1;
-    padding: var(--s2) 0;
-    flex-direction: row;
-    flex-wrap: wrap;
-    border-top: 1px solid var(--line-soft);
   }
 
   .report-work-map__grid {
@@ -3692,6 +4000,12 @@
 }
 
 @media (max-width: 620px) {
+  .report-loading {
+    min-height: 0;
+    gap: var(--s3);
+    padding: var(--s2) 0;
+  }
+
   .report-track-overview,
   .report-compare__metrics {
     grid-template-columns: 1fr;
@@ -3736,46 +4050,6 @@
     grid-column: 1 / 3;
   }
 
-  .report-metrics {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .report-metrics > div:nth-child(2n) {
-    border-right: 0;
-  }
-
-  .report-metrics > div:nth-child(3) {
-    border-right: 1px solid var(--line-soft);
-  }
-
-  .report-metrics > div:nth-child(-n + 4) {
-    border-bottom: 1px solid var(--line-soft);
-  }
-
-  .report-ledger-note {
-    padding: 0 var(--s3);
-    grid-template-columns: 1fr;
-  }
-
-  .report-ledger-note__heading {
-    padding: var(--s3) 0;
-    border-right: 0;
-    border-bottom: 1px solid var(--line-soft);
-  }
-
-  .report-ledger-note__breakdown > span {
-    padding: var(--s3) var(--s2) var(--s3) 0;
-  }
-
-  .report-ledger-note__breakdown > span:last-child {
-    border-right: 0;
-  }
-
-  .report-ledger-note__rules {
-    padding: var(--s3) 0;
-    flex-direction: column;
-  }
-
   .report-section-heading,
   .report-ledger__toolbar {
     align-items: flex-start;
@@ -3813,6 +4087,25 @@
 
   .report-decision-summary button {
     border-bottom: 1px solid var(--line-soft);
+  }
+
+  .report-raw-capture__toggle {
+    grid-template-columns: 1fr;
+    gap: var(--s2);
+  }
+
+  .report-raw-capture__toggle > span:last-child {
+    align-items: flex-start;
+    text-align: left;
+  }
+
+  .report-raw-capture__body li {
+    grid-template-columns: 64px minmax(0, 1fr);
+  }
+
+  .report-raw-capture__body code {
+    grid-column: 2;
+    text-align: left;
   }
 
   .report-chart__plot {
@@ -3896,4 +4189,3 @@
     animation: none;
   }
 }
-

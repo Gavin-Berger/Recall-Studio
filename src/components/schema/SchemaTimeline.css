@@ -1124,7 +1124,9 @@
 .tl-pulse__state.is-hot .tl-pulse__pip {
   background: var(--signal);
   box-shadow: 0 0 9px rgb(var(--signal-rgb) / 0.85);
-  animation: tl-pip-pulse 1.4s ease-in-out infinite;
+  /* This summarizes work already recorded. Only the Ableton connection dot is
+     allowed to pulse; a historical momentum label must hold still. */
+  animation: none;
 }
 
 .tl-pulse__state.is-warm {
@@ -1180,7 +1182,12 @@
 }
 
 .tl-arrangement-canvas--loading {
+  display: grid;
   min-height: 116px;
+  place-items: center;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: var(--t-micro);
   background: rgba(11, 14, 22, 0.84);
 }
 
@@ -1279,7 +1286,7 @@
 /* Fill comes from a per-instance vertical gradient (set inline), so the area
    glows near the curve and fades to nothing at the floor. Fades in on mount. */
 .tl-graph__area {
-  animation: tl-graph-fade 760ms ease-out both;
+  animation: tl-graph-fade var(--m-develop) var(--ease-arrive) both;
 }
 
 /* Draws itself in leftâ†’right on mount via a normalized (pathLength=1) dash. */
@@ -1292,7 +1299,7 @@
   filter: drop-shadow(0 0 4px rgb(var(--signal-rgb) / 0.45));
   stroke-dasharray: 1;
   stroke-dashoffset: 1;
-  animation: tl-graph-draw 760ms ease-out forwards;
+  animation: tl-graph-draw var(--m-develop) var(--ease-arrive) forwards;
 }
 
 @keyframes tl-graph-draw {
@@ -4187,18 +4194,23 @@
 
 /* Reconstruction memory --------------------------------------------------- */
 .tl-reconstruct {
-  --recon-part: #6fc9c4;
-  --recon-automation: #9ca9ff;
-  --recon-sound: #82aee2;
-  --recon-mix: #89b8d4;
-  --recon-note: #d7b66d;
+  --recon-part: var(--paper);
+  --recon-automation: var(--signal-muted);
+  --recon-sound: var(--paper);
+  --recon-mix: var(--muted);
+  --recon-note: var(--paper);
   border-top: 1px solid rgb(154 167 201 / 0.13);
   border-bottom: 1px solid rgb(154 167 201 / 0.13);
   background: #0b0f16;
 }
 
 .tl-reconstruct--loading {
+  display: grid;
   min-height: 280px;
+  place-items: center;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: var(--t-micro);
 }
 
 .tl-reconstruct__head,
@@ -6172,7 +6184,7 @@ details.tl-recipe__missing {
   bottom: 0;
   left: 0;
   height: 2px;
-  background: #9baaff;
+  background: var(--signal);
   opacity: 0;
   transform: scaleX(0.25);
   transition: opacity 140ms ease, transform 180ms ease;
@@ -6351,16 +6363,18 @@ details.tl-recipe__missing {
 
 /* Build story: song map + decision spine -------------------------------- */
 .tl-reconstruct {
-  --recon-part: #79c9c7;
-  --recon-automation: #a4abff;
-  --recon-sound: #8caee5;
-  --recon-mix: #86bdd7;
-  --recon-note: #d2b46e;
-  --recon-song: #d2b46e;
-  --recon-recording: #dc8f8b;
-  --recon-structure: #75c5bd;
-  --recon-performance: #c29bea;
-  --recon-project: #a8b2c8;
+  /* Kinds of producer work are told apart by their labels and structure, not
+     by a rainbow of category colours. Warm remains reserved for pinned moments. */
+  --recon-part: var(--paper);
+  --recon-automation: var(--signal-muted);
+  --recon-sound: var(--paper);
+  --recon-mix: var(--muted);
+  --recon-note: var(--paper);
+  --recon-song: var(--paper);
+  --recon-recording: var(--muted);
+  --recon-structure: var(--muted);
+  --recon-performance: var(--paper);
+  --recon-project: var(--faint-aa);
   border-block: 1px solid rgb(159 172 207 / 0.12);
   background: #0b0f16;
 }
@@ -6422,7 +6436,7 @@ details.tl-recipe__missing {
   bottom: 0;
   left: 0;
   height: 2px;
-  background: #9baaff;
+  background: var(--signal);
   opacity: 0;
   transform: scaleX(0.25);
   transition: opacity 140ms ease, transform 180ms ease;
@@ -6789,14 +6803,14 @@ details.tl-recipe__missing {
 
 .tl-evidence-curve polyline {
   fill: none;
-  stroke: #a4abff;
+  stroke: var(--signal-muted);
   stroke-width: 1.25;
   vector-effect: non-scaling-stroke;
 }
 
 .tl-evidence-curve circle {
   fill: #0b0f16;
-  stroke: #a4abff;
+  stroke: var(--signal-muted);
   stroke-width: 1;
 }
 
@@ -6805,13 +6819,13 @@ details.tl-recipe__missing {
   background: repeating-linear-gradient(90deg, transparent 0 calc(25% - 1px), rgb(151 166 203 / 0.06) calc(25% - 1px) 25%);
 }
 
-.tl-evidence-pattern rect { fill: #79c9c7; }
+.tl-evidence-pattern rect { fill: var(--muted); }
 
 .tl-evidence-warp > div {
   position: relative;
   height: 28px;
   border-block: 1px solid rgb(151 166 203 / 0.08);
-  background: linear-gradient(90deg, rgb(121 201 199 / 0.04), rgb(164 171 255 / 0.06));
+  background: linear-gradient(90deg, rgb(var(--signal-rgb) / 0.035), rgb(var(--signal-rgb) / 0.08));
 }
 
 .tl-evidence-warp i {
@@ -6819,8 +6833,8 @@ details.tl-recipe__missing {
   top: 4px;
   bottom: 4px;
   width: 1px;
-  background: #86bdd7;
-  box-shadow: 0 0 5px rgb(134 189 215 / 0.28);
+  background: var(--signal-muted);
+  box-shadow: 0 0 5px rgb(var(--signal-rgb) / 0.22);
 }
 
 @media (max-width: 900px) {
@@ -6846,4 +6860,62 @@ details.tl-recipe__missing {
   .tl-canvas-readout {
     animation: none;
   }
+}
+
+/* v3 · timeline glass -----------------------------------------------------
+   The timeline has more internal machinery than other screens, but its outer
+   sections still need to read as one family of frosted instruments. */
+.schema-surface {
+  height: calc(100vh - var(--s6));
+  padding-bottom: var(--s4);
+}
+
+.schema-surface .tl-bar,
+.schema-surface .tl-arrange,
+.schema-surface .tl-dock,
+.schema-surface .tl-keep,
+.schema-surface .tl-recap,
+.schema-surface .tl-scan {
+  border-color: var(--line);
+  border-radius: var(--radius);
+  background:
+    linear-gradient(145deg, rgb(216 236 248 / 0.05), transparent 46%),
+    var(--panel);
+  box-shadow: var(--glass-elevation);
+}
+
+.schema-surface .tl-bar {
+  border-color: var(--glass-edge);
+  background:
+    linear-gradient(145deg, rgb(var(--signal-rgb) / 0.14), transparent 42%),
+    rgb(5 6 15 / 0.76);
+  backdrop-filter: blur(20px) saturate(125%);
+}
+
+.schema-surface .tl-arrange-toolbar,
+.schema-surface .tl-memory-stage > .tl-dock,
+.schema-surface .tl-memory-stage > .tl-arrange {
+  border-color: var(--line-soft);
+  background: rgb(5 6 15 / 0.64);
+}
+
+.schema-surface .tl-filter,
+.schema-surface .tl-btn {
+  border-color: var(--glass-edge);
+  border-radius: var(--radius-sm);
+  background: var(--glass-fill);
+  box-shadow: inset 0 1px 0 rgb(216 236 248 / 0.1);
+}
+
+.schema-surface .tl-pill {
+  border-color: var(--glass-edge);
+  border-radius: var(--radius-pill);
+  background: var(--glass-fill);
+  box-shadow: inset 0 1px 0 rgb(216 236 248 / 0.1);
+}
+
+.schema-surface .tl-filter.is-active,
+.schema-surface .tl-btn--primary {
+  border-color: rgb(var(--signal-rgb) / 0.4);
+  background: linear-gradient(135deg, rgb(var(--signal-rgb) / 0.32), rgb(var(--signal-rgb) / 0.14));
 }

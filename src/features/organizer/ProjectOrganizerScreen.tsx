@@ -23,6 +23,7 @@ import {
   selectReleasePreviewTracks,
 } from "./previewExport";
 import { Waveform } from "./Waveform";
+import { LoadingSpinner } from "../../components/LoadingSpinner";
 
 // The Project Organizer: a place to lay out a release as the thing you ship — a
 // name, the Ableton sets that make it up, and the bounces you exported, each
@@ -1679,10 +1680,10 @@ export function ProjectOrganizerScreen({
 
   if (!storageReady) {
     return (
-      <div className="organizer organizer--loading" aria-live="polite">
+      <div className="organizer organizer--loading" role="status" aria-live="polite" aria-label="Opening Organizer">
         <section className="organizer__detail organizer__detail--empty">
           <div className="organizer__blank">
-            <strong>Opening Organizer…</strong>
+            <strong className="px-loading-inline"><LoadingSpinner />Opening Organizer…</strong>
             <p>Loading projects and mix-review assets from native storage.</p>
           </div>
         </section>
@@ -1770,7 +1771,7 @@ export function ProjectOrganizerScreen({
                 className={`organizer__item ${selected?.id === project.id ? "is-selected" : ""}`}
                 onClick={() => setSelectedId(project.id)}
               >
-                <span className="organizer__item-title">
+                <span className="organizer__item-title" title={project.name.trim() || "Untitled project"}>
                   {project.name.trim() || "Untitled project"}
                 </span>
                 <span className="organizer__item-meta">
@@ -1990,8 +1991,8 @@ export function ProjectOrganizerScreen({
             <button type="button" className="px-btn px-btn--primary" onClick={handleAddTrack}>Add track</button>
           </div>
           {analyzing && (
-            <p className="organizer__analyzing organizer__analyzing--tracklist">
-              Measuring loudness of {analyzing}…
+            <p className="organizer__analyzing organizer__analyzing--tracklist px-loading-inline" role="status">
+              <LoadingSpinner />Measuring loudness of {analyzing}…
             </p>
           )}
 
@@ -2073,7 +2074,7 @@ export function ProjectOrganizerScreen({
                         <div className="organizer__bounce-head">
                           <div className="organizer__bounce-title">
                             <span className="organizer__version-line"><span className="organizer__version-badge">{version}</span>{isFinal && <span className="organizer__final-badge">Final</span>}</span>
-                            <span className="organizer__bounce-name">{exp.fileName}</span>
+                            <span className="organizer__bounce-name" title={exp.fileName}>{exp.fileName}</span>
                           </div>
                           <div className="organizer__bounce-actions">
                             <span className="organizer__bounce-added">{formatDate(exp.added_at_ms)}</span>
@@ -2315,12 +2316,13 @@ export function ProjectOrganizerScreen({
               disabled={analyzing !== null}
               onClick={() => fileInputRef.current?.click()}
             >
+              {analyzing && <LoadingSpinner />}
               {analyzing ? "Reading…" : "Add exports…"}
             </button>
           </div>
 
           {analyzing && (
-            <p className="organizer__analyzing">Measuring loudness of {analyzing}…</p>
+            <p className="organizer__analyzing px-loading-inline" role="status"><LoadingSpinner />Measuring loudness of {analyzing}…</p>
           )}
 
           {selected.exports.length === 0 && !analyzing ? (
@@ -2343,7 +2345,7 @@ export function ProjectOrganizerScreen({
                         <span className="organizer__track-num" aria-hidden="true">
                           {index + 1}
                         </span>
-                        <span className="organizer__bounce-name">
+                        <span className="organizer__bounce-name" title={exp.fileName}>
                           <span className="sr-only">{`Track ${index + 1}: `}</span>
                           {exp.fileName}
                         </span>

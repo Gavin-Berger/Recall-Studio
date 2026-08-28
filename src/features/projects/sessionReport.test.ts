@@ -299,13 +299,30 @@ describe("session report", () => {
     }));
     const comparison = compareSessionReports(current, baseline);
 
-    expect(comparison.metrics.find((metric) => metric.label === "Changes captured")).toMatchObject({
+    expect(comparison.metrics.find((metric) => metric.label === "Work changes")).toMatchObject({
       current: 5,
       baseline: 1,
       delta: 4,
     });
     expect(comparison.onlyCurrent.some((decision) => decision.kind === "midi")).toBe(true);
     expect(comparison).not.toHaveProperty("score");
+  });
+
+  it("uses the expanded raw event lists as the all-sittings count", () => {
+    const first = session("take-1", [rawEvent({ id: "event-a", session_id: "take-1" })]);
+    const second = session("take-2", [rawEvent({ id: "event-b", session_id: "take-2" })]);
+    // Simulate a metadata poll that occurred just before a live event landed.
+    // The report must expose the list it actually loaded, not this stale total.
+    first.event_count = 432;
+    second.event_count = 37;
+
+    const report = buildVersionReport([
+      input({ session: first, changes: [], noteEdits: [], clipEvents: [], moments: [] }),
+      input({ session: second, changes: [], noteEdits: [], clipEvents: [], moments: [] }),
+    ]);
+
+    expect(report.session.events).toHaveLength(2);
+    expect(report.session.event_count).toBe(report.session.events.length);
   });
 });
 

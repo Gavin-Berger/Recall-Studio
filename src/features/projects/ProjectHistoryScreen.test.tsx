@@ -9,7 +9,7 @@
 // set apart from the history, and that the rail actually renders connectors.
 
 import { describe, expect, it, vi } from "vitest";
-import { render, screen, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { SavedProject, SavedSessionMetadata } from "../../types/recall";
 import { ProjectHistoryScreen } from "./ProjectHistoryScreen";
@@ -103,7 +103,7 @@ function renderScreen(projects: SavedProject[] = [nightfall], projectId = "night
 }
 
 function graph() {
-  return within(screen.getByRole("group", { name: "Project history" }));
+  return within(screen.getByLabelText(/Project map/));
 }
 
 /**
@@ -137,7 +137,8 @@ describe("ProjectHistoryScreen", () => {
 
   it("opens on the set worked most recently", () => {
     renderScreen();
-    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("nightfall");
+    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Nightfall");
+    expect(screen.getByRole("heading", { name: "Capture record for nightfall" })).toBeInTheDocument();
   });
 
   it("switches the list when another set is chosen", async () => {
@@ -158,11 +159,11 @@ describe("ProjectHistoryScreen", () => {
     expect(picker).toBeInTheDocument();
   });
 
-  it("puts the commit's size in the metadata, once", () => {
+  it("puts the full captured-event count in the metadata, once", () => {
     // The count is the one fact a commit has that is not worth reading twice.
     // It lives in the meta line; the headline says what the work WAS.
     renderScreen();
-    expect(within(commitRows()[0]!).getAllByText(/120 changes/)).toHaveLength(1);
+    expect(within(commitRows()[0]!).getAllByText(/120 captured events/)).toHaveLength(1);
   });
 
   it("does not repeat the default parentage line on every row", () => {
@@ -236,6 +237,55 @@ describe("ProjectHistoryScreen", () => {
 
     const selected = commitRows().filter((row) => row.className.includes("is-selected"));
     expect(selected).toHaveLength(1);
+  });
+
+  it("opens the selected session's information in the reading pane", () => {
+    renderScreen();
+    expect(screen.getByRole("button", { name: "Hide details" })).toHaveAttribute(
+      "aria-expanded",
+      "true",
+    );
+  });
+
+  it("allows the selected session's detail to be closed and reopened", async () => {
+    const user = userEvent.setup();
+    renderScreen();
+    const details = screen.getByRole("button", { name: "Hide details" });
+
+    await user.click(details);
+    expect(screen.getByRole("button", { name: "Details" })).toHaveAttribute(
+      "aria-expanded",
+      "false",
+    );
+
+    await user.click(screen.getByRole("button", { name: "Details" }));
+    expect(screen.getByRole("button", { name: "Hide details" })).toHaveAttribute(
+      "aria-expanded",
+      "true",
+    );
+  });
+
+  it("follows a graph point into the set where that work happened", async () => {
+    const user = userEvent.setup();
+    renderScreen();
+
+    const v2Point = graph()
+      .getAllByRole("button")
+      .find((point) => /^nightfall v2\. A stretch/i.test(point.getAttribute("aria-label") ?? ""));
+    expect(v2Point).toBeDefined();
+    await user.click(v2Point!);
+
+    expect(commitRows()).toHaveLength(2);
+    expect(
+      within(screen.getByLabelText("Sets in this project")).getByRole("button", {
+        name: /nightfall v2/,
+      }),
+    ).toHaveAttribute("aria-current", "true");
+
+    await waitFor(() => {
+      const selected = commitRows().find((row) => row.className.includes("is-selected"));
+      expect(document.activeElement).toBe(selected?.querySelector(".ph-row__hit"));
+    });
   });
 
   it("opens the Report for the commit's own session", async () => {
@@ -398,6 +448,47 @@ describe("ProjectHistoryScreen", () => {
       "nodes",
     ];
     expect(banned.filter((word) => shown.has(word))).toEqual([]);
+  });
+
+  it("says what the uncounted sittings were, not just that they exist", () => {
+    // "2 empty" told a producer nothing. These are sittings Recall opened and
+    // watched without seeing work — worth counting so the numbers add up, and
+    // meaningless unless the line says what they were.
+    const withEmpties = project("nightfall", "Nightfall", [
+      ...nightfall.captures,
+      work("e1", "nightfall", 6, { event_count: 0, creative_event_count: 0 }),
+    ]);
+    renderScreen([withEmpties], "nightfall");
+    expect(screen.getByText(/recorded nothing/)).toBeInTheDocument();
+    expect(screen.queryByText(/\d+ empty/)).not.toBeInTheDocument();
+  });
+
+  it("names the set an origin claim is about", () => {
+    // The title is the PROJECT and the chips saying which set is focused sit
+    // below, so a bare "Came off X" reached the reader before its subject.
+    const twoSets = project("nightfall", "Nightfall", [
+      work("a1", "nightfall", 0),
+      work("a2", "nightfall v2", 3),
+    ]);
+    renderScreen([twoSets], "nightfall");
+    const origin = document.body.querySelector(".ph__origin");
+    expect(origin).not.toBeNull();
+    const text = origin!.textContent ?? "";
+    // Subject, claim, source — in that order, all in one sentence.
+    expect(text).toMatch(/nightfall v2.*came off.*nightfall/i);
+  });
+
+  it("never leaves a separator able to wrap onto a line of its own", () => {
+    // The metadata is a wrapping flex line, so a dot rendered BETWEEN two
+    // values is an item that can wrap like any other: every second line of a
+    // selected row opened with an orphaned "· 1w ago". A separator has to
+    // travel with the value it follows, which means it must never be a child
+    // of its own.
+    renderScreen();
+    const meta = commitRows()[0]!.querySelector(".ph-row__meta")!;
+    for (const child of Array.from(meta.children)) {
+      expect((child.textContent ?? "").replace(/[\s·]/g, "")).not.toBe("");
+    }
   });
 
   it("says what to do when there are no projects at all", () => {

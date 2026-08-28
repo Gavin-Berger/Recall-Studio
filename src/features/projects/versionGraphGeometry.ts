@@ -4,6 +4,7 @@
 // anything. A path string is either right or wrong, and asserting on it is
 // cheaper and far more precise than screenshotting an SVG.
 
+import { formatSessionDate } from "../sessionFormat";
 import type { GraphEdge, GraphLayout, TimeScale } from "./versionGraphLayout";
 
 export type GraphGeometryOptions = {
@@ -67,7 +68,14 @@ export type GraphGeometry = {
   lanes: GeometryLane[];
   spans: GeometrySpan[];
   sittings: { nodeId: string; x: number; y: number }[];
-  breaks: { x: number; durationMs: number }[];
+  /**
+   * A collapsed stretch of dead air, and the words that own the spot.
+   *
+   * `x` is the dashed rule; `textX` is where its label starts. The label is
+   * built here rather than in the component because the axis below has to know
+   * how much room it takes up before deciding whether it can speak too.
+   */
+  breaks: { x: number; textX: number; durationMs: number; text: string }[];
   /**
    * Where each stretch of real time begins, for dating the axis.
    *
@@ -75,7 +83,7 @@ export type GraphGeometry = {
    * set of moments where the reader needs to be told the date again, because a
    * collapsed gap has just jumped them forward.
    */
-  axis: { x: number; atMs: number }[];
+  axis: { x: number; atMs: number; text: string }[];
   /** Baseline the axis labels sit on. */
   axisY: number;
 };
@@ -113,6 +121,20 @@ export const MIN_NODE_SEPARATION = 26;
 export const MIN_SPAN_PX = 14;
 /** Advance width of IBM Plex Mono at --t-micro (11px). */
 export const MONO_CHAR_PX = 6.6;
+/**
+ * The same advance, plus the widest letter-spacing the small labels carry.
+ *
+ * `.vg__axis` tracks 0.03em, `.vg__label` 0.04em and `.vg__break` 0.08em, so
+ * text measured at the bare advance comes out about a character short of what
+ * is drawn. Erring wide is the safe direction in both places it is used: it
+ * drops a date that would just have cleared a gap label — the more useful of
+ * the two anyway — and it trims a name one character before it would clip.
+ */
+export const TRACKED_CHAR_PX = MONO_CHAR_PX + 11 * 0.08;
+/** Air kept between two things speaking on the axis line. */
+export const AXIS_LABEL_GUTTER = 12;
+/** Where a break's label sits relative to its rule. */
+export const BREAK_LABEL_DX = 6;
 
 /**
  * Lay the graph out in pixels.
@@ -278,22 +300,40 @@ export function graphGeometry(
     d: edgePath(edge, positionOf, radius),
   }));
 
-  const breaks = scale.gaps.map((gap) => ({
+  const breaks = scale.gaps.map((gap) => {
     // The break sits at the drawn position where the dead air was removed.
-    x: xOf(gap.startMs),
-    durationMs: gap.durationMs,
-  }));
+    const x = xOf(gap.startMs);
+    return {
+      x,
+      textX: x + BREAK_LABEL_DX,
+      durationMs: gap.durationMs,
+      text: describeBreak(gap.durationMs),
+    };
+  });
 
   // A date tick and a gap label land at almost the same x — the break sits
   // where the dead air was removed, and the next segment starts immediately
   // after it — so they overprinted each other ("Aug 11, 20264 days"). The gap
   // label owns that spot because it explains the jump; the date is dropped
   // where one is already speaking.
-  const breakXs = scale.gaps.map((gap) => xOf(gap.startMs));
-  const AXIS_CLEARANCE = 74;
-  const axis = scale.segments
-    .map((segment) => ({ x: xOf(segment.startMs), atMs: segment.startMs }))
-    .filter((tick) => !breakXs.some((breakX) => Math.abs(tick.x - breakX) < AXIS_CLEARANCE));
+  //
+  // Comparing the two anchors against a fixed clearance was not enough, which
+  // is how that exact string survived the first fix: both labels are anchored
+  // at their START and run right, so a date whose anchor is a comfortable
+  // 125px from a break still prints its last four characters over it. What
+  // collides is the ink, so the ink is what gets compared.
+  const taken = breaks.map((brk) => extentOf(brk.textX, brk.text));
+  const axis: GraphGeometry["axis"] = [];
+  for (const segment of scale.segments) {
+    const tick = { x: xOf(segment.startMs), atMs: segment.startMs, text: formatSessionDate(segment.startMs) };
+    const extent = extentOf(tick.x, tick.text);
+    // Against the breaks AND against the dates already kept: two stretches
+    // either side of a short collapsed gap can date to the same day and print
+    // the same date twice over itself.
+    if (taken.some((other) => overlaps(extent, other))) continue;
+    taken.push(extent);
+    axis.push(tick);
+  }
 
   return { width, height, nodes, edges, lanes, spans, sittings, breaks, axis, axisY };
 }
@@ -349,6 +389,24 @@ export function fitLabel(name: string, maxPx: number, charPx = MONO_CHAR_PX): st
   if (name.length <= fits) return name;
   if (fits < 4) return "";
   return `${name.slice(0, fits - 1).trimEnd()}…`;
+}
+
+/** Rounded to the unit a producer would actually say out loud. */
+export function describeBreak(durationMs: number): string {
+  const days = Math.round(durationMs / 86_400_000);
+  if (days >= 60) return `${Math.round(days / 30)} months`;
+  if (days >= 14) return `${Math.round(days / 7)} weeks`;
+  if (days >= 7) return "1 week";
+  return `${days} days`;
+}
+
+/** The horizontal ink a left-anchored mono label occupies, plus its air. */
+function extentOf(x: number, text: string): { x1: number; x2: number } {
+  return { x1: x, x2: x + text.length * TRACKED_CHAR_PX + AXIS_LABEL_GUTTER };
+}
+
+function overlaps(a: { x1: number; x2: number }, b: { x1: number; x2: number }): boolean {
+  return a.x1 < b.x2 && b.x1 < a.x2;
 }
 
 /** `--lane-0…3`, cycling past 3 so a deep branch never runs out of steps (§11). */

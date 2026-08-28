@@ -6,6 +6,7 @@ import {
   useState,
 } from "react";
 import { RecallMark } from "../../components/RecallMark";
+import { LoadingSpinner } from "../../components/LoadingSpinner";
 import {
   abletonSetName,
   describeBridgeSet,
@@ -260,7 +261,8 @@ export function ProjectManagerScreen({
       )}
 
       {(loading || busyLabel || error || flash) && (
-        <div className={`project-manager__notice ${error ? "project-manager__notice--error" : ""}`}>
+        <div className={`project-manager__notice ${error ? "project-manager__notice--error" : ""} ${!error && (loading || busyLabel) ? "px-loading-inline" : ""}`} role={!error && (loading || busyLabel) ? "status" : undefined}>
+          {!error && (loading || busyLabel) && <LoadingSpinner />}
           {error ?? busyLabel ?? flash ?? "Opening your project desk..."}
         </div>
       )}
@@ -592,7 +594,8 @@ function SortHeader({
 
 function ProjectLoadingRows() {
   return (
-    <div className="project-explorer__rows project-explorer__rows--loading" aria-label="Loading projects">
+    <div className="project-explorer__rows project-explorer__rows--loading" role="status" aria-label="Loading projects">
+      <span className="px-loading-inline"><LoadingSpinner />Loading projects</span>
       {[0, 1, 2, 3].map((item) => (
         <div key={item} className="px-row px-row--loading">
           <span className="px-skeleton px-skeleton--name" />

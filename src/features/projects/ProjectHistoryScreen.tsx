@@ -24,6 +24,7 @@ import {
   commitsInSet,
   defaultSetKey,
   projectSets,
+  setKeyForCommit,
   type ProjectSet,
 } from "./projectSets";
 import { historyKeyAction } from "./historyKeys";
@@ -35,6 +36,8 @@ import {
   materializeSessionSchema,
 } from "../../lib/schema/api";
 import { commitRacks, RACK_CONTENTS_LIMIT, type CommitRack } from "./commitRacks";
+import { wayBack, type WayBack } from "./wayBack";
+import { WayBackPanel } from "./WayBackPanel";
 import {
   describeGap as describeStepGap,
   sessionSteps,
@@ -55,8 +58,9 @@ import { commitHeadline, summarizeCommit, type CommitContents } from "./commitCo
 // `.als` a commit was made against is a label on it, not the identity of the
 // graph — see projectCommits.ts for why that inversion mattered.
 //
-// Two views of one model: the overview draws time, the list draws structure and
-// detail, and both come from `projectHistory` so they cannot disagree.
+// Two views of one model: the overview draws continuation and branches, the
+// list draws the working detail, and both come from the same project history so
+// they cannot disagree.
 
 type ProjectHistoryScreenProps = {
   projects: SavedProject[];
@@ -152,6 +156,8 @@ type ContentsState =
       racks: CommitRack[];
       diff: CommitDiff;
       steps: SessionStep[];
+      /** Where this work lives, and whether the file has moved on since. */
+      way: WayBack;
     }
   | { status: "error" };
 
@@ -318,6 +324,9 @@ function Racks({ racks }: { racks: CommitRack[] }) {
  * otherwise fire sixty round trips to render a list nobody has read yet.
  */
 function Contents({ state }: { state: ContentsState }) {
+  // Each contents panel owns its expanded tails. This hook stays before the
+  // loading/error returns so React sees the same hook order while data lands.
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(() => new Set());
   if (state.status === "loading") {
     return <p className="ph-contents__quiet px-loading-inline" role="status"><LoadingSpinner />Reading what changed…</p>;
   }
@@ -334,20 +343,23 @@ function Contents({ state }: { state: ContentsState }) {
     );
   }
 
+  type GroupRow = { key: string; label: string; context: string | null; changes?: number };
   type Group = {
+    id: string;
     title: string;
     total: number;
-    rows: { key: string; label: string; context: string | null; changes?: number }[];
+    rows: GroupRow[];
+    allRows: GroupRow[];
     /** Everything was touched once, so there is nothing worth naming. */
     spread: boolean;
   };
 
   const groups: Group[] = [
-    { title: "Tracks", total: contents.totals.tracks, rows: contents.tracks, spread: contents.evenlySpread.tracks },
-    { title: "Devices", total: contents.totals.devices, rows: contents.devices, spread: contents.evenlySpread.devices },
-    { title: "Parameters", total: contents.totals.parameters, rows: contents.parameters, spread: contents.evenlySpread.parameters },
-    { title: "Notes", total: contents.totals.notes, rows: contents.notes, spread: false },
-    { title: "Added", total: contents.totals.added, rows: contents.added, spread: false },
+    { id: "tracks", title: "Tracks", total: contents.totals.tracks, rows: contents.tracks, allRows: contents.all.tracks, spread: contents.evenlySpread.tracks },
+    { id: "devices", title: "Devices", total: contents.totals.devices, rows: contents.devices, allRows: contents.all.devices, spread: contents.evenlySpread.devices },
+    { id: "parameters", title: "Parameters", total: contents.totals.parameters, rows: contents.parameters, allRows: contents.all.parameters, spread: contents.evenlySpread.parameters },
+    { id: "notes", title: "Notes", total: contents.totals.notes, rows: contents.notes, allRows: contents.all.notes, spread: false },
+    { id: "added", title: "Added", total: contents.totals.added, rows: contents.added, allRows: contents.all.added, spread: false },
   ].filter((group) => group.rows.length > 0 || group.total > 0);
 
   return (
@@ -355,14 +367,19 @@ function Contents({ state }: { state: ContentsState }) {
     <Diff state={state.diff} />
     <div className="ph-contents">
       {groups.map((group) => (
-        <section key={group.title} className="ph-contents__group">
+        <section key={group.id} className="ph-contents__group">
           <h3 className="ph-contents__head">
             {group.title}
             <span className="ph-contents__count">{group.total}</span>
           </h3>
-          {group.rows.length > 0 ? (
+          {(() => {
+            const expanded = expandedGroups.has(group.id);
+            const shownRows = expanded ? group.allRows : group.rows;
+            const hidden = Math.max(0, group.allRows.length - group.rows.length);
+            return <>
+          {shownRows.length > 0 ? (
             <ul className="ph-contents__list">
-              {group.rows.map((row) => (
+              {shownRows.map((row) => (
                 <li key={row.key}>
                   <span className="ph-contents__label">{row.label}</span>
                   {row.context && <span className="ph-contents__ctx">{row.context}</span>}
@@ -379,16 +396,33 @@ function Contents({ state }: { state: ContentsState }) {
               {group.spread ? "each touched once" : "nothing recorded"}
             </p>
           )}
-          {group.rows.length > 0 && group.total > group.rows.length && (
-            <p className="ph-contents__more">
-              +{group.total - group.rows.length} more
-            </p>
+          {hidden > 0 && (
+            <button
+              type="button"
+              className="ph-contents__more"
+              aria-expanded={expanded}
+              onClick={() => {
+                setExpandedGroups((current) => {
+                  const next = new Set(current);
+                  if (next.has(group.id)) next.delete(group.id);
+                  else next.add(group.id);
+                  return next;
+                });
+              }}
+            >
+              {expanded ? "Show fewer" : `+${hidden} more`}
+            </button>
           )}
+            </>;
+          })()}
         </section>
       ))}
       </div>
       {state.racks.length > 0 && <Racks racks={state.racks} />}
     <Steps steps={state.steps} />
+    {/* Last, because it is the way OUT. Everything above says what happened;
+        this says where it lives and whether going there will show you it. */}
+    <WayBackPanel way={state.way} />
     </>
   );
 }
@@ -485,8 +519,11 @@ function CommitRow({
   selected,
   nowMs,
   contents,
+  detailsOpen,
   headline: loadedHeadline,
+  showSet,
   onSelect,
+  onToggleDetails,
   onOpenReport,
   onOpenWorkspace,
 }: {
@@ -496,8 +533,12 @@ function CommitRow({
   selected: boolean;
   nowMs: number;
   contents: ContentsState | null;
+  detailsOpen: boolean;
   headline: string | null;
+  /** True when this row's set differs from the one the list is about. */
+  showSet: boolean;
   onSelect: () => void;
+  onToggleDetails: () => void;
   onOpenReport: () => void;
   onOpenWorkspace: () => void;
 }) {
@@ -531,7 +572,13 @@ function CommitRow({
             <span className="ph-row__name">
               {headline ?? commit.setName ?? "Unsaved set"}
             </span>
-            {commit.setName && headline && (
+            {/* Only when it differs from the set the list is about.
+                The list is narrowed to one set and sits under a heading that
+                already names it, so this printed the same chip on every row —
+                the same noise the repeated parentage line was, in a different
+                shape. Kept as a condition rather than deleted: it earns its
+                place again the moment a row can come from somewhere else. */}
+            {commit.setName && headline && showSet && (
               <span className="ph-ref ph-ref--set">{commit.setName}</span>
             )}
             {row.live && <span className="ph-ref ph-ref--live">capturing</span>}
@@ -554,21 +601,25 @@ function CommitRow({
           <span className="ph-row__meta">
             {/* The date lives on the day heading above; repeating it on every
                 row under it is noise. */}
-            <span>{formatClock(commit.atMs)}</span>
-            <span aria-hidden="true">·</span>
-            <span>{formatSessionDuration(commit.session)}</span>
-            <span aria-hidden="true">·</span>
-            <span>
-              {commit.changes.toLocaleString()}{" "}
-              {commit.changes === 1 ? "change" : "changes"}
-            </span>
-            {commit.creativeChanges > 0 && (
-              <>
-                <span aria-hidden="true">·</span>
-                <span>{commit.creativeChanges.toLocaleString()} creative</span>
-              </>
-            )}
-            <span aria-hidden="true">·</span>
+            {/* Each separator belongs to the value BEFORE it, not between the
+                two as its own item. A standalone dot is a flex item like any
+                other and wraps like one, so a narrow row broke the line after
+                it and every second line opened with an orphaned "· 1w ago". */}
+            {[
+              formatClock(commit.atMs),
+              formatSessionDuration(commit.session),
+              `${commit.changes.toLocaleString()} ${
+                commit.changes === 1 ? "captured event" : "captured events"
+              }`,
+              ...(commit.creativeChanges > 0
+                ? [`${commit.creativeChanges.toLocaleString()} creative events`]
+                : []),
+            ].map((text, index) => (
+              <span key={index}>
+                {text}
+                <span aria-hidden="true"> ·</span>
+              </span>
+            ))}
             <time dateTime={new Date(commit.endedAtMs).toISOString()}>
               {relativeTime(commit.endedAtMs, nowMs)}
             </time>
@@ -577,10 +628,20 @@ function CommitRow({
 
         {/* Outside the two-column body: the panel is full width, and leaving it
             inside would make it a third column beside the metadata. */}
-        {selected && contents && <Contents state={contents} />}
+        {selected && detailsOpen && contents && <Contents state={contents} />}
       </button>
 
       <span className="ph-row__actions">
+        {selected && (
+          <button
+            type="button"
+            className={`px-btn${detailsOpen ? " px-btn--active" : ""}`}
+            aria-expanded={detailsOpen}
+            onClick={onToggleDetails}
+          >
+            {detailsOpen ? "Hide details" : "Details"}
+          </button>
+        )}
         <button type="button" className="px-btn" onClick={onOpenReport}>
           Report
         </button>
@@ -626,6 +687,7 @@ export function ProjectHistoryScreen({
   onOpenProjects,
 }: ProjectHistoryScreenProps) {
   const [selectedCommitId, setSelectedCommitId] = useState<string | null>(null);
+  const [detailsCommitId, setDetailsCommitId] = useState<string | null>(null);
   // Set only by a keyboard move, so arriving on the surface or clicking a row
   // never yanks focus somewhere the user did not ask for.
   const [moveFocus, setMoveFocus] = useState(false);
@@ -676,8 +738,15 @@ export function ProjectHistoryScreen({
   }, [project?.id, sets.length]);
 
   useEffect(() => {
-    setSelectedCommitId(rows[0]?.commit.id ?? null);
-  }, [focusedSet?.key, rows.length]);
+    // Switching from the set chooser lands on that set's newest work. A point
+    // chosen in the project graph, though, must stay the exact point chosen —
+    // it is already in the newly focused set.
+    setSelectedCommitId((current) =>
+      current && rows.some((row) => row.commit.id === current)
+        ? current
+        : rows[0]?.commit.id ?? null,
+    );
+  }, [focusedSet?.key, rows]);
 
   /**
    * The set's structure for one session.
@@ -700,6 +769,10 @@ export function ProjectHistoryScreen({
   const loadContents = useCallback(
     (sessionId: string, parentSessionId: string | null, startedAtMs: number) => {
     if (requested.current.has(sessionId)) return;
+    const selectedCommit = commits.find((commit) => commit.id === sessionId);
+    // A row can disappear while its details are loading (for example after a
+    // project refresh). Do not attach a file-return promise to unrelated work.
+    if (!selectedCommit) return;
     requested.current.add(sessionId);
     setContents((current) => ({ ...current, [sessionId]: { status: "loading" } }));
     void (async () => {
@@ -733,6 +806,10 @@ export function ProjectHistoryScreen({
             racks: commitRacks(schema?.has_snapshot ? schema : null, touched),
             diff: commitDiff(parentSchema, schema, parentSessionId !== null),
             steps: sessionSteps(changes, notes, clips, startedAtMs),
+            // The WHOLE project, not the focused set: "worked since" has to
+            // count later sessions the list is currently hiding, or it
+            // under-reports how far the file has drifted.
+            way: wayBack(selectedCommit, commits),
           },
         }));
       } catch {
@@ -740,7 +817,7 @@ export function ProjectHistoryScreen({
       }
     })();
     },
-    [structureOf],
+    [commits, structureOf],
   );
 
   /**
@@ -760,14 +837,23 @@ export function ProjectHistoryScreen({
         if (cancelled) return;
         const id = row.commit.id;
         if (headlined.current.has(id)) continue;
-        headlined.current.add(id);
         try {
           const changes = await getParameterChanges(id);
+          // Marked done only once there is an answer. Marking it before the
+          // await left the row that happened to be in flight when this effect
+          // was torn down — switching set, a capture landing — permanently
+          // blacklisted: the walk restarted, skipped it as already handled, and
+          // it kept its set name as a title forever while the rows either side
+          // of it described themselves. Three of the eight rows in one library
+          // read that way, which looked like three sessions that did nothing.
           if (cancelled) return;
+          headlined.current.add(id);
           const line = commitHeadline(summarizeCommit(changes, [], []));
           setHeadlines((current) => ({ ...current, [id]: line }));
         } catch {
-          // The count stays. A row without a headline is quiet, not broken.
+          // A failure IS an answer: the row keeps its change count, and asking
+          // again on every re-render would spin.
+          headlined.current.add(id);
         }
       }
     })();
@@ -780,6 +866,14 @@ export function ProjectHistoryScreen({
   // The open session's detail, which the graph needs so it can draw that
   // session as its steps instead of one node.
   const selectedContents = selectedRow ? contents[selectedRow.commit.id] ?? null : null;
+
+  // The right column is an information pane, not a second empty index. Open
+  // the newest selected session on arrival so its facts earn the desktop
+  // space. The producer can still close it with "Hide details"; this runs
+  // again only when they choose a different session.
+  useEffect(() => {
+    setDetailsCommitId(selectedRow?.commit.id ?? null);
+  }, [selectedRow?.commit.id]);
 
   useEffect(() => {
     if (!selectedRow) return;
@@ -799,7 +893,23 @@ export function ProjectHistoryScreen({
       target.scrollIntoView({ block: "nearest" });
     }
   }, [moveFocus, selectedCommitId]);
-  const branches = new Set(rows.filter((row) => row.depth > 0).map((row) => row.lane)).size;
+  const selectListSession = useCallback((sessionId: string) => {
+    setSelectedCommitId(sessionId);
+    setDetailsCommitId(sessionId);
+  }, []);
+  const selectGraphSession = useCallback(
+    (sessionId: string) => {
+      const commit = commits.find((candidate) => candidate.id === sessionId);
+      if (!commit) return;
+      const nextSetKey = setKeyForCommit(commit);
+      if (nextSetKey !== focusedSet?.key) setFocusedSetKey(nextSetKey);
+      selectListSession(sessionId);
+      // The map is the left-side navigator. A point should therefore put the
+      // corresponding work straight into the reading pane on its right.
+      setMoveFocus(true);
+    },
+    [commits, focusedSet?.key, selectListSession],
+  );
 
   if (projects.length === 0) {
     return (
@@ -820,18 +930,29 @@ export function ProjectHistoryScreen({
     <div className="ph">
       <header className="ph__bar">
         <div className="ph__title">
-          <h1>{focusedSet?.name ?? project?.display_name ?? "History"}</h1>
+          <p className="ph__eyebrow">Project history</p>
+          <h1>{project?.display_name ?? "History"}</h1>
           <span className="ph__subtitle">
-            {rows.length} {rows.length === 1 ? "session" : "sessions"}
-            {branches > 0 && ` · ${branches} other ${branches === 1 ? "line" : "lines"}`}
-            {emptyCheckpoints > 0 && ` · ${emptyCheckpoints} empty`}
+            {commits.length} captured {commits.length === 1 ? "session" : "sessions"}
+            {sets.length > 1 && ` · ${sets.length} sets`}
+            {/* "2 empty" said nothing. These are sittings Recall opened and
+                watched without seeing any work — real, worth counting so the
+                numbers add up, and meaningless unless the line says what they
+                were. */}
+            {emptyCheckpoints > 0 &&
+              ` · ${emptyCheckpoints} more recorded nothing`}
           </span>
           {/* Where this set came from. The relationship between sets is
               context for the decisions below, not another entry in the list —
               and it says outright when it was inferred rather than watched. */}
           {focusedSet?.cameFrom && (
             <p className="ph__origin">
-              {focusedSet.cameFromInferred ? "Most likely came off" : "Came off"}{" "}
+              {/* Names its own subject. The title above is the PROJECT and the
+                  chips that say which set is focused sit below, so a bare
+                  "Came off X" reached the reader before the thing it was
+                  about. */}
+              <span className="ph__origin-subject">{focusedSet.name}</span>{" "}
+              {focusedSet.cameFromInferred ? "most likely came off" : "came off"}{" "}
               <button
                 type="button"
                 className="ph__origin-link"
@@ -872,80 +993,128 @@ export function ProjectHistoryScreen({
         )}
       </header>
 
-      <SetPicker sets={sets} focused={focusedSet} onFocus={setFocusedSetKey} />
+      <div className="ph__workspace">
+        <aside className="ph__sidebar">
+          <section className="ph__graph" aria-labelledby="project-map-heading">
+            <header className="ph__surface-head ph__map-head">
+              <div>
+                <p className="ph__eyebrow">Project map</p>
+                <h2 id="project-map-heading">Work paths</h2>
+              </div>
+              <p className="ph__surface-note">
+                Recent work is at the top. Pick a path to read its work.
+              </p>
+            </header>
+            <div className="ph__graph-body">
+              <CommitGraphView
+                commits={commits}
+                openSessionId={selectedRow?.commit.id ?? null}
+                openSteps={
+                  detailsCommitId === selectedRow?.commit.id && selectedContents?.status === "ready"
+                    ? selectedContents.steps
+                    : []
+                }
+                onSelectSession={selectGraphSession}
+                variant="sidebar"
+              />
+            </div>
+          </section>
+        </aside>
 
-      <section className="ph__graph" aria-label="Project history">
-        <CommitGraphView
-          commits={commits}
-          openSessionId={selectedRow?.commit.id ?? null}
-          openSteps={
-            selectedContents?.status === "ready" ? selectedContents.steps : []
-          }
-          onSelectSession={(sessionId) => setSelectedCommitId(sessionId)}
-        />
-      </section>
+        <div className="ph__details">
+        {rows.length > 0 && (
+          <section className="ph__record" aria-labelledby="work-record-heading">
+          <header className="ph__surface-head ph__record-head">
+            <div>
+              <p className="ph__eyebrow">Work record</p>
+              <h2 id="work-record-heading">
+                {focusedSet ? `Capture record for ${focusedSet.name}` : "Capture record"}
+              </h2>
+            </div>
+            <p className="ph__surface-note">
+              {rows.length} {rows.length === 1 ? "session" : "sessions"} in view
+            </p>
+          </header>
 
-      {rows.length > 0 && (
-        <section
-          className="ph__list"
-          aria-label="Sessions"
-          onKeyDown={(event) => {
-            const index = rows.findIndex((row) => row.commit.id === selectedRow?.commit.id);
-            const action = historyKeyAction(event, {
-              index,
-              count: rows.length,
-              parentRows: rows.map((row) => row.parentRow),
-            });
-            if (action.kind === "none") return;
-            event.preventDefault();
-            const target = rows[action.index];
-            if (!target) return;
-            if (action.kind === "select") {
-              setSelectedCommitId(target.commit.id);
-              // Follow the selection with focus, or the next key would be
-              // resolved against a row the user can no longer see.
-              setMoveFocus(true);
-            } else if (action.kind === "openReport") {
-              onOpenReport(landingSessionId(target));
-            } else {
-              onOpenWorkspace(landingSessionId(target));
-            }
-          }}
-        >
-          <ol className="ph-rows">
-            {days.map((day) => (
-              <li key={day.key} className="ph-day-group">
-                <ol className="ph-rows">
-                  <DayDivider
-                    label={formatSessionDate(day.atMs)}
-                    // The lanes alive at the first row under this heading are
-                    // the ones that must keep running through it.
-                    lanes={day.entries[0]?.row.railLanes ?? []}
-                    shape={shape}
-                  />
-                  {day.entries.map(({ row, index }) => (
-                    <CommitRow
-                      key={row.commit.id}
-                      row={row}
-                      index={index}
+          <SetPicker
+            sets={sets}
+            focused={focusedSet}
+            onFocus={(key) => {
+              setFocusedSetKey(key);
+              setDetailsCommitId(null);
+            }}
+          />
+
+          <section
+            className="ph__list"
+            aria-label="Sessions"
+            onKeyDown={(event) => {
+              const index = rows.findIndex((row) => row.commit.id === selectedRow?.commit.id);
+              const action = historyKeyAction(event, {
+                index,
+                count: rows.length,
+                parentRows: rows.map((row) => row.parentRow),
+              });
+              if (action.kind === "none") return;
+              event.preventDefault();
+              const target = rows[action.index];
+              if (!target) return;
+              if (action.kind === "select") {
+                selectListSession(target.commit.id);
+                // Follow the selection with focus, or the next key would be
+                // resolved against a row the user can no longer see.
+                setMoveFocus(true);
+              } else if (action.kind === "openReport") {
+                onOpenReport(landingSessionId(target));
+              } else {
+                onOpenWorkspace(landingSessionId(target));
+              }
+            }}
+          >
+            <ol className="ph-rows">
+              {days.map((day) => (
+                <li key={day.key} className="ph-day-group">
+                  <ol className="ph-rows">
+                    <DayDivider
+                      label={formatSessionDate(day.atMs)}
+                      // The lanes alive at the first row under this heading are
+                      // the ones that must keep running through it.
+                      lanes={day.entries[0]?.row.railLanes ?? []}
                       shape={shape}
-                      nowMs={nowMs}
-                      contents={contents[row.commit.id] ?? null}
-                headline={headlines[row.commit.id] ?? null}
-                      selected={row.commit.id === selectedRow?.commit.id}
-                      onSelect={() => setSelectedCommitId(row.commit.id)}
-                      onOpenReport={() => onOpenReport(landingSessionId(row))}
-                      onOpenWorkspace={() => onOpenWorkspace(landingSessionId(row))}
                     />
-                  ))}
-                </ol>
-              </li>
-            ))}
-          </ol>
-        </section>
-      )}
+                    {day.entries.map(({ row, index }) => (
+                      <CommitRow
+                        key={row.commit.id}
+                        row={row}
+                        index={index}
+                        shape={shape}
+                        nowMs={nowMs}
+                        contents={contents[row.commit.id] ?? null}
+                        detailsOpen={row.commit.id === detailsCommitId}
+                        headline={headlines[row.commit.id] ?? null}
+                showSet={setKeyForCommit(row.commit) !== (focusedSet?.key ?? null)}
+                        selected={row.commit.id === selectedRow?.commit.id}
+                        onSelect={() => selectListSession(row.commit.id)}
+                        onToggleDetails={() =>
+                          setDetailsCommitId((current) =>
+                            current === row.commit.id ? null : row.commit.id,
+                          )
+                        }
+                        onOpenReport={() => onOpenReport(landingSessionId(row))}
+                        onOpenWorkspace={() => onOpenWorkspace(landingSessionId(row))}
+                      />
+                    ))}
+                  </ol>
+                </li>
+              ))}
+            </ol>
+          </section>
+          </section>
+        )}
 
-      {artifacts.length > 0 && <Artifacts artifacts={artifacts} />}
+        {artifacts.length > 0 && <Artifacts artifacts={artifacts} />}
+        </div>
+      </div>
     </div>
   );
 }

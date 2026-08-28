@@ -9,7 +9,7 @@
 // and asserted rather than assumed.
 
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { SavedProject, SavedSessionMetadata } from "../../types/recall";
 import type { DeviceObj, ProjectSchema, RackObj, TrackObj } from "../../types/schema";
 
@@ -132,6 +132,11 @@ function renderScreen() {
       onOpenProjects={vi.fn()}
     />,
   );
+  // The selected session opens in the information pane on arrival. This guard
+  // keeps the suite tolerant of the first render while React applies that
+  // selection effect.
+  const details = screen.queryByRole("button", { name: "Details" });
+  if (details) fireEvent.click(details);
 }
 
 beforeEach(() => {
@@ -220,6 +225,33 @@ describe("ProjectHistoryScreen · the loaded panel", () => {
     });
   });
 
+  it("reveals the named items behind a counted tail", async () => {
+    getParameterChanges.mockResolvedValue(
+      Array.from({ length: 6 }, (_, index) => ({
+        id: `parameter-${index}`,
+        event_type: "parameter_changed",
+        track_name: "Drums",
+        track_id: "t1",
+        device_id: "d1",
+        device_name: "Saturator",
+        parameter_name: `Parameter ${index + 1}`,
+        before_display_value: "0.0 dB",
+        after_display_value: "4.2 kHz",
+        changed_at_ms: start + index * minute,
+      })),
+    );
+    renderScreen();
+
+    const more = await screen.findByRole("button", { name: "+6 more" });
+    fireEvent.click(more);
+
+    expect(screen.getByRole("button", { name: "Show fewer" })).toHaveAttribute(
+      "aria-expanded",
+      "true",
+    );
+    expect(screen.getByText("Parameter 6")).toBeInTheDocument();
+  });
+
   it("says it cannot tell when a snapshot is missing, rather than 'nothing changed'", async () => {
     getProjectSchema.mockResolvedValue({ ...commitStructure, has_snapshot: false });
     renderScreen();
@@ -248,7 +280,7 @@ describe("ProjectHistoryScreen · the loaded panel", () => {
     renderScreen();
     await screen.findByLabelText("What happened, in order");
 
-    const graph = within(screen.getByRole("group", { name: "Project history" }));
+    const graph = within(screen.getByLabelText(/Project map/));
     const nodes = graph.getAllByRole("button");
     // c2 is open and expands into its steps; c1 stays collapsed as one node.
     expect(nodes.length).toBeGreaterThan(2);
@@ -259,11 +291,58 @@ describe("ProjectHistoryScreen · the loaded panel", () => {
     renderScreen();
     await screen.findByLabelText("What happened, in order");
 
-    const graph = within(screen.getByRole("group", { name: "Project history" }));
+    const graph = within(screen.getByLabelText(/Project map/));
     const collapsed = graph
       .getAllByRole("button")
       .filter((node) => !/part of the session/.test(node.getAttribute("aria-label") ?? ""));
     expect(collapsed.length).toBeGreaterThan(0);
+  });
+
+  it("says where the work lives, so there is a way back to the music", async () => {
+    // Every other action on this screen leads further INTO Recall. A producer
+    // opening it after two weeks wants the opposite: how do I get back to that?
+    renderScreen();
+    const back = await screen.findByLabelText("Where this work lives");
+    expect(within(back).getByText("nightfall.als")).toBeInTheDocument();
+  });
+
+  it("shows the producer's real path, not the normalised one", async () => {
+    // The grouping path is lowercased with its separators flipped. Printing it
+    // would show a folder the producer does not recognise, and the file opener
+    // may not resolve it. Compared as plain text: a regex here would need
+    // escaped backslashes, and getting that wrong silently matches nothing.
+    renderScreen();
+    const back = await screen.findByLabelText("Where this work lives");
+    const shown = back.textContent ?? "";
+    expect(shown).toContain("C:\\Music\\nightfall");
+    expect(shown).not.toContain("c:/music/nightfall");
+  });
+
+  it("warns that the set has been worked since, so opening it will not show this", async () => {
+    // c1 is the older session; c2 came after it in the same set. Recall holds
+    // the record, not the audio, and must not imply the file still looks the
+    // way it did that night.
+    renderScreen();
+    await screen.findByLabelText("Where this work lives");
+
+    const rows = Array.from(
+      screen.getByLabelText("Sessions").querySelectorAll<HTMLElement>(".ph-row"),
+    );
+    fireEvent.click(rows[rows.length - 1]!.querySelector(".ph-row__hit") as HTMLElement);
+    // Choosing a row closes the breakdown, so open it again on the new one.
+    const details = screen.queryByRole("button", { name: "Details" });
+    if (details) fireEvent.click(details);
+
+    await waitFor(() => {
+      const back = screen.getByLabelText("Where this work lives");
+      expect(back.textContent ?? "").toMatch(/will not show you this/);
+    });
+  });
+
+  it("never promises the set can be restored", async () => {
+    renderScreen();
+    const back = await screen.findByLabelText("Where this work lives");
+    expect(back.textContent ?? "").not.toMatch(/restore|revert|as it was/i);
   });
 
   it("shows no diff at all for the root commit", async () => {

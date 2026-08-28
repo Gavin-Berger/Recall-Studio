@@ -12,6 +12,7 @@ import { RelinkDialog, type AlsFileChoice } from "./RelinkDialog";
 import { compareSchemas, countDevices, diffIsEmpty, type VersionDiff } from "./versionDiff";
 import { projectVersions, versionForSession } from "./projectVersions";
 import { VersionGraphView } from "./VersionGraphView";
+import { LoadingSpinner } from "../../components/LoadingSpinner";
 
 // The version-memory view for one project: every `.als` take on a chronological
 // rail, and a detail pane that answers "what changed, what was recorded, which
@@ -265,7 +266,8 @@ export function ProjectVersionsScreen({
       </header>
 
       {(busyLabel || error) && (
-        <div className={`versions__notice ${error ? "versions__notice--error" : ""}`}>
+        <div className={`versions__notice ${error ? "versions__notice--error" : ""} ${!error && busyLabel ? "px-loading-inline" : ""}`} role={!error && busyLabel ? "status" : undefined}>
+          {!error && busyLabel && <LoadingSpinner />}
           {error ?? busyLabel}
         </div>
       )}
@@ -506,7 +508,7 @@ function VersionDetail({
             was made. Open it in Ableton with the bridge on and new moves will land here.
           </p>
         ) : activityState === null || activityState.status === "loading" ? (
-          <p className="vd-card__quiet">Reading recorded activity…</p>
+          <p className="vd-card__quiet px-loading-inline" role="status"><LoadingSpinner />Reading recorded activity…</p>
         ) : activityState.status === "error" ? (
           <p className="vd-card__quiet">Couldn't read this take's recorded activity.</p>
         ) : (
@@ -679,7 +681,7 @@ function CompareBody({
   }
 
   if (schemaState.status === "loading" || previousSchemaState?.status === "loading") {
-    return <p className="vd-card__quiet">Reading version structure…</p>;
+    return <p className="vd-card__quiet px-loading-inline" role="status"><LoadingSpinner />Reading version structure…</p>;
   }
 
   if (schemaState.status === "ready" && previousSchemaState?.status === "ready") {

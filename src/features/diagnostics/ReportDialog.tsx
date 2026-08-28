@@ -6,6 +6,7 @@ import { writeTextFile } from "../../lib/schema/api";
 import { clearLoggedErrors, useErrorLog } from "./errorLog";
 import { buildDiagnosticReport, reportFileName, type BridgeMetrics } from "./report";
 import type { ConnectionStatus } from "../../types";
+import { LoadingSpinner } from "../../components/LoadingSpinner";
 
 // "Report a problem": gather what went wrong into one piece of text the producer
 // can read in full, then copy or save and send on.
@@ -27,6 +28,7 @@ export function ReportDialog({ open, onClose, connection }: ReportDialogProps) {
   const [appVersion, setAppVersion] = useState<string | null>(null);
   const [generatedAtMs, setGeneratedAtMs] = useState(() => Date.now());
   const [status, setStatus] = useState<string | null>(null);
+  const [busyAction, setBusyAction] = useState<"copy" | "save" | null>(null);
 
   // Refresh the snapshot each time the dialog opens, so the report describes the
   // moment the producer is reporting — not whenever the app happened to start.
@@ -34,6 +36,7 @@ export function ReportDialog({ open, onClose, connection }: ReportDialogProps) {
     if (!open) return;
     setGeneratedAtMs(Date.now());
     setStatus(null);
+    setBusyAction(null);
     if (!isTauri()) return;
 
     let cancelled = false;
@@ -87,15 +90,21 @@ export function ReportDialog({ open, onClose, connection }: ReportDialogProps) {
   if (!open) return null;
 
   async function handleCopy() {
+    if (busyAction) return;
+    setBusyAction("copy");
     try {
       await navigator.clipboard.writeText(report);
       setStatus("Report copied. Paste it into a message to send it.");
     } catch {
       setStatus("Couldn't reach the clipboard — select the text below and copy it manually.");
+    } finally {
+      setBusyAction(null);
     }
   }
 
   async function handleSave() {
+    if (busyAction) return;
+    setBusyAction("save");
     try {
       const path = await save({
         title: "Save problem report",
@@ -107,6 +116,8 @@ export function ReportDialog({ open, onClose, connection }: ReportDialogProps) {
       setStatus("Report saved.");
     } catch (error) {
       setStatus(`Couldn't save the report: ${String(error)}`);
+    } finally {
+      setBusyAction(null);
     }
   }
 
@@ -167,12 +178,14 @@ export function ReportDialog({ open, onClose, connection }: ReportDialogProps) {
               </button>
             )}
             {isTauri() && (
-              <button type="button" className="px-btn" onClick={() => void handleSave()}>
-                Save as file…
+              <button type="button" className={`px-btn ${busyAction === "save" ? "px-loading-inline" : ""}`} disabled={busyAction !== null} onClick={() => void handleSave()}>
+                {busyAction === "save" && <LoadingSpinner />}
+                {busyAction === "save" ? "Saving…" : "Save as file…"}
               </button>
             )}
-            <button type="button" className="px-btn px-btn--primary" onClick={() => void handleCopy()}>
-              Copy report
+            <button type="button" className={`px-btn px-btn--primary ${busyAction === "copy" ? "px-loading-inline" : ""}`} disabled={busyAction !== null} onClick={() => void handleCopy()}>
+              {busyAction === "copy" && <LoadingSpinner />}
+              {busyAction === "copy" ? "Copying…" : "Copy report"}
             </button>
           </div>
         </div>

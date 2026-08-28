@@ -50,7 +50,7 @@ function navButton(page: Page, label: string) {
 /** Boot the app and cross the startup screen into the shell. */
 async function enterStudio(page: Page) {
   await page.goto("/");
-  await page.getByRole("button", { name: "Enter Project Desk" }).click();
+  await page.getByRole("button", { name: "Open Project Desk" }).click();
   await expect(page.locator(".recall-app")).toBeVisible();
 }
 
@@ -61,7 +61,7 @@ test.describe("startup", () => {
 
     await expect(page.locator("main.startup-screen")).toBeVisible();
     await expect(page.getByRole("heading", { name: /welcome back/i })).toBeVisible();
-    await expect(page.getByRole("button", { name: "Enter Project Desk" })).toBeEnabled();
+    await expect(page.getByRole("button", { name: "Open Project Desk" })).toBeEnabled();
 
     expect(errors).toEqual([]);
   });

@@ -5,6 +5,7 @@ import { versionGraph, type VersionNode } from "./versionGraph";
 import { collapseGaps, layoutVersionGraph } from "./versionGraphLayout";
 import { fitLabel, graphGeometry, laneColorVar, NODE_RADIUS } from "./versionGraphGeometry";
 
+
 // The version graph: a project's `.als` files drawn as the lineage they are,
 // rather than the list they were. Structure only — which file came from which,
 // when it was worked on, and where the song forked. What HAPPENED inside a
@@ -15,15 +16,6 @@ type VersionGraphViewProps = {
   selectedVersionId: string | null;
   onSelectVersion: (versionId: string) => void;
 };
-
-/** Rounded to the unit a producer would actually say out loud. */
-function describeGap(durationMs: number): string {
-  const days = Math.round(durationMs / 86_400_000);
-  if (days >= 60) return `${Math.round(days / 30)} months`;
-  if (days >= 14) return `${Math.round(days / 7)} weeks`;
-  if (days >= 7) return "1 week";
-  return `${days} days`;
-}
 
 function nodeTitle(node: VersionNode): string {
   const sittings = node.version.sessions.length;
@@ -96,7 +88,7 @@ export function VersionGraphView({
             <g key={`break-${brk.x}`} className="vg__break" aria-hidden="true">
               <line x1={brk.x} y1={0} x2={brk.x} y2={geometry.height} />
               <text x={brk.x + 6} y={geometry.height - 6}>
-                {describeGap(brk.durationMs)}
+                {brk.text}
               </text>
             </g>
           ))}

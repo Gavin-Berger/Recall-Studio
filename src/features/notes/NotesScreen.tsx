@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { save } from "@tauri-apps/plugin-dialog";
 import { writeTextFile } from "../../lib/schema/api";
+import { LoadingSpinner } from "../../components/LoadingSpinner";
 
 // A producer notebook: free-form documents that live outside any one session or
 // take — lyric ideas, mix checklists, reference notes, arrangement plans. One
@@ -64,6 +65,7 @@ function wordCount(text: string): number {
 export function NotesScreen() {
   const [notes, setNotes] = useState<NoteDoc[]>(loadNotes);
   const [selectedId, setSelectedId] = useState<string | null>(() => loadNotes()[0]?.id ?? null);
+  const [query, setQuery] = useState("");
   const [saveState, setSaveState] = useState<"saved" | "saving">("saved");
   const [exportError, setExportError] = useState<string | null>(null);
   const titleRef = useRef<HTMLInputElement>(null);
@@ -75,6 +77,13 @@ export function NotesScreen() {
     [notes],
   );
   const selected = ordered.find((note) => note.id === selectedId) ?? ordered[0] ?? null;
+  const visibleNotes = useMemo(() => {
+    const needle = query.trim().toLocaleLowerCase();
+    if (!needle) return ordered;
+    return ordered.filter((note) =>
+      `${note.title}\n${note.body}`.toLocaleLowerCase().includes(needle),
+    );
+  }, [ordered, query]);
 
   // Debounced autosave: every edit lands in localStorage shortly after the
   // producer stops typing, and the header says so.
@@ -165,14 +174,42 @@ export function NotesScreen() {
           </button>
         </div>
 
+        {ordered.length > 0 && (
+          <div className="notes__search">
+            <input
+              type="search"
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Escape" && query) {
+                  event.preventDefault();
+                  setQuery("");
+                }
+              }}
+              placeholder="Find a note"
+              aria-label="Find a note"
+            />
+            {query && (
+              <button type="button" onClick={() => setQuery("")} aria-label="Clear note search" title="Clear search">
+                ×
+              </button>
+            )}
+          </div>
+        )}
+
         {ordered.length === 0 ? (
           <p className="notes__list-empty">
             Lyric ideas, mix checklists, things to try next session — notes live here, outside any
             one take.
           </p>
+        ) : visibleNotes.length === 0 ? (
+          <div className="notes__list-empty">
+            <p>No notes match “{query}”.</p>
+            <button type="button" onClick={() => setQuery("")}>Clear search</button>
+          </div>
         ) : (
           <div className="notes__items">
-            {ordered.map((note) => (
+            {visibleNotes.map((note) => (
               <button
                 key={note.id}
                 type="button"
@@ -193,7 +230,11 @@ export function NotesScreen() {
       {selected ? (
         <section className="notes__page" aria-label="Note editor">
           <div className="notes__page-bar">
-            <span className={`notes__save ${saveState === "saved" ? "is-saved" : ""}`}>
+            <span
+              className={`notes__save ${saveState === "saved" ? "is-saved" : ""} ${saveState === "saving" ? "px-loading-inline" : ""}`}
+              role={saveState === "saving" ? "status" : undefined}
+            >
+              {saveState === "saving" && <LoadingSpinner />}
               {saveState === "saved" ? "Saved" : "Saving…"}
             </span>
             <div className="notes__page-actions">

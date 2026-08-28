@@ -246,6 +246,15 @@ function App() {
     return () => window.removeEventListener("keydown", handleKeyboardNavigation);
   }, [settingsOpen]);
 
+  // Surfaces share the window scroll position. Starting each new destination at
+  // its title avoids landing halfway through a different screen after a long
+  // report, planner, or reference browse.
+  useEffect(() => {
+    if (!enteredStudio) return;
+    document.documentElement.scrollTop = 0;
+    document.body.scrollTop = 0;
+  }, [enteredStudio, surface]);
+
   const activeSession = useMemo(
     () => savedSessions.find((session) => session.ended_at_ms === null) ?? null,
     [savedSessions],

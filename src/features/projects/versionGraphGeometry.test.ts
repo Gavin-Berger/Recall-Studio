@@ -2,10 +2,12 @@ import { describe, expect, it } from "vitest";
 import type { SavedSessionMetadata } from "../../types/recall";
 import { projectVersions } from "./projectVersions";
 import { versionGraph, type VersionNode } from "./versionGraph";
-import { collapseGaps, layoutVersionGraph } from "./versionGraphLayout";
+import { collapseGaps, layoutVersionGraph, type GraphLayout } from "./versionGraphLayout";
 import {
+  describeBreak,
   fitLabel,
   graphGeometry,
+  TRACKED_CHAR_PX,
   laneColorVar,
   LANE_HEIGHT,
   MIN_NODE_GAP,
@@ -87,6 +89,50 @@ function forkedGeometry(containerWidth = 1200) {
   const layout = layoutVersionGraph(nodes);
   const scale = collapseGaps(layout.placements.flatMap((p) => [p.atMs, ...p.sittingsMs]));
   return { geometry: graphGeometry(layout, scale, { containerWidth }), nodes, layout };
+}
+
+/**
+ * One set, worked in four sittings with four days off between them.
+ *
+ * Hand-built rather than run through `versionGraph`, because what the axis
+ * collides over is the DURATION of each sitting, and the file-version model
+ * has no durations to give. This is the shape the timeline actually draws.
+ */
+function sittingSpec(openingMinutes: number): [number, number][] {
+  return [
+    [0, openingMinutes],
+    [4, 420],
+    [8, 420],
+    [12, 420],
+  ];
+}
+
+function sittingLayout(openingMinutes: number): GraphLayout {
+  const placements = sittingSpec(openingMinutes).map(([offsetDays, minutes], index) => ({
+    nodeId: `s${index}`,
+    lane: 0,
+    atMs: start + offsetDays * day,
+    sittingsMs: [start + offsetDays * day],
+    endAtMs: start + offsetDays * day + minutes * minute,
+  }));
+  return {
+    placements,
+    lanes: [{ index: 0, depth: 0, nodeIds: placements.map((p) => p.nodeId) }],
+    edges: placements.slice(1).map((placement, index) => ({
+      fromId: `s${index}`,
+      toId: placement.nodeId,
+      fromLane: 0,
+      toLane: 0,
+      atMs: placement.atMs,
+      inferred: false,
+    })),
+  };
+}
+
+function sittingScale(openingMinutes: number) {
+  return collapseGaps(
+    sittingLayout(openingMinutes).placements.flatMap((p) => [p.atMs, p.endAtMs!]),
+  );
 }
 
 function geometryFor(names: string[], containerWidth = 1200, gapMs = day) {
@@ -443,12 +489,68 @@ describe("dated axis", () => {
   it("never prints a date on top of a gap label", () => {
     // A break sits where the dead air was removed and the next segment starts
     // immediately after it, so the two overprinted: "Aug 11, 20264 days".
+    //
+    // Asserting a clearance between the two ANCHORS is what let that exact
+    // string survive the first fix — both labels are anchored at their start
+    // and run right, so a date 125px clear of a break still prints its tail
+    // over it. Measure the ink.
     const { geometry } = geometryFor(["a", "b", "c"], 1200, 30 * day);
     expect(geometry.breaks.length).toBeGreaterThan(0);
+    expect(geometry.axis.length).toBeGreaterThan(0);
     for (const tick of geometry.axis) {
+      const tickEnd = tick.x + tick.text.length * TRACKED_CHAR_PX;
       for (const brk of geometry.breaks) {
-        expect(Math.abs(tick.x - brk.x)).toBeGreaterThanOrEqual(74);
+        const breakEnd = brk.textX + brk.text.length * TRACKED_CHAR_PX;
+        expect(tick.x < breakEnd && brk.textX < tickEnd).toBe(false);
       }
+    }
+  });
+
+  it("drops the opening date at every length of opening stretch", () => {
+    // The case from a real library, and the one the first fix missed. A short
+    // first sitting, then four days off: the date starts at the left pad and
+    // the gap label lands about eighty pixels later — past any anchor-distance
+    // guard, and straight through "Aug 11, 2026".
+    //
+    // Swept rather than pinned to one fixture on purpose. Whether the two
+    // collide is a RATIO — how much of the drawn width the opening stretch
+    // takes — so a single fixture only ever proves that one ratio is safe, and
+    // the ratio the old guard let through was a ten-pixel band it happened to
+    // miss. The sweep walks the band.
+    for (let openingMinutes = 1; openingMinutes <= 400; openingMinutes += 3) {
+      const geometry = graphGeometry(sittingLayout(openingMinutes), sittingScale(openingMinutes), {
+        containerWidth: 1900,
+      });
+      for (const tick of geometry.axis) {
+        const tickEnd = tick.x + tick.text.length * TRACKED_CHAR_PX;
+        for (const brk of geometry.breaks) {
+          const breakEnd = brk.textX + brk.text.length * TRACKED_CHAR_PX;
+          expect({
+            openingMinutes,
+            overlap: tick.x < breakEnd && brk.textX < tickEnd,
+          }).toEqual({ openingMinutes, overlap: false });
+        }
+      }
+    }
+  });
+
+  it("never prints two dates over each other either", () => {
+    // Two stretches either side of a short collapsed gap can date to the same
+    // day, and the second printed straight over the first.
+    const { geometry } = geometryFor(["a", "b", "c", "d"], 1200, 30 * day);
+    const ordered = [...geometry.axis].sort((a, b) => a.x - b.x);
+    for (const [index, tick] of ordered.entries()) {
+      const next = ordered[index + 1];
+      if (!next) continue;
+      expect(next.x).toBeGreaterThanOrEqual(tick.x + tick.text.length * TRACKED_CHAR_PX);
+    }
+  });
+
+  it("carries the words the axis draws, so the drawing cannot disagree", () => {
+    const { geometry } = geometryFor(["a", "b", "c"], 1200, 30 * day);
+    for (const brk of geometry.breaks) {
+      expect(brk.text).toBe(describeBreak(brk.durationMs));
+      expect(brk.textX).toBeGreaterThan(brk.x);
     }
   });
 

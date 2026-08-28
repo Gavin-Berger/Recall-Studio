@@ -64,7 +64,7 @@ export type ReportTrust = {
  * `reportInvariants` fails loudly if it ever stops doing so.
  */
 export type ReportLedger = {
-  /** Every captured row. The ground truth every other count is a slice of. */
+  /** Every reportable work row. The raw event log is held on `session.events`. */
   capturedCount: number;
   /** Rows that were the producer's own hands: a control move, a MIDI edit, a clip. */
   handsOnCount: number;
@@ -1313,6 +1313,7 @@ export function buildVersionReport(inputs: SessionReportInput[]): SessionReport 
   // The schema comes from the LAST capture that has one: a version's structure
   // is what it looks like now, not what it looked like the first evening.
   const schema = [...ordered].reverse().find((input) => input.schema)?.schema ?? null;
+  const mergedEvents = ordered.flatMap((input) => input.session.events);
   const mergedSession: SavedSession = {
     ...last.session,
     started_at_ms: first.session.started_at_ms,
@@ -1320,10 +1321,14 @@ export function buildVersionReport(inputs: SessionReportInput[]): SessionReport 
     ended_at_ms: ordered.some((input) => input.session.ended_at_ms === null)
       ? null
       : Math.max(...ordered.map((input) => input.session.ended_at_ms ?? 0)),
-    event_count: ordered.reduce((total, input) => total + input.session.event_count, 0),
+    // Each input comes from `load_session`, whose count is the length of its
+    // own event list. Use the merged list here as well so the synthetic
+    // all-sittings report cannot carry a metadata total that disagrees with
+    // the raw record it exposes below.
+    event_count: mergedEvents.length,
     creative_event_count: ordered.reduce((total, input) => total + input.session.creative_event_count, 0),
     heartbeat_count: ordered.reduce((total, input) => total + input.session.heartbeat_count, 0),
-    events: ordered.flatMap((input) => input.session.events),
+    events: mergedEvents,
   };
 
   return assembleReport({
@@ -1438,7 +1443,7 @@ export function compareSessionReports(current: SessionReport, baseline: SessionR
   return {
     metrics: [
       metric("Time at the desk", "time", current.handsOnMs, baseline.handsOnMs, "duration"),
-      metric("Changes captured", "actions", current.ledger.capturedCount, baseline.ledger.capturedCount),
+      metric("Work changes", "actions", current.ledger.capturedCount, baseline.ledger.capturedCount),
       metric("Decisions", "decisions", current.ledger.decisionCount, baseline.ledger.decisionCount),
       metric("Tracks touched", "tracks", current.ledger.tracksTouched, baseline.ledger.tracksTouched),
       metric("MIDI edits", "actions", current.analysis.midiEditCount, baseline.analysis.midiEditCount),

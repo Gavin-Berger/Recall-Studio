@@ -57,6 +57,11 @@ function emptyCheckpoint(id: string, set: string, atHours: number): SavedSession
   return work(id, set, atHours, { event_count: 0, creative_event_count: 0 });
 }
 
+/** Recall watched activity, but the producer did not change the set. */
+function observationOnlyCheckpoint(id: string, set: string, atHours: number): SavedSessionMetadata {
+  return work(id, set, atHours, { event_count: 85, creative_event_count: 0 });
+}
+
 function parents(captures: SavedSessionMetadata[]): Record<string, string | null> {
   return Object.fromEntries(
     projectCommits(captures).commits.map((commit) => [commit.id, commit.parentId]),
@@ -101,6 +106,15 @@ describe("projectCommits · what counts as a commit", () => {
     ]).commits;
     expect(commit!.changes).toBe(481);
     expect(commit!.creativeChanges).toBe(57);
+  });
+
+  it("keeps raw observation-only captures out of the commit history", () => {
+    const history = projectCommits([
+      observationOnlyCheckpoint("observed", "nightfall", 0),
+    ]);
+
+    expect(history.commits).toEqual([]);
+    expect(history.emptyCheckpoints).toBe(1);
   });
 
   it("marks a commit whose capture is still running", () => {

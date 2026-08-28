@@ -194,20 +194,94 @@ const currentChanges = [
   change("move-10", 68, "lead", "Lead", "Mixer", "Volume", "−7.3 dB", "−6.1 dB"),
 ];
 
+const currentNoteEdits = [
+  note("midi-1", 8, "bass", "Bass Main", "Bass Hook", 8, 14),
+  note("midi-2", 33, "lead", "Lead", "Lead Verse", 12, 18),
+];
+
+const currentClipEvents = [
+  clip("clip-1", 2, "drums", "Drum Group", "kick_07.wav"),
+  clip("clip-2", 49, "texture", "Texture", "warehouse_air.wav"),
+];
+
+const currentMoments = [
+  moment("moment-1", 17, "Keep the bass tone", "The low mids are right here.", "bass"),
+  moment("moment-2", 58, "Texture belongs in the drop", "Keep it quiet until bar 49.", "texture"),
+];
+
+function projectedChangeEvent(change: ParameterChange, sessionId = REPORT_PREVIEW_SESSION_ID): SavedSessionEvent {
+  return rawEvent({
+    id: `event-${change.id}`,
+    type: change.event_type,
+    timestamp_ms: change.changed_at_ms,
+    title: `${change.device_name ?? "Control"} · ${change.parameter_name ?? "Parameter"}`,
+    description: `${change.before_display_value ?? ""} → ${change.after_display_value ?? ""}`.trim(),
+    session_id: sessionId,
+    track: change.track_name,
+    device: change.device_name,
+    parameter: change.parameter_name,
+  });
+}
+
+function projectedNoteEvent(edit: NoteEdit, sessionId = REPORT_PREVIEW_SESSION_ID): SavedSessionEvent {
+  return rawEvent({
+    id: `event-${edit.id}`,
+    type: "clip_notes_changed",
+    timestamp_ms: edit.changed_at_ms,
+    title: `MIDI · ${edit.clip_name ?? "Clip"}`,
+    description: edit.summary ?? "MIDI changed",
+    session_id: sessionId,
+    track: edit.track_name,
+    clip_name: edit.clip_name,
+  });
+}
+
+function projectedClipEvent(event: TimelineClipEvent, sessionId = REPORT_PREVIEW_SESSION_ID): SavedSessionEvent {
+  return rawEvent({
+    id: `event-${event.id}`,
+    type: event.event_type,
+    timestamp_ms: event.changed_at_ms,
+    title: event.sample_name ?? event.clip_name ?? "Clip added",
+    description: event.track_name ?? "",
+    session_id: sessionId,
+    track: event.track_name,
+    clip_name: event.clip_name,
+    sample_name: event.sample_name,
+  });
+}
+
 const currentEvents = [
   rawEvent({ id: "focus", track: "Bass Main" }),
   rawEvent({ id: "track-added", type: "track_created", timestamp_ms: previewStart + 48 * 60_000, track: "Texture", title: "Track added", description: "Texture", payload: JSON.stringify({ track_id: "texture", track_name: "Texture" }) }),
   rawEvent({ id: "device-added", type: "device_added", timestamp_ms: previewStart + 20 * 60_000, track: "Bass Main", device: "Saturator", title: "Device added", description: "Saturator", payload: JSON.stringify({ track_id: "bass", device_name: "Saturator" }) }),
   rawEvent({ id: "section-moved", type: "cue_point_moved", timestamp_ms: previewStart + 42 * 60_000, title: "Song section moved", description: "Drop", payload: JSON.stringify({ cue_name: "Drop", previous_cue_time: 128, cue_time: 192 }) }),
   rawEvent({ id: "project-saved", type: "project_saved", timestamp_ms: previewStart + 72 * 60_000, title: "Project saved", description: "Nightdrive_v08.als", payload: JSON.stringify({ file_path: "C:\\Music\\Nightdrive\\Nightdrive_v08.als" }) }),
+  ...currentChanges.map((change) => projectedChangeEvent(change)),
+  ...currentNoteEdits.map((edit) => projectedNoteEvent(edit)),
+  ...currentClipEvents.map((event) => projectedClipEvent(event)),
 ];
+
+const PREVIEW_NON_CREATIVE_EVENT_TYPES = new Set([
+  "heartbeat",
+  "bridge_started",
+  "bridge_stopped",
+  "focus_changed",
+  "track_selected",
+  "device_selected",
+  "transport_changed",
+  "transport_play",
+  "transport_stop",
+  "playback_state_changed",
+  "beat_time_changed",
+  "loop_toggled",
+  "metronome_toggled",
+]);
 
 function savedSession(
   id: string,
   displayName: string,
   startedAt: number,
   events: SavedSessionEvent[],
-  creativeCount: number,
 ): SavedSession {
   return {
     id,
@@ -223,42 +297,45 @@ function savedSession(
     started_at_ms: startedAt,
     ended_at_ms: startedAt + 78 * 60_000,
     last_updated_at_ms: startedAt + 78 * 60_000,
-    event_count: events.length + creativeCount,
-    creative_event_count: creativeCount,
-    heartbeat_count: 0,
+    // The preview must follow the same rule as a real loaded capture: the
+    // metadata counts describe this exact raw event record, never a separate
+    // hand-maintained demo total.
+    event_count: events.length,
+    creative_event_count: events.filter((event) => !PREVIEW_NON_CREATIVE_EVENT_TYPES.has(event.type)).length,
+    heartbeat_count: events.filter((event) => event.type === "heartbeat").length,
     events,
   };
 }
 
 const currentInput: SessionReportInput = {
-  session: savedSession(REPORT_PREVIEW_SESSION_ID, "Nightdrive_v08", previewStart, currentEvents, 19),
+  session: savedSession(REPORT_PREVIEW_SESSION_ID, "Nightdrive_v08", previewStart, currentEvents),
   schema: schema(REPORT_PREVIEW_SESSION_ID, currentTracks),
   changes: currentChanges,
-  noteEdits: [
-    note("midi-1", 8, "bass", "Bass Main", "Bass Hook", 8, 14),
-    note("midi-2", 33, "lead", "Lead", "Lead Verse", 12, 18),
-  ],
-  clipEvents: [
-    clip("clip-1", 2, "drums", "Drum Group", "kick_07.wav"),
-    clip("clip-2", 49, "texture", "Texture", "warehouse_air.wav"),
-  ],
-  moments: [
-    moment("moment-1", 17, "Keep the bass tone", "The low mids are right here.", "bass"),
-    moment("moment-2", 58, "Texture belongs in the drop", "Keep it quiet until bar 49.", "texture"),
-  ],
+  noteEdits: currentNoteEdits,
+  clipEvents: currentClipEvents,
+  moments: currentMoments,
 };
 
 const baselineStart = previewStart - 24 * 60 * 60_000;
-const baselineEvents = [rawEvent({ id: "baseline-focus", session_id: BASELINE_PREVIEW_SESSION_ID, timestamp_ms: baselineStart })];
+const baselineChanges = [
+  { ...change("baseline-1", 7, "drums", "Drum Group", "Glue Compressor", "Threshold", "−8.2 dB", "−10.1 dB"), changed_at_ms: baselineStart + 7 * 60_000 },
+  { ...change("baseline-2", 19, "bass", "Bass Main", "Serum", "Cutoff", "18%", "27%"), changed_at_ms: baselineStart + 19 * 60_000 },
+  { ...change("baseline-3", 42, "lead", "Lead", "Echo", "Dry/Wet", "0%", "9%"), changed_at_ms: baselineStart + 42 * 60_000 },
+];
+const baselineNoteEdits = [
+  { ...note("baseline-midi", 13, "bass", "Bass Main", "Bass Hook", 4, 8), changed_at_ms: baselineStart + 13 * 60_000 },
+];
+const baselineEvents = [
+  rawEvent({ id: "baseline-focus", session_id: BASELINE_PREVIEW_SESSION_ID, timestamp_ms: baselineStart }),
+  ...baselineChanges.map((change) => projectedChangeEvent(change, BASELINE_PREVIEW_SESSION_ID)),
+  ...baselineNoteEdits.map((edit) => projectedNoteEvent(edit, BASELINE_PREVIEW_SESSION_ID)),
+];
+
 const baselineInput: SessionReportInput = {
-  session: savedSession(BASELINE_PREVIEW_SESSION_ID, "Nightdrive_v07", baselineStart, baselineEvents, 8),
+  session: savedSession(BASELINE_PREVIEW_SESSION_ID, "Nightdrive_v07", baselineStart, baselineEvents),
   schema: schema(BASELINE_PREVIEW_SESSION_ID, currentTracks.filter((item) => item.id !== "texture")),
-  changes: [
-    { ...change("baseline-1", 7, "drums", "Drum Group", "Glue Compressor", "Threshold", "−8.2 dB", "−10.1 dB"), changed_at_ms: baselineStart + 7 * 60_000 },
-    { ...change("baseline-2", 19, "bass", "Bass Main", "Serum", "Cutoff", "18%", "27%"), changed_at_ms: baselineStart + 19 * 60_000 },
-    { ...change("baseline-3", 42, "lead", "Lead", "Echo", "Dry/Wet", "0%", "9%"), changed_at_ms: baselineStart + 42 * 60_000 },
-  ],
-  noteEdits: [{ ...note("baseline-midi", 13, "bass", "Bass Main", "Bass Hook", 4, 8), changed_at_ms: baselineStart + 13 * 60_000 }],
+  changes: baselineChanges,
+  noteEdits: baselineNoteEdits,
   clipEvents: [],
   moments: [],
 };

@@ -211,6 +211,17 @@ describe("summarizeCommit", () => {
     expect(contents.totals.tracks).toBe(CONTENTS_LIMIT + 4);
   });
 
+  it("keeps the omitted tail available for an explicit expansion", () => {
+    const many = Array.from({ length: CONTENTS_LIMIT + 2 }, (_, index) =>
+      change({ track_id: `t${index}`, track_name: `Track ${index}` }),
+    ).flatMap((entry) => [entry, { ...entry, id: `${entry.id}b` }]);
+    const contents = summarizeCommit(many, [], []);
+
+    expect(contents.tracks).toHaveLength(CONTENTS_LIMIT);
+    expect(contents.all.tracks).toHaveLength(CONTENTS_LIMIT + 2);
+    expect(contents.all.tracks.map((entry) => entry.label)).toContain("Track 6");
+  });
+
   it("takes note edits newest first and uses the bridge's own summary", () => {
     const contents = summarizeCommit(
       [],

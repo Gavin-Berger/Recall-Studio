@@ -104,9 +104,9 @@ export type ProjectCommit = {
   atMs: number;
   /** Last moment work landed against it. */
   endedAtMs: number;
-  /** Recorded changes in this commit — its contents. */
+  /** Every raw event persisted for this capture. */
   changes: number;
-  /** Changes Recall judged creative rather than incidental. */
+  /** Raw events Recall classified as creative rather than incidental. */
   creativeChanges: number;
   /** Still capturing. */
   live: boolean;
@@ -150,7 +150,11 @@ function label(commit: { setName: string | null }): string {
 
 /** Did this session record any work at all? */
 function recordedWork(session: SavedSessionMetadata): boolean {
-  return session.event_count > 0 || session.creative_event_count > 0;
+  // `event_count` is the complete capture record, including heartbeats,
+  // snapshots, and focus changes. Those prove Recall was watching, but they do
+  // not prove the producer changed the set. A history node must only represent
+  // producer work; raw-only captures remain honest checkpoints instead.
+  return session.creative_event_count > 0;
 }
 
 /**

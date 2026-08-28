@@ -1,26 +1,34 @@
 :root {
-  /* Surfaces â€” cool graphite ramp (DESIGN.md v2 Â§2). */
-  --ink: #0d0f13;
-  --ink-2: #12141a;
-  --paper: #d6dae4;
-  --paper-strong: #f3f5fa;
-  --muted: #8b91a0;
-  --faint: #868d9c;
+  /* Surfaces — midnight glass (DESIGN.md v3 §2). The app stays dark and
+     legible beside Ableton, but panels can now catch light instead of reading
+     as a stack of flat graphite boxes. */
+  --ink: #05060f;
+  --ink-2: #0b1020;
+  --paper: #d1e4fa;
+  --paper-strong: #f7fbff;
+  --muted: #a6b3c7;
+  --faint: #8f9bb0;
   /* AA-safe replacement for --faint on text under 19px (DESIGN.md Â§9). */
-  --faint-aa: #868d9c;
-  --panel: #161922;
-  --panel-2: #1c2029;
-  --panel-3: #232833;
-  --line: #2a2f3a;
-  --line-soft: #21262f;
+  --faint-aa: #9da7ba;
+  --panel: rgb(13 19 34 / 0.72);
+  --panel-2: rgb(30 40 61 / 0.68);
+  --panel-3: rgb(59 73 103 / 0.48);
+  --line: rgb(186 215 247 / 0.16);
+  --line-soft: rgb(186 215 247 / 0.1);
+  --glass-edge: rgb(186 215 247 / 0.18);
+  --glass-fill: rgb(186 214 247 / 0.045);
+  --glass-fill-strong: rgb(186 214 247 / 0.085);
+  --glass-highlight: inset 0 1px 0 rgb(216 236 248 / 0.18), inset 0 24px 48px rgb(168 216 245 / 0.035);
+  --glass-elevation: var(--glass-highlight), 0 24px 56px rgb(0 0 0 / 0.3);
 
-  /* The only two accents (DESIGN.md v2 Â§2). No third accent, no entity rainbow. */
-  --signal: #5e93ff; /* interactive / active / now / focus ring */
-  --signal-rgb: 94 147 255;
-  --signal-muted: #8aa0e6;
-  --signal-soft: #aab4ff;
-  --signal-bright: #7aa2ff;
-  --focus-rgb: 120 137 238;
+  /* Signal is the one functional chromatic accent. It has shifted violet so
+     the cool-glass surfaces do not compete with an additional blue accent. */
+  --signal: #8578ff; /* interactive / active / now / focus ring */
+  --signal-rgb: 133 120 255;
+  --signal-muted: #a29ce6;
+  --signal-soft: #c6c0ff;
+  --signal-bright: #e3e0ff;
+  --focus-rgb: 177 169 255;
   --moment: #e3b667; /* the producer's pinned mark â€” the one warm accent */
   --danger: #dc5a6a; /* error / destructive state only */
 
@@ -29,9 +37,10 @@
      --brass/--smoke) are gone. Type is told apart by weight, monospace, and
      luminance now; colour is only --signal, --moment, and --danger. */
 
-  --radius: 10px;
-  --radius-sm: 6px;
-  --shadow: 0 24px 70px rgba(0, 0, 0, 0.34);
+  --radius: 16px;
+  --radius-sm: 8px;
+  --radius-pill: 999px;
+  --shadow: 0 24px 70px rgb(0 0 0 / 0.34);
 
   /* Spacing scale (DESIGN.md §4). Documented since v1 but never declared here,
      so components reached for raw px. New components must use the scale: if a
@@ -57,10 +66,10 @@
      this is not the retired entity-color system coming back. Dimmer means
      further from the trunk, NEVER less important — an abandoned experiment can
      hold the best sound in the song. Cycles back to --lane-1 past --lane-3. */
-  --lane-0: #d6dae4;
-  --lane-1: #98a0b1;
-  --lane-2: #6f7686;
-  --lane-3: #4d5462;
+  --lane-0: #d1e4fa;
+  --lane-1: #9ba9bf;
+  --lane-2: #6d788d;
+  --lane-3: #475064;
   --radius-node: 7px;
 
   /* Motion (DESIGN.md Â§6) â€” unchanged. Two registers only: arrival and recognition.
@@ -99,12 +108,12 @@
 /* A low-stimulation alternative for long sessions. UI accents become neutral
    greys while cover art stays untouched because it is project content. */
 :root[data-recall-theme="mono"] {
-  --signal: #c8cbd1;
-  --signal-rgb: 200 203 209;
-  --signal-muted: #a6aab2;
-  --signal-soft: #dde0e5;
-  --signal-bright: #f0f1f4;
-  --focus-rgb: 224 227 232;
+  --signal: #c7d3ea;
+  --signal-rgb: 199 211 234;
+  --signal-muted: #aeb8ca;
+  --signal-soft: #e1e9f6;
+  --signal-bright: #f6f9ff;
+  --focus-rgb: 225 233 246;
   --moment: #d2d4d8;
 }
 
@@ -116,8 +125,10 @@ body {
   margin: 0;
   color: var(--paper);
   background:
-    linear-gradient(180deg, #0d0f13 0%, #12141a 48%, #090b0f 100%),
+    radial-gradient(ellipse 76% 50% at 50% -18%, rgb(var(--signal-rgb) / 0.19), transparent 72%),
+    linear-gradient(180deg, var(--ink) 0%, var(--ink-2) 52%, #03040a 100%),
     var(--ink);
+  background-attachment: fixed;
 }
 
 button,

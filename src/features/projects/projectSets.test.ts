@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { SavedSessionMetadata } from "../../types/recall";
 import { projectCommits } from "./projectCommits";
-import { commitsInSet, defaultSetKey, projectSets } from "./projectSets";
+import { commitsInSet, defaultSetKey, projectSets, setKeyForCommit } from "./projectSets";
 
 const minute = 60 * 1000;
 const hour = 60 * minute;
@@ -128,6 +128,14 @@ describe("commitsInSet", () => {
   it("keeps everything when no set is focused", () => {
     const commits = library();
     expect(commitsInSet(commits, null)).toHaveLength(commits.length);
+  });
+});
+
+describe("setKeyForCommit", () => {
+  it("uses the same identity as the set chooser", () => {
+    const commit = library()[1]!;
+    const set = projectSets(library()).find((candidate) => candidate.name === commit.setName)!;
+    expect(setKeyForCommit(commit)).toBe(set.key);
   });
 });
 

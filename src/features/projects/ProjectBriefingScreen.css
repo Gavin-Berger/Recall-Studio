@@ -683,3 +683,60 @@
     order: 3;
   }
 }
+
+/* v3 · project re-entry uses the same glass plate as the project desk. The
+   briefing remains a reading surface, so the atmosphere stays at the edges. */
+.brief__top {
+  padding: var(--s5);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background:
+    linear-gradient(145deg, rgb(var(--signal-rgb) / 0.11), transparent 44%),
+    var(--panel);
+  box-shadow: var(--glass-elevation);
+}
+
+.brief__icon-btn,
+.brief__btn {
+  border-color: var(--glass-edge);
+  border-radius: var(--radius-pill);
+  background: var(--glass-fill);
+  box-shadow: inset 0 1px 0 rgb(216 236 248 / 0.12);
+}
+
+.brief__icon-btn:hover,
+.brief__btn:hover {
+  border-color: rgb(216 236 248 / 0.3);
+  background: var(--glass-fill-strong);
+}
+
+.brief__btn--primary {
+  border-color: rgb(230 227 255 / 0.28);
+  background: linear-gradient(135deg, #6557d9, var(--signal));
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.28), 0 10px 28px rgb(var(--signal-rgb) / 0.26);
+}
+
+.brief__btn--primary:hover {
+  background: linear-gradient(135deg, #7568ec, #9b92ff);
+}
+
+.brief-card,
+.brief__lane,
+.brief__summary,
+.story-ledger,
+.story-sit {
+  border-color: var(--line);
+  border-radius: var(--radius);
+  background:
+    linear-gradient(145deg, rgb(216 236 248 / 0.05), transparent 48%),
+    var(--panel);
+  box-shadow: inset 0 1px 0 rgb(216 236 248 / 0.1), 0 14px 32px rgb(0 0 0 / 0.13);
+}
+
+.brief--empty {
+  padding: var(--s7);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel);
+  box-shadow: var(--glass-elevation);
+}

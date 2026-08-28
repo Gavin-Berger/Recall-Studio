@@ -26,8 +26,12 @@ import {
   type ProducerWorkKind,
 } from "../../components/schema/timeline/producerWork";
 import { TRACK_TYPE_LABEL } from "../../types/schema";
+import type { PlannerTaskType } from "../../types";
 import type { SavedSessionMetadata } from "../../types/recall";
 import { formatSessionDate, preferredCaptureTitle } from "../sessionFormat";
+import { createPlannerTask } from "../planner/api";
+import { localDateKey } from "../planner/planner";
+import { LoadingSpinner } from "../../components/LoadingSpinner";
 import {
   buildVersionReport,
   compareSessionReports,
@@ -65,6 +69,7 @@ type SessionRecapScreenProps = {
 
 type LoadState = "idle" | "loading" | "ready" | "error";
 type ReportTab = "summary" | "chapters" | "work" | "changes" | "compare";
+type ReportScope = "capture" | "version";
 type EvidenceRequest = { title: string; subtitle?: string; ids: string[] };
 
 /**
@@ -83,7 +88,7 @@ const REPORT_TABS: Array<{ id: ReportTab; label: string; question: string; icon:
   { id: "summary", label: "The session", question: "What happened in this version?", icon: "overview" },
   { id: "chapters", label: "How it went", question: "How did the time actually go?", icon: "path" },
   { id: "work", label: "Where it landed", question: "Which tracks and which kind of work?", icon: "tracks" },
-  { id: "changes", label: "Every change", question: "What exactly changed, in order?", icon: "decisions" },
+  { id: "changes", label: "Work changes", question: "What exactly changed, in order?", icon: "decisions" },
   { id: "compare", label: "Since last time", question: "What is different from the version before?", icon: "compare" },
 ];
 
@@ -103,9 +108,9 @@ async function loadCapture(sessionId: string): Promise<SessionReportInput> {
 /**
  * Read one version — every sitting captured against its `.als`, as one report.
  *
- * A version usually has several captures behind it (app restarts, long breaks,
- * reopening the set), and reading only the selected one showed a fragment of
- * the version's history while the picker called it the whole thing.
+ * A version may contain several captures (app restarts, long breaks, reopening
+ * the set). The caller chooses whether to read one capture or that full span;
+ * opening a node from History always starts with the exact capture selected.
  */
 async function loadVersion(sessionIds: string[]): Promise<SessionReport> {
   if (import.meta.env.DEV && sessionIds.some(isReportPreviewSession)) {
@@ -135,12 +140,12 @@ function versionPickerLabel(version: ProjectVersion): string {
   const sittings = versionSittingCount(version);
   if (sittings === 0) return `${version.name} · opened, nothing captured yet`;
 
-  const work = `${version.creativeEventCount.toLocaleString()} changes`;
+  const events = countLabel(version.eventCount, "captured event");
   const across = sittings === 1 ? "one sitting" : `${sittings} sittings`;
   // The date is the part that was missing. Two rows an hour apart on the clock
   // can be a week apart in the project.
   const when = formatSessionDate(version.lastUpdatedAtMs);
-  return `${version.name} · ${work} across ${across} · ${when}`;
+  return `${version.name} · ${events} across ${across} · ${when}`;
 }
 
 function formatMetric(value: number | null | undefined): string {
@@ -180,10 +185,10 @@ function scoreStoryCopy(
   const third = leading[2];
   if (!first) return { lead, detail: null };
   const detail = second && third
-    ? `${first.label} carried ${countLabel(first.sourceEventCount, "captured change")}, followed by ${second.label} (${second.sourceEventCount.toLocaleString()}) and ${third.label} (${third.sourceEventCount.toLocaleString()}).`
+    ? `${first.label} carried ${countLabel(first.sourceEventCount, "work change")}, followed by ${second.label} (${second.sourceEventCount.toLocaleString()}) and ${third.label} (${third.sourceEventCount.toLocaleString()}).`
     : second
-      ? `${first.label} carried ${countLabel(first.sourceEventCount, "captured change")}, followed by ${second.label} (${second.sourceEventCount.toLocaleString()}).`
-      : `${first.label} carried ${countLabel(first.sourceEventCount, "captured change")}.`;
+      ? `${first.label} carried ${countLabel(first.sourceEventCount, "work change")}, followed by ${second.label} (${second.sourceEventCount.toLocaleString()}).`
+      : `${first.label} carried ${countLabel(first.sourceEventCount, "work change")}.`;
   return { lead, detail };
 }
 
@@ -256,7 +261,7 @@ export function scoreBars(sections: ReportWorkSection[]): ScoreBar[] {
     key: String(section.kind),
     label: section.label,
     count: section.sourceEventCount,
-    subtitle: countLabel(section.sourceEventCount, "captured change"),
+    subtitle: countLabel(section.sourceEventCount, "work change"),
     evidenceIds: section.evidenceIds,
   }));
 
@@ -319,6 +324,7 @@ export function SessionRecapScreen({
   const [status, setStatus] = useState<LoadState>("idle");
   const [error, setError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<ReportTab>("summary");
+  const [reportScope, setReportScope] = useState<ReportScope>("capture");
   const [evidenceRequest, setEvidenceRequest] = useState<EvidenceRequest | null>(null);
   const [baselineId, setBaselineId] = useState<string | null>(null);
   const [baselineReport, setBaselineReport] = useState<SessionReport | null>(null);
@@ -352,29 +358,48 @@ export function SessionRecapScreen({
   // those are different things and how one .als ended up with five rows.
   const versions = useMemo(() => projectVersions(projectSessions), [projectSessions]);
   const activeVersion = useMemo(() => versionForSession(versions, sessionId), [versions, sessionId]);
-  const versionSessionIds = useMemo(
-    () => (activeVersion ? versionSessionsToRead(activeVersion).map((session) => session.id) : []),
-    [activeVersion],
+  const reportSessions = useMemo(
+    () => {
+      if (!fallbackSession) return [];
+      return reportScope === "version" && activeVersion
+        ? versionSessionsToRead(activeVersion)
+        : [fallbackSession];
+    },
+    [fallbackSession, reportScope, activeVersion],
   );
-  // Keyed on the ids themselves: adding a sitting to this version must reload,
-  // but a re-render that produces the same set must not.
-  const versionKey = versionSessionIds.join("|");
+  const reportSessionIds = useMemo(() => reportSessions.map((session) => session.id), [reportSessions]);
+  // Keyed on the ids themselves: adding a sitting to the selected version must
+  // reload, but a re-render that produces the same set must not.
+  const reportKey = `${reportScope}:${reportSessionIds.join("|")}`;
+  const scopedEventCount = reportScope === "version"
+    ? activeVersion?.eventCount ?? 0
+    : fallbackSession?.event_count ?? 0;
   // Coarse step rather than the raw count: the effect below re-runs when this
   // changes, so it must change 25x less often than `event_count` does.
-  const refreshStep = Math.floor((activeVersion?.eventCount ?? 0) / REPORT_REFRESH_EVENT_STEP);
+  const refreshStep = Math.floor(scopedEventCount / REPORT_REFRESH_EVENT_STEP);
   const baselineCandidates = useMemo(
-    () => versions.filter((version) => version.id !== activeVersion?.id && version.creativeEventCount > 0),
-    [versions, activeVersion],
+    () => reportScope === "version"
+      ? versions.filter((version) => version.id !== activeVersion?.id && version.creativeEventCount > 0)
+      : [],
+    [versions, activeVersion, reportScope],
   );
+
+  // Every History node is a capture. Following one should never carry an
+  // earlier "all sittings" choice into a different node and silently change
+  // the total the user is trying to inspect.
   useEffect(() => {
-    if (!sessionId || versionSessionIds.length === 0) {
+    setReportScope("capture");
+  }, [sessionId]);
+
+  useEffect(() => {
+    if (!sessionId || reportSessionIds.length === 0) {
       loadedSessionIdRef.current = null;
       setReport(null);
       setStatus("idle");
       return;
     }
     let cancelled = false;
-    const changingSession = loadedSessionIdRef.current !== versionKey;
+    const changingSession = loadedSessionIdRef.current !== reportKey;
 
     // Rebuilding costs far more than the old comment here claimed.
     //
@@ -398,11 +423,11 @@ export function SessionRecapScreen({
 
     const delay = changingSession ? 0 : REPORT_REFRESH_DEBOUNCE_MS;
     const timer = window.setTimeout(() => {
-      void loadVersion(versionSessionIds)
+      void loadVersion(reportSessionIds)
         .then((nextReport) => {
           if (cancelled) return;
-          loadedSessionIdRef.current = versionKey;
-          renderedEventCountRef.current = activeVersion?.eventCount ?? 0;
+          loadedSessionIdRef.current = reportKey;
+          renderedEventCountRef.current = nextReport.session.events.length;
           setReport(nextReport);
           setStatus("ready");
         })
@@ -422,7 +447,7 @@ export function SessionRecapScreen({
     // Deliberately keyed on the coarse step, not on `event_count` itself: a
     // session streaming events must not re-trigger this on every tick.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessionId, versionKey, refreshStep, refreshNonce]);
+  }, [sessionId, reportKey, refreshStep, refreshNonce]);
 
   useEffect(() => {
     if (!activeVersion) {
@@ -544,20 +569,37 @@ export function SessionRecapScreen({
   // rather than silently absorbed, because a stale report that looks current is
   // the failure mode this refresh threshold introduces.
   const pendingChanges = report
-    ? Math.max(0, (fallbackSession.event_count ?? 0) - renderedEventCountRef.current)
+    ? Math.max(0, scopedEventCount - renderedEventCountRef.current)
     : 0;
-  // A session ID is storage plumbing, never a name a producer should have to read.
-  // `sessionLabel` always prefers the saved .als/display name and falls back to time.
-  const reportTitle = sessionLabel(fallbackSession);
+  const renderedEventCount = report?.session.events.length ?? scopedEventCount;
+  const sittingCount = reportScope === "version" && activeVersion ? versionSittingCount(activeVersion) : 1;
+  const reportTitle = reportScope === "version" && activeVersion
+    ? activeVersion.name
+    : sessionLabel(fallbackSession);
+  const scopeLabel = sittingCount === 1
+    ? `${countLabel(renderedEventCount, "captured event")} in this sitting`
+    : `${sittingCount} sittings · ${countLabel(renderedEventCount, "captured event")}`;
+  // Once a scope is open, quote the same raw list the report is rendering.
+  // Metadata is still the only honest preview of the *other* scope until it
+  // is read, but the selected scope must never print an older poll total next
+  // to the report's current event total.
+  const captureScopeEventCount = reportScope === "capture" && report
+    ? report.session.events.length
+    : fallbackSession.event_count;
+  const versionScopeEventCount = reportScope === "version" && report
+    ? report.session.events.length
+    : activeVersion?.eventCount ?? 0;
 
   return (
     <div className="session-report">
       <header className="session-report__header">
         <div className="session-report__identity">
-          <span className="eyebrow">Session Report</span>
+          <span className="eyebrow">{reportScope === "version" ? "Version report" : "Capture report"}</span>
           <h1>{reportTitle}</h1>
           <div className="session-report__context">
-            <span>{formatSessionDate(fallbackSession.started_at_ms)} · {formatClock(fallbackSession.started_at_ms)}</span>
+            <span>{formatSessionDate(reportScope === "version" ? activeVersion?.startedAtMs ?? fallbackSession.started_at_ms : fallbackSession.started_at_ms)}</span>
+            <i aria-hidden="true" />
+            <span>{scopeLabel}</span>
             <i aria-hidden="true" />
             <span className={`report-status report-status--${fallbackSession.ended_at_ms === null ? "live" : "settled"}`}>
               {fallbackSession.ended_at_ms === null ? "Live · auto-updating" : "Finished"}
@@ -566,6 +608,19 @@ export function SessionRecapScreen({
         </div>
 
         <div className="session-report__header-tools">
+          {activeVersion && versionSittingCount(activeVersion) > 1 && (
+            <label className="session-report__take-picker">
+              <span>Read</span>
+              <select
+                value={reportScope}
+                onChange={(event) => setReportScope(event.target.value as ReportScope)}
+                aria-label="Report scope"
+              >
+                <option value="capture">This capture · {countLabel(captureScopeEventCount, "event")}</option>
+                <option value="version">All {versionSittingCount(activeVersion)} sittings · {countLabel(versionScopeEventCount, "event")}</option>
+              </select>
+            </label>
+          )}
           {versions.length > 1 && (
             <label className="session-report__take-picker">
               <span>Version</span>
@@ -673,6 +728,7 @@ export function SessionRecapScreen({
             {activeTab === "changes" && <ChangesStep report={report} onInspect={openEvidence} />}
             {activeTab === "compare" && (
               <ComparisonStep
+                captureOnly={reportScope === "capture"}
                 baselineCandidates={baselineCandidates}
                 baselineId={baselineId}
                 baselineReport={baselineReport}
@@ -706,11 +762,17 @@ function SummaryStep({ report, onInspect }: { report: SessionReport; onInspect: 
     .slice(0, 3);
   const bars = scoreBars(report.workSections);
   const scoreStory = scoreStoryCopy(report, scoreSections);
-  const focusTrack = report.lessons.find((lesson) => lesson.id === "focus")?.title
-    ?? report.tracks
-      .filter((track) => track.sourceEventCount > 0)
-      .sort((a, b) => b.sourceEventCount - a.sourceEventCount || a.name.localeCompare(b.name))[0]
-      ?.name;
+  const activeTracks = report.tracks
+    .filter((track) => track.sourceEventCount > 0)
+    .sort((a, b) => b.sourceEventCount - a.sourceEventCount || a.name.localeCompare(b.name));
+  const focusedTrack = activeTracks[0] ?? null;
+  const focusTrack = report.lessons.find((lesson) => lesson.id === "focus")?.title ?? focusedTrack?.name;
+  const focusControls = focusedTrack
+    ? report.decisions
+      .filter((decision) => decision.track === focusedTrack.name && decision.kind === "control")
+      .sort((a, b) => b.count - a.count || b.endMs - a.endMs)
+      .slice(0, 3)
+    : [];
 
   return (
     <div className="report-overview">
@@ -726,18 +788,26 @@ function SummaryStep({ report, onInspect }: { report: SessionReport; onInspect: 
         </div>
 
         <div className="report-score__body">
-          <div className="report-score__frame">
-            <Suspense fallback={<div className="report-score__frame-loading">Forming track field…</div>}>
-              <TrackConstellation
-                tracks={report.tracks}
-                onSelectTrack={(track) => onInspect({
-                  title: track.name,
-                  subtitle: `${track.workLabel} - ${countLabel(track.sourceEventCount, "captured change")}`,
-                  ids: track.evidenceIds,
-                })}
-              />
-            </Suspense>
-          </div>
+          {activeTracks.length === 1 && focusedTrack ? (
+            <FocusedTrackPanel track={focusedTrack} controls={focusControls} onInspect={onInspect} />
+          ) : (
+            <div className="report-score__frame">
+              <Suspense fallback={
+                <div className="report-score__frame-loading" role="status">
+                  <span className="px-loading-inline"><LoadingSpinner />Forming track field…</span>
+                </div>
+              }>
+                <TrackConstellation
+                  tracks={report.tracks}
+                  onSelectTrack={(track) => onInspect({
+                    title: track.name,
+                    subtitle: `${track.workLabel} - ${countLabel(track.sourceEventCount, "work change")}`,
+                    ids: track.evidenceIds,
+                  })}
+                />
+              </Suspense>
+            </div>
+          )}
 
           <div className="report-score__read">
             <span className="report-score__caption">The movement, in plain language</span>
@@ -775,7 +845,7 @@ function SummaryStep({ report, onInspect }: { report: SessionReport; onInspect: 
                 <li key={bar.key} style={{ "--score-share": `${bar.percent}%` } as CSSProperties}>
                   <button
                     type="button"
-                    aria-label={`${bar.label}, ${bar.subtitle}, ${bar.percent}% of the work captured in this version`}
+                    aria-label={`${bar.label}, ${bar.subtitle}, ${bar.percent}% of the work in this report`}
                     onClick={() => onInspect({
                       title: bar.label,
                       subtitle: bar.subtitle,
@@ -793,10 +863,13 @@ function SummaryStep({ report, onInspect }: { report: SessionReport; onInspect: 
               ))}
             </ol>
           ) : (
-            <p className="report-score__empty">No work has been captured for this version yet.</p>
+            <p className="report-score__empty">No reportable work appears in this report yet.</p>
           )}
         </div>
       </section>
+
+      <SessionStory report={report} onInspect={onInspect} />
+      <CoverageNextPass report={report} />
 
       {report.lessons.length > 0 && (
         <section className="report-learning" aria-labelledby="report-learning-title">
@@ -828,7 +901,7 @@ function SummaryStep({ report, onInspect }: { report: SessionReport; onInspect: 
                 <p>{lesson.detail}</p>
                 <span className="report-learning__source">
                   {countLabel(lesson.evidenceIds.length, "change")}
-                  <b><ReportIcon name="evidence" /> Show me</b>
+                  <b><ReportIcon name="evidence" /> {takeawayActionLabel(lesson)}</b>
                 </span>
               </button>
             ))}
@@ -836,12 +909,14 @@ function SummaryStep({ report, onInspect }: { report: SessionReport; onInspect: 
         </section>
       )}
 
+      <NextPassPlan report={report} />
+
       {/* Derived, never hardcoded: reordering REPORT_TABS must not leave this
           sentence pointing at the wrong step. */}
       <p className="report-next-step">
         {report.ledger.capturedCount > 0
           ? `Step ${nextStepNumber("chapters")} breaks the same session into the stretches you actually worked in.`
-          : "Nothing was captured for this version, so the remaining steps have nothing to show."}
+          : "This report has no captured events, so the remaining steps have nothing to show."}
       </p>
     </div>
   );
@@ -859,50 +934,17 @@ function SummaryStep({ report, onInspect }: { report: SessionReport; onInspect: 
 function SessionLedger({ report }: { report: SessionReport }) {
   const { ledger } = report;
   const tracksValue = ledger.tracksInSet !== null
-    ? `${ledger.tracksTouched}/${ledger.tracksInSet}`
-    : formatMetric(ledger.tracksTouched);
+    ? `${ledger.tracksTouched} of ${ledger.tracksInSet} tracks`
+    : countLabel(ledger.tracksTouched, "track");
 
   return (
-    <>
-      <section className="report-metrics" aria-label="This version in numbers">
-        <ReportMetric icon="time" value={formatDuration(report.handsOnMs)} label="Hands on the work" />
-        <ReportMetric icon="actions" value={formatMetric(ledger.capturedCount)} label="Changes captured" />
-        <ReportMetric icon="decisions" value={formatMetric(ledger.decisionCount)} label="Decisions" />
-        <ReportMetric icon="tracks" value={tracksValue} label="Tracks touched" />
-        <ReportMetric icon="device" value={formatMetric(ledger.deviceCount)} label="Devices shaped" />
-        <ReportMetric icon="moment" value={formatMetric(ledger.momentCount)} label="Moments saved" accent />
-      </section>
-      {ledger.capturedCount > 0 && (
-        <section className="report-ledger-note" aria-label="Capture mix">
-          <div className="report-ledger-note__heading">
-            <span>Capture mix</span>
-            <strong>Where the {ledger.capturedCount.toLocaleString()} changes came from</strong>
-          </div>
-          <div className="report-ledger-note__breakdown">
-            <span className="is-hands-on">
-              <b>{ledger.handsOnCount.toLocaleString()}</b>
-              <small>Your hands</small>
-            </span>
-            <span className="is-reported">
-              <b>{ledger.reportedCount.toLocaleString()}</b>
-              <small>Live observed</small>
-            </span>
-            {ledger.momentCount > 0 && (
-              <span className="is-moment">
-                <b>{ledger.momentCount.toLocaleString()}</b>
-                <small>Saved moments</small>
-              </span>
-            )}
-          </div>
-          <div className="report-ledger-note__rules">
-            {ledger.groupedCount > 0 && (
-              <span><b>{ledger.decisionCount.toLocaleString()} decisions</b> after repeat moves collapse</span>
-            )}
-            {ledger.mixerTouched && <span>Volume, pan, and sends read as mixing</span>}
-          </div>
-        </section>
-      )}
-    </>
+    <section className="report-capture-line" aria-label="Session at a glance">
+      <span>{formatDuration(report.handsOnMs)}</span>
+      <i aria-hidden="true" />
+      <span>{countLabel(ledger.capturedCount, "work change")}</span>
+      <i aria-hidden="true" />
+      <span>{tracksValue}</span>
+    </section>
   );
 }
 
@@ -1038,7 +1080,7 @@ function WorkStep({ report, onInspect }: { report: SessionReport; onInspect: (re
         <div className="report-track-table__head" role="row">
           <span role="columnheader">Track</span>
           <span role="columnheader">Kind of work</span>
-          <span role="columnheader">Changes</span>
+          <span role="columnheader">Work changes</span>
           <span role="columnheader">Controls moved</span>
           <span role="columnheader">Last touched</span>
         </div>
@@ -1109,7 +1151,7 @@ function WorkStep({ report, onInspect }: { report: SessionReport; onInspect: (re
                     )}
                   </div>
                   <div className="report-track-row__facts">
-                    <span><b>{track.sourceEventCount}</b> changes captured</span>
+                    <span><b>{track.sourceEventCount}</b> work changes</span>
                     <span><b>{track.actionCount}</b> by your hand</span>
                     <span><b>{track.controlCount}</b> controls moved</span>
                     {/* Two separate facts, never one number: how long the chain
@@ -1127,7 +1169,7 @@ function WorkStep({ report, onInspect }: { report: SessionReport; onInspect: (re
                       ids: track.evidenceIds,
                     })}
                   >
-                    Show every change on this track
+                    Show work changes on this track
                   </button>
                 </div>
               )}
@@ -1150,7 +1192,7 @@ function WorkStep({ report, onInspect }: { report: SessionReport; onInspect: (re
           <details className="report-graph-data">
             <summary>Read this as a table</summary>
             <table>
-              <thead><tr><th>Track</th><th>Kind of work</th><th>Changes captured</th><th>By your hand</th></tr></thead>
+              <thead><tr><th>Track</th><th>Kind of work</th><th>Work changes</th><th>By your hand</th></tr></thead>
               <tbody>
                 {activeTracks.map((track) => (
                   <tr key={track.id}><td>{track.name}</td><td>{track.workLabel}</td><td>{track.sourceEventCount}</td><td>{track.actionCount}</td></tr>
@@ -1189,8 +1231,8 @@ function WorkAreas({ report, onInspect }: {
         <span>{seenCount} of {sections.length} kinds seen</span>
       </div>
       <p className="report-work-map__intro">
-        Every captured change lands in exactly one of these, so the percentages are shares
-        of the {countLabel(captured, "change")} Recall captured. Open one to read its changes.
+        Every reportable work change lands in exactly one of these, so the percentages are shares
+        of the {countLabel(captured, "work change")} in this report. Open one to read its changes.
       </p>
       <div className="report-work-map__grid">
         {sections.map((section) => {
@@ -1205,7 +1247,7 @@ function WorkAreas({ report, onInspect }: {
               key={section.kind}
               type="button"
               className={`report-work-card is-${section.kind} ${seen ? "is-observed" : "is-empty"}`}
-              aria-label={`${section.label}: ${seen ? `${share}% of changes captured, ${countLabel(section.sourceEventCount, "change")}, ${countLabel(section.decisionCount, "decision")}` : "not seen this version"}`}
+              aria-label={`${section.label}: ${seen ? `${share}% of work changes, ${countLabel(section.sourceEventCount, "work change")}, ${countLabel(section.decisionCount, "decision")}` : "not seen in this report"}`}
               onClick={() => onInspect({
                 title: section.label,
                 subtitle: section.description,
@@ -1277,11 +1319,292 @@ function ChangesStep({ report, onInspect }: { report: SessionReport; onInspect: 
           filterLabel={kind === "all" ? null : producerWorkDefinition(kind).label}
         />
       </section>
+      <RawCapture events={report.session.events} workChangeCount={report.ledger.capturedCount} />
     </div>
   );
 }
 
+function FocusedTrackPanel({
+  track,
+  controls,
+  onInspect,
+}: {
+  track: SessionReport["tracks"][number];
+  controls: ReportDecision[];
+  onInspect: (request: EvidenceRequest) => void;
+}) {
+  return (
+    <section className="report-focused-track" aria-label={`Focused track: ${track.name}`}>
+      <header>
+        <span className="eyebrow">Focused track</span>
+        <span className="report-focused-track__number">
+          {track.number === null ? "--" : String(track.number).padStart(2, "0")}
+        </span>
+      </header>
+      <strong title={track.name}>{track.name}</strong>
+      <p>{track.workLabel} · {countLabel(track.sourceEventCount, "work change")}</p>
+
+      <div className="report-focused-track__section">
+        <span className="report-score__caption">Device chain</span>
+        {track.deviceChain.length > 0 ? (
+          <div className="report-focused-track__devices">
+            {track.deviceChain.map((device, index) => <span key={`${device}-${index}`}>{device}</span>)}
+          </div>
+        ) : (
+          <small>No device snapshot was available for this capture.</small>
+        )}
+      </div>
+
+      <div className="report-focused-track__section">
+        <span className="report-score__caption">Most moved controls</span>
+        {controls.length > 0 ? (
+          <ol className="report-focused-track__controls">
+            {controls.map((control) => (
+              <li key={control.id}>
+                <button
+                  type="button"
+                  onClick={() => onInspect({
+                    title: control.subject,
+                    subtitle: `${control.count} ${control.count === 1 ? "move" : "moves"} · ${control.outcome}`,
+                    ids: control.evidenceIds,
+                  })}
+                >
+                  <span><strong>{control.subject}</strong><small>{control.outcome}</small></span>
+                  <b>{control.count}×</b>
+                </button>
+              </li>
+            ))}
+          </ol>
+        ) : (
+          <small>No individual control moves were available to rank.</small>
+        )}
+      </div>
+
+      <button
+        type="button"
+        className="home-action report-focused-track__action"
+        onClick={() => onInspect({
+          title: track.name,
+          subtitle: `${track.workLabel} · ${countLabel(track.sourceEventCount, "work change")}`,
+          ids: track.evidenceIds,
+        })}
+      >
+        Open {track.name}
+      </button>
+    </section>
+  );
+}
+
+function SessionStory({ report, onInspect }: { report: SessionReport; onInspect: (request: EvidenceRequest) => void }) {
+  const decisions = [...report.decisions].sort((a, b) => a.atMs - b.atMs || a.subject.localeCompare(b.subject));
+  const first = decisions[0] ?? null;
+  const last = decisions.at(-1) ?? null;
+  const repeated = [...decisions]
+    .filter((decision) => decision.count > 1)
+    .sort((a, b) => b.count - a.count || b.endMs - a.endMs)[0] ?? null;
+  const beats = [
+    first && { key: "start", label: "Started with", decision: first, atMs: first.atMs },
+    repeated && repeated.id !== first?.id && repeated.id !== last?.id && {
+      key: "returned", label: `Came back ${repeated.count} times to`, decision: repeated, atMs: repeated.endMs,
+    },
+    last && last.id !== first?.id && { key: "finish", label: "Left the session on", decision: last, atMs: last.endMs },
+  ].filter((beat): beat is { key: string; label: string; decision: ReportDecision; atMs: number } => Boolean(beat));
+
+  if (beats.length === 0) return null;
+
+  return (
+    <section className="report-session-story" aria-labelledby="report-session-story-title">
+      <div className="report-section-heading">
+        <div>
+          <span className="eyebrow">The session, in order</span>
+          <h2 id="report-session-story-title">A short working story</h2>
+        </div>
+        <span>{beats.length} moments that frame the pass</span>
+      </div>
+      <ol>
+        {beats.map((beat) => (
+          <li key={beat.key}>
+            <time dateTime={new Date(beat.atMs).toISOString()}>{formatClock(beat.atMs)}</time>
+            <button
+              type="button"
+              onClick={() => onInspect({
+                title: beat.decision.subject,
+                subtitle: `${beat.label.toLocaleLowerCase()} ${beat.decision.outcome}`,
+                ids: beat.decision.evidenceIds,
+              })}
+            >
+              <span>{beat.label}</span>
+              <strong>{beat.decision.subject}</strong>
+              <small>{beat.decision.outcome}</small>
+            </button>
+          </li>
+        ))}
+      </ol>
+    </section>
+  );
+}
+
+function CoverageNextPass({ report }: { report: SessionReport }) {
+  const unseen = report.tracks.filter((track) => track.watched === false);
+  if (unseen.length === 0) return null;
+  const names = unseen.slice(0, 3).map((track) => track.name);
+  const remainder = unseen.length - names.length;
+  const list = remainder > 0 ? `${names.join(", ")}, and ${remainder} more` : names.join(" and ");
+
+  return (
+    <section className="report-coverage-next" aria-label="Suggested next pass">
+      <span className="eyebrow">Suggested next pass</span>
+      <div>
+        <strong>Open {unseen.length} unseen {unseen.length === 1 ? "track" : "tracks"} before judging the whole set.</strong>
+        <p>{list} were not selected in Live, so Recall did not see their device or arrangement changes. Select them during the next pass to bring them into view.</p>
+      </div>
+    </section>
+  );
+}
+
+function nextPassTaskType(report: SessionReport): PlannerTaskType {
+  const leading = report.workSections
+    .filter((section) => section.sourceEventCount > 0)
+    .sort((a, b) => b.sourceEventCount - a.sourceEventCount)[0]?.kind;
+  if (leading === "mixing") return "mix";
+  if (leading === "project") return "admin";
+  return "artist";
+}
+
+function NextPassPlan({ report }: { report: SessionReport }) {
+  const [goal, setGoal] = useState("");
+  const [listenFor, setListenFor] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [status, setStatus] = useState<string | null>(null);
+  const focus = report.tracks
+    .filter((track) => track.sourceEventCount > 0)
+    .sort((a, b) => b.sourceEventCount - a.sourceEventCount || a.name.localeCompare(b.name))[0] ?? null;
+
+  async function addTask() {
+    setSaving(true);
+    setStatus(null);
+    try {
+      const title = goal.trim() || `Revisit ${focus?.name ?? "this capture"}`;
+      const notes = [
+        `Created from ${report.session.display_name ?? report.session.name}.`,
+        goal.trim() && `Improve: ${goal.trim()}`,
+        listenFor.trim() && `Listen for: ${listenFor.trim()}`,
+      ].filter(Boolean).join("\n");
+      await createPlannerTask({
+        id: crypto.randomUUID(),
+        title,
+        dueDate: localDateKey(new Date()),
+        taskType: nextPassTaskType(report),
+        projectId: report.session.project_id,
+        notes,
+      });
+      setGoal("");
+      setListenFor("");
+      setStatus("Added to Studio Planner.");
+    } catch {
+      setStatus("Couldn't add the task. Try again.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <section className="report-next-pass" aria-labelledby="report-next-pass-title">
+      <div>
+        <span className="eyebrow">Turn the session into a next move</span>
+        <h2 id="report-next-pass-title">Plan the next listening pass</h2>
+        <p>{focus ? `Keep the next pass focused on ${focus.name}, then widen from there.` : "Name what you want the next pass to improve."}</p>
+      </div>
+      <form onSubmit={(event) => { event.preventDefault(); void addTask(); }}>
+        <label>
+          <span>What are you trying to improve?</span>
+          <input value={goal} onChange={(event) => setGoal(event.target.value)} placeholder="e.g. Make the vocal sit forward without getting sharp" />
+        </label>
+        <label>
+          <span>What should you listen for next?</span>
+          <input value={listenFor} onChange={(event) => setListenFor(event.target.value)} placeholder="e.g. Sibilance when the chorus opens" />
+        </label>
+        <div className="report-next-pass__actions">
+          <button type="submit" className="home-action home-action--primary" disabled={saving}>
+            {saving ? "Adding…" : "Add next-pass task"}
+          </button>
+          {status && <output role="status">{status}</output>}
+        </div>
+      </form>
+    </section>
+  );
+}
+
+function takeawayActionLabel(lesson: SessionReport["lessons"][number]): string {
+  if (lesson.id === "focus") return `Open ${lesson.title}`;
+  if (lesson.id === "iteration") return "Review repeated move";
+  return "Resume from last change";
+}
+
+/**
+ * The decisions above are the readable work summary, not a byte-for-byte
+ * dump of the captured telemetry. Keeping the complete event record one click
+ * away makes that distinction auditable whenever the two totals differ.
+ */
+function RawCapture({ events, workChangeCount }: {
+  events: SessionReport["session"]["events"];
+  workChangeCount: number;
+}) {
+  const [open, setOpen] = useState(false);
+  const ordered = useMemo(
+    () => [...events].sort((a, b) => a.timestamp_ms - b.timestamp_ms || a.id.localeCompare(b.id)),
+    [events],
+  );
+  const count = ordered.length;
+
+  if (count === 0) return null;
+
+  return (
+    <section className="report-raw-capture" aria-label="Full capture record">
+      <button
+        type="button"
+        className="report-raw-capture__toggle"
+        aria-expanded={open}
+        onClick={() => setOpen((current) => !current)}
+      >
+        <span>
+          <small>Full capture record</small>
+          <strong>{count.toLocaleString()} {count === 1 ? "captured event" : "captured events"}</strong>
+        </span>
+        <span>
+          {workChangeCount.toLocaleString()} work {workChangeCount === 1 ? "change" : "changes"} in the summary
+          <b>{open ? "Hide raw events" : "View raw events"}</b>
+        </span>
+      </button>
+      {open && (
+        <div className="report-raw-capture__body">
+          <p>
+            This is the unfiltered event log, including setup, transport, and other capture context that does not read as a work change.
+          </p>
+          {ordered.length === 0 ? (
+            <p className="report-quiet">The event count is still being saved. Try refreshing the report in a moment.</p>
+          ) : (
+            <ol>
+              {ordered.map((event) => (
+                <li key={event.id}>
+                  <time dateTime={new Date(event.timestamp_ms).toISOString()}>{formatClock(event.timestamp_ms)}</time>
+                  <span>
+                    <strong>{event.title || event.type}</strong>
+                    {event.description && <small>{event.description}</small>}
+                  </span>
+                  <code>{event.type.replace(/_/g, " ")} · {event.source}</code>
+                </li>
+              ))}
+            </ol>
+          )}
+        </div>
+      )}
+    </section>
+  );
+}
+
 function ComparisonStep({
+  captureOnly,
   baselineCandidates,
   baselineId,
   baselineReport,
@@ -1291,6 +1614,7 @@ function ComparisonStep({
   onBaselineChange,
   onInspect,
 }: {
+  captureOnly: boolean;
   baselineCandidates: ProjectVersion[];
   baselineId: string | null;
   baselineReport: SessionReport | null;
@@ -1300,6 +1624,14 @@ function ComparisonStep({
   onBaselineChange: (id: string) => void;
   onInspect: (request: EvidenceRequest) => void;
 }) {
+  if (captureOnly) {
+    return (
+      <ReportEmpty
+        title="Compare the full version"
+        body="This report is reading one capture. Choose “All sittings” in the Read menu to compare the complete version with an earlier one."
+      />
+    );
+  }
   if (baselineCandidates.length === 0) {
     return (
       <ReportEmpty
@@ -1428,15 +1760,6 @@ function ReportSeriesTable({ report }: { report: SessionReport }) {
   );
 }
 
-function ReportMetric({ icon, value, label, accent = false }: { icon: ReportGlyph; value: string; label: string; accent?: boolean }) {
-  return (
-    <div className={accent ? "is-moment" : ""}>
-      <span className="report-metric__icon"><ReportIcon name={icon} /></span>
-      <span className="report-metric__value"><strong>{value}</strong><small>{label}</small></span>
-    </div>
-  );
-}
-
 function DecisionList({ decisions, onInspect, compact = false }: {
   decisions: ReportDecision[];
   onInspect: (request: EvidenceRequest) => void;
@@ -1543,6 +1866,23 @@ function EvidenceDrawer({ request, items, report, onClose }: {
 }) {
   const panelRef = useRef<HTMLElement | null>(null);
   const [expanded, setExpanded] = useState(false);
+  const [openEvidenceIds, setOpenEvidenceIds] = useState<Set<string>>(() => new Set());
+  const allEvidenceOpen = items.length > 0 && items.every((item) => openEvidenceIds.has(item.id));
+
+  function toggleEvidence(itemId: string) {
+    setOpenEvidenceIds((current) => {
+      const next = new Set(current);
+      if (next.has(itemId)) next.delete(itemId);
+      else next.add(itemId);
+      return next;
+    });
+  }
+
+  function toggleAllEvidence() {
+    setOpenEvidenceIds(() =>
+      allEvidenceOpen ? new Set() : new Set(items.map((item) => item.id)),
+    );
+  }
 
   // Keep Tab inside the dialog. Without this the "modal" is a suggestion.
   function trapFocus(event: ReactKeyboardEvent<HTMLElement>) {
@@ -1576,6 +1916,16 @@ function EvidenceDrawer({ request, items, report, onClose }: {
         <header>
           <div><span className="eyebrow">The changes behind this</span><h2 id="report-evidence-title">{request.title}</h2>{request.subtitle && <p>{request.subtitle}</p>}</div>
           <div className="report-evidence__controls">
+            {expanded && items.length > 1 && (
+              <button
+                type="button"
+                className="report-evidence__expand-all"
+                onClick={toggleAllEvidence}
+                aria-label={allEvidenceOpen ? "Collapse all details" : "Expand all details"}
+              >
+                {allEvidenceOpen ? "Collapse all" : "Expand all"}
+              </button>
+            )}
             <button
               type="button"
               onClick={() => setExpanded((current) => !current)}
@@ -1597,7 +1947,14 @@ function EvidenceDrawer({ request, items, report, onClose }: {
         </div>
         {items.length > 0 ? (
           <ol>
-            {items.map((item) => <EvidenceRow key={item.id} item={item} />)}
+            {items.map((item) => (
+              <EvidenceRow
+                key={item.id}
+                item={item}
+                open={openEvidenceIds.has(item.id)}
+                onToggle={() => toggleEvidence(item.id)}
+              />
+            ))}
           </ol>
         ) : <ReportEmpty title="No individual changes to show here" body="This card summarises the session rather than pointing at particular changes." />}
       </aside>
@@ -1606,8 +1963,15 @@ function EvidenceDrawer({ request, items, report, onClose }: {
   );
 }
 
-function EvidenceRow({ item }: { item: ReportEvidence }) {
-  const [open, setOpen] = useState(false);
+function EvidenceRow({
+  item,
+  open,
+  onToggle,
+}: {
+  item: ReportEvidence;
+  open: boolean;
+  onToggle: () => void;
+}) {
   const detailId = `report-evidence-detail-${item.id.replace(/[^a-z0-9_-]/giu, "-")}`;
 
   return (
@@ -1619,7 +1983,7 @@ function EvidenceRow({ item }: { item: ReportEvidence }) {
         className="report-evidence__toggle"
         aria-expanded={open}
         aria-controls={detailId}
-        onClick={() => setOpen((current) => !current)}
+        onClick={onToggle}
       >
         <span className="report-evidence__summary">
           <strong>{item.subject}</strong>
@@ -1664,11 +2028,18 @@ function CloseIcon() {
   );
 }
 
-function ReportLoading({ compact = false }: { compact?: boolean }) {
+export function ReportLoading({ compact = false }: { compact?: boolean }) {
   return (
-    <div className={`report-loading ${compact ? "is-compact" : ""}`} role="status">
-      <span>Reading the session back</span><i /><i /><i />
-    </div>
+    <section
+      className={`report-loading ${compact ? "is-compact" : ""}`}
+      role="status"
+      aria-live="polite"
+      aria-label={compact ? "Loading report detail" : "Building session report"}
+    >
+      <span className="report-loading__status-line">
+        <LoadingSpinner className="report-loading__spinner" />
+      </span>
+    </section>
   );
 }
 

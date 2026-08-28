@@ -6,6 +6,7 @@
 import type { Activity } from "./types";
 import { describeAutomationWriteObservation, formatMoveValue } from "./format";
 import { area as shapeArea, curveBasis, line as shapeLine } from "d3-shape";
+import { LoadingSpinner } from "../../LoadingSpinner";
 
 // A session-level gesture waveform. D3 supplies the same smooth interpolation
 // producers recognize from audio editors, but the amplitude comes from Recall's
@@ -98,11 +99,13 @@ export function ScanEmptyState({
       </p>
       {scannedTake && onStartCapture ? (
         <button type="button" className="tl-btn tl-btn--primary" onClick={onStartCapture} disabled={loading}>
+          {loading && <LoadingSpinner />}
           <ScanIcon />
           Start capturing this version
         </button>
       ) : (
       <button type="button" className="tl-btn tl-btn--primary" onClick={onScan} disabled={loading}>
+        {loading && <LoadingSpinner />}
         <ScanIcon />
         {loading ? "Scanning…" : existingSet ? "Refresh map" : "Refresh"}
       </button>

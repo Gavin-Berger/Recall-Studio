@@ -1,4 +1,5 @@
 import { type FormEvent } from "react";
+import { LoadingSpinner } from "../../components/LoadingSpinner";
 import { RecallMark } from "../../components/RecallMark";
 
 type StartupScreenProps = {
@@ -67,8 +68,8 @@ export function StartupScreen({
         <div className="startup-side">
           <form className="startup-login" onSubmit={handleSubmit}>
             <div className="startup-login__header">
-              <span className="eyebrow">Studio Login</span>
-              <h2>Local studio profile</h2>
+              <span className="eyebrow">On this machine</span>
+              <h2>Your studio profile</h2>
               <p>No cloud account yet. This only personalizes Recall on this machine.</p>
             </div>
 
@@ -83,7 +84,7 @@ export function StartupScreen({
             </label>
 
             <button type="submit" className="startup-action">
-              Enter Project Desk
+              Open Project Desk
             </button>
 
             <div
@@ -110,7 +111,9 @@ export function StartupScreen({
           <aside className="startup-snapshot" aria-label="Studio snapshot">
             <div>
               <span className="eyebrow">Today</span>
-              <h2>{loading ? "Opening your library" : "Studio ready"}</h2>
+              <h2>
+                {loading ? <span className="px-loading-inline"><LoadingSpinner />Opening your library</span> : "Studio ready"}
+              </h2>
             </div>
 
             <div className="startup-snapshot__stats">

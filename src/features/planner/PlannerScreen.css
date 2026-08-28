@@ -641,3 +641,121 @@
   .planner__day-card-head, .planner__form-head { padding: 13px; }
   .planner-form { padding: 13px; }
 }
+
+/* v3 · midnight glass ------------------------------------------------------
+   Planner is a forward-looking surface, so it gets a little more room than a
+   dense history — but the same frosted edges and violet action language as the
+   rest of the studio. */
+.planner__header {
+  padding: var(--s5);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background:
+    linear-gradient(145deg, rgb(var(--signal-rgb) / 0.12), transparent 44%),
+    var(--panel);
+  box-shadow: var(--glass-elevation);
+}
+
+.planner__primary {
+  min-height: 38px;
+  padding: 0 var(--s4);
+  border-color: rgb(230 227 255 / 0.28);
+  border-radius: var(--radius-pill);
+  background: linear-gradient(135deg, #6557d9, var(--signal));
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.28), 0 10px 28px rgb(var(--signal-rgb) / 0.28);
+}
+
+.planner__primary:hover:not(:disabled) {
+  background: linear-gradient(135deg, #7568ec, #9b92ff);
+}
+
+.planner__summary > div,
+.planner__calendar-card,
+.planner__day-card,
+.planner__form-card {
+  border-color: var(--line);
+  border-radius: var(--radius);
+  background:
+    linear-gradient(145deg, rgb(216 236 248 / 0.055), transparent 44%),
+    var(--panel);
+  box-shadow: var(--glass-elevation);
+}
+
+.planner__summary > div {
+  box-shadow: inset 0 1px 0 rgb(216 236 248 / 0.12), 0 12px 28px rgb(0 0 0 / 0.14);
+}
+
+.planner__calendar-head,
+.planner__day-card-head,
+.planner__form-head {
+  border-bottom-color: var(--line-soft);
+}
+
+.planner__calendar-nav button,
+.planner__text-btn,
+.planner__empty-day button,
+.planner-task__edit,
+.planner-task__more,
+.planner-dialog__close {
+  border-color: var(--glass-edge);
+  border-radius: var(--radius-pill);
+  background: var(--glass-fill);
+  box-shadow: inset 0 1px 0 rgb(216 236 248 / 0.1);
+}
+
+.planner__calendar-nav button:hover,
+.planner__text-btn:hover,
+.planner__empty-day button:hover,
+.planner-task__edit:hover,
+.planner-task__more:hover,
+.planner-task__more[aria-expanded="true"],
+.planner-dialog__close:hover {
+  border-color: rgb(216 236 248 / 0.3);
+  background: var(--glass-fill-strong);
+}
+
+.planner-day {
+  border-color: var(--line-soft);
+}
+
+.planner-day:hover {
+  background: rgb(186 214 247 / 0.045);
+}
+
+.planner-day.is-selected {
+  box-shadow: inset 0 0 0 1px rgb(var(--signal-rgb) / 0.62), inset 0 1px 0 rgb(235 232 255 / 0.16);
+  background: linear-gradient(145deg, rgb(var(--signal-rgb) / 0.16), rgb(186 214 247 / 0.035));
+}
+
+.planner-day__chip {
+  border-left-color: rgb(var(--signal-rgb) / 0.72);
+  border-radius: var(--radius-sm);
+  background: rgb(186 214 247 / 0.055);
+}
+
+.planner-day__chip.is-release {
+  color: var(--paper);
+  background: rgb(227 182 103 / 0.11);
+}
+
+.planner-task,
+.planner-connected-item,
+.planner__connected,
+.planner-task__menu {
+  border-color: var(--line-soft);
+  background: rgb(186 214 247 / 0.035);
+}
+
+.planner-dialog__backdrop {
+  background: rgb(2 3 10 / 0.64);
+  backdrop-filter: blur(7px);
+}
+
+.planner-dialog {
+  border-color: var(--glass-edge);
+  background:
+    linear-gradient(145deg, rgb(var(--signal-rgb) / 0.14), transparent 44%),
+    rgb(5 6 15 / 0.9);
+  box-shadow: var(--glass-elevation);
+  backdrop-filter: blur(24px) saturate(125%);
+}

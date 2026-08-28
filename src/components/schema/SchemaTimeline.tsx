@@ -3,6 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import { save } from "@tauri-apps/plugin-dialog";
 import { AnimatePresence, LazyMotion, domAnimation, useReducedMotion } from "motion/react";
 import * as m from "motion/react-m";
+import { LoadingSpinner } from "../LoadingSpinner";
 import "./SchemaTimeline.css";
 import {
   createCreativeMoment,
@@ -1868,6 +1869,7 @@ export function SchemaTimeline({
                       }}
                       disabled={preparingProjectRecord}
                     >
+                      {preparingProjectRecord && <LoadingSpinner />}
                       <ExportIcon />
                       {preparingProjectRecord ? "Preparing…" : exportFormat === "pdf" ? "Save PDF" : "Save file"}
                     </button>
@@ -1900,6 +1902,7 @@ export function SchemaTimeline({
                   }}
                   disabled={status === "loading"}
                 >
+                  {status === "loading" && <LoadingSpinner />}
                   <ScanIcon />
                   <span>
                     <strong>{status === "loading" ? "Rebuilding timeline…" : "Rebuild timeline"}</strong>
@@ -1916,14 +1919,14 @@ export function SchemaTimeline({
 
       {projectionSweep && (
         <div className={`tl-audit ${projectionSweep.removed > 0 ? "has-warning" : ""}`}>
-          <b>Projection sweep</b>
+          <b>Capture check</b>
           <span>
             {projectionSweep.captureCount} take{projectionSweep.captureCount === 1 ? "" : "s"} checked · {projectionSweep.timelineMoveCount} timeline move{projectionSweep.timelineMoveCount === 1 ? "" : "s"}
             {projectionSweep.added > 0 && ` · ${projectionSweep.added} recovered`}
             {projectionSweep.removed > 0 && ` · ${projectionSweep.removed} changed`}
             {projectionSweep.added === 0 && projectionSweep.removed === 0 && " · unchanged after rebuild"}
           </span>
-          <small>Checks the database projection; it cannot prove an event that Ableton never sent.</small>
+          <small>Checks Recall&rsquo;s saved record. It cannot recover a move Ableton never sent.</small>
         </div>
       )}
 
@@ -2168,7 +2171,11 @@ export function SchemaTimeline({
               animate={{ opacity: 1, y: 0 }}
               transition={{ duration: reduceMotion ? 0 : 0.2 }}
             >
-              <Suspense fallback={<div className="tl-reconstruct tl-reconstruct--loading" />}>
+              <Suspense fallback={
+                <div className="tl-reconstruct tl-reconstruct--loading" role="status">
+                  <span className="px-loading-inline"><LoadingSpinner />Building the session story…</span>
+                </div>
+              }>
                 <ReconstructionMemory
                   activities={sittingActivities}
                   tracks={timelineTracks}
@@ -2265,7 +2272,11 @@ export function SchemaTimeline({
             </div>
 
             <div className="tl-tracks">
-              <Suspense fallback={<div className="tl-arrangement-canvas tl-arrangement-canvas--loading" />}>
+              <Suspense fallback={
+                <div className="tl-arrangement-canvas tl-arrangement-canvas--loading" role="status">
+                  <span className="px-loading-inline"><LoadingSpinner />Drawing the capture map…</span>
+                </div>
+              }>
                 <ArrangementCanvas
                   lanes={visibleSittingLanes}
                   bounds={sittingBounds}
@@ -2741,7 +2752,7 @@ export function SchemaTimeline({
                   </span>
                   <span className="tl-activity-log__sub">
                     {projectHistoryLoading
-                      ? "reading earlier takes"
+                      ? <span className="px-loading-inline"><LoadingSpinner />reading earlier takes</span>
                       : timelineSittings.length > 1
                         ? `${timelineSittings.length} work sessions, newest first`
                         : "clock time, newest first"}

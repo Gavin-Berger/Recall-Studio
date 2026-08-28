@@ -40,7 +40,8 @@ export type ProjectSet = {
   cameFromInferred: boolean;
 };
 
-function keyOf(commit: ProjectCommit): string {
+/** The stable set identity a captured stretch belongs to. */
+export function setKeyForCommit(commit: ProjectCommit): string {
   return commit.alsPath ?? commit.setName ?? "unsaved";
 }
 
@@ -53,11 +54,11 @@ function keyOf(commit: ProjectCommit): string {
 export function projectSets(commits: ProjectCommit[]): ProjectSet[] {
   const byKey = new Map<string, ProjectCommit[]>();
   for (const commit of commits) {
-    const key = keyOf(commit);
+    const key = setKeyForCommit(commit);
     byKey.set(key, [...(byKey.get(key) ?? []), commit]);
   }
 
-  const setOfCommit = new Map(commits.map((commit) => [commit.id, keyOf(commit)]));
+  const setOfCommit = new Map(commits.map((commit) => [commit.id, setKeyForCommit(commit)]));
   const nameOfKey = new Map<string, string>();
   for (const [key, group] of byKey) {
     nameOfKey.set(key, group[0]?.setName ?? "Unsaved set");
@@ -105,5 +106,5 @@ export function defaultSetKey(sets: ProjectSet[]): string | null {
 /** Only the work that happened in one set. */
 export function commitsInSet(commits: ProjectCommit[], setKey: string | null): ProjectCommit[] {
   if (setKey === null) return commits;
-  return commits.filter((commit) => keyOf(commit) === setKey);
+  return commits.filter((commit) => setKeyForCommit(commit) === setKey);
 }

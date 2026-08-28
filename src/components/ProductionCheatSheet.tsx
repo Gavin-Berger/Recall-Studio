@@ -210,6 +210,7 @@ export function ProductionCheatSheet() {
     "All",
   );
   const [flipped, setFlipped] = useState<string | null>(null);
+  const hasFilters = query.trim().length > 0 || activeCategory !== "All";
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -237,6 +238,12 @@ export function ProductionCheatSheet() {
     });
   }
 
+  function clearFilters() {
+    setQuery("");
+    setActiveCategory("All");
+    setFlipped(null);
+  }
+
   return (
     <section className="cheat-sheet">
       <header className="cheat-sheet__head">
@@ -251,14 +258,27 @@ export function ProductionCheatSheet() {
         </div>
 
         <div className="cheat-sheet__controls">
-          <input
-            type="search"
-            className="cheat-sheet__search"
-            placeholder="Search terms, e.g. sidechain…"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            aria-label="Search the cheat sheet"
-          />
+          <div className="cheat-sheet__search-wrap">
+            <input
+              type="search"
+              className="cheat-sheet__search"
+              placeholder="Search terms, e.g. sidechain…"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Escape" && query) {
+                  event.preventDefault();
+                  setQuery("");
+                }
+              }}
+              aria-label="Search the cheat sheet"
+            />
+            {query && (
+              <button type="button" className="cheat-sheet__search-clear" onClick={() => setQuery("")} aria-label="Clear search" title="Clear search">
+                ×
+              </button>
+            )}
+          </div>
           <button
             type="button"
             className="cheat-sheet__surprise"
@@ -266,14 +286,20 @@ export function ProductionCheatSheet() {
           >
             🎲 Surprise me
           </button>
+          {hasFilters && (
+            <button type="button" className="cheat-sheet__reset" onClick={clearFilters}>
+              Clear filters
+            </button>
+          )}
         </div>
       </header>
 
-      <div className="cheat-sheet__chips" role="tablist" aria-label="Categories">
+      <div className="cheat-sheet__chips" role="group" aria-label="Categories">
         <button
           type="button"
           className={`cheat-chip ${activeCategory === "All" ? "is-active" : ""}`}
           onClick={() => setActiveCategory("All")}
+          aria-pressed={activeCategory === "All"}
         >
           All
           <span className="cheat-chip__count">{TERMS.length}</span>
@@ -288,6 +314,7 @@ export function ProductionCheatSheet() {
                 activeCategory === cat ? "is-active" : ""
               }`}
               onClick={() => setActiveCategory(cat)}
+              aria-pressed={activeCategory === cat}
             >
               {cat}
               <span className="cheat-chip__count">{count}</span>

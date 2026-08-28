@@ -1,0 +1,418 @@
+/* Recall v3 — Midnight glass. This layer deliberately follows the older
+   component rules so the shared atmosphere can lift every surface without
+   flattening the information architecture that already works. */
+
+.recall-app {
+  isolation: isolate;
+  min-height: 100vh;
+  padding: var(--s4);
+}
+
+.recall-frame {
+  position: relative;
+  z-index: 1;
+  gap: var(--s4);
+  min-height: calc(100vh - var(--s6));
+}
+
+.recall-frame__content {
+  position: relative;
+  z-index: 1;
+}
+
+.ecosystem-background {
+  z-index: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(ellipse 64% 52% at 56% -14%, rgb(var(--signal-rgb) / 0.16), transparent 74%),
+    radial-gradient(ellipse 42% 62% at 96% 82%, rgb(81 111 167 / 0.075), transparent 76%),
+    radial-gradient(ellipse 38% 44% at 4% 58%, rgb(var(--signal-rgb) / 0.045), transparent 76%),
+    linear-gradient(135deg, #090b19 0%, #050610 52%, #020309 100%);
+}
+
+.ecosystem-background::before {
+  position: absolute;
+  inset: 0;
+  display: block;
+  content: "";
+  background:
+    radial-gradient(ellipse 54% 34% at 54% 7%, rgb(221 234 255 / 0.045), transparent 78%),
+    linear-gradient(106deg, transparent 18%, rgb(216 236 248 / 0.025) 50%, transparent 82%);
+}
+
+.ecosystem-background::after {
+  position: absolute;
+  inset: 0;
+  display: block;
+  content: "";
+  background:
+    linear-gradient(90deg, rgb(1 2 8 / 0.25), transparent 24%, transparent 74%, rgb(1 2 8 / 0.2)),
+    linear-gradient(180deg, transparent 52%, rgb(1 2 8 / 0.48));
+}
+
+.recall-sidebar {
+  top: var(--s4);
+  gap: var(--s4);
+  height: calc(100vh - var(--s6));
+  padding: var(--s4) var(--s3);
+  border-color: var(--glass-edge);
+  border-radius: var(--radius);
+  background:
+    linear-gradient(155deg, rgb(var(--signal-rgb) / 0.14), transparent 36%),
+    linear-gradient(180deg, rgb(216 236 248 / 0.035), transparent 160px),
+    rgb(5 6 15 / 0.68);
+  box-shadow: var(--glass-elevation);
+  backdrop-filter: blur(22px) saturate(125%);
+}
+
+.recall-sidebar::before {
+  inset: var(--s4) var(--s4) auto;
+  width: auto;
+  height: 1px;
+  border-radius: var(--radius-pill);
+  background: linear-gradient(90deg, transparent, rgb(var(--signal-rgb) / 0.9), transparent);
+}
+
+.recall-sidebar__brand {
+  padding: var(--s1) var(--s2) var(--s4);
+  border-bottom-color: var(--line-soft);
+}
+
+.recall-sidebar__brand > span > span,
+.recall-sidebar__item-hint {
+  color: var(--faint-aa);
+}
+
+.recall-sidebar__brand strong {
+  letter-spacing: -0.02em;
+}
+
+.recall-sidebar__item {
+  gap: var(--s1);
+  padding: var(--s2) var(--s3);
+  border-color: transparent;
+  border-radius: 12px;
+}
+
+.recall-sidebar__item:hover {
+  border-color: rgb(186 215 247 / 0.09);
+  background: var(--glass-fill);
+}
+
+.recall-sidebar__item.is-active {
+  border-color: rgb(var(--signal-rgb) / 0.34);
+  background:
+    linear-gradient(100deg, rgb(var(--signal-rgb) / 0.22), rgb(var(--signal-rgb) / 0.06)),
+    var(--glass-fill);
+  box-shadow: inset 0 1px 0 rgb(233 230 255 / 0.18);
+}
+
+.recall-sidebar__item.is-active::after {
+  top: var(--s2);
+  right: var(--s2);
+  bottom: var(--s2);
+  width: 2px;
+  box-shadow: 0 0 14px rgb(var(--signal-rgb) / 0.75);
+}
+
+.recall-sidebar__status,
+.recall-sidebar__utility,
+.recall-sidebar__report {
+  border-color: var(--line-soft);
+  border-radius: var(--radius-sm);
+  background: var(--glass-fill);
+  box-shadow: inset 0 1px 0 rgb(216 236 248 / 0.08);
+}
+
+.recall-sidebar__status.is-connected .recall-sidebar__status-dot {
+  box-shadow: 0 0 0 3px rgb(var(--signal-rgb) / 0.15), 0 0 12px rgb(var(--signal-rgb) / 0.65);
+}
+
+.recall-mark {
+  border-color: rgb(var(--signal-rgb) / 0.44);
+  border-radius: 14px;
+  background:
+    linear-gradient(145deg, rgb(var(--signal-rgb) / 0.22), transparent 68%),
+    rgb(5 6 15 / 0.74);
+  box-shadow: inset 0 1px 0 rgb(235 232 255 / 0.2), 0 8px 28px rgb(0 0 0 / 0.25);
+}
+
+.home-surface,
+.document-surface {
+  min-height: calc(100vh - var(--s6));
+  padding: var(--s7) var(--s6);
+}
+
+.recall-app input:not([type="range"]),
+.recall-app textarea,
+.recall-app select {
+  border-color: var(--line);
+  color: var(--paper-strong);
+  background: rgb(199 211 234 / 0.055);
+  box-shadow: inset 0 1px 0 rgb(216 236 248 / 0.08);
+}
+
+/* Native Windows select menus need an explicit scheme and opaque option
+   surface; otherwise their light menu can inherit this interface's pale text. */
+.recall-app select {
+  color-scheme: dark;
+}
+
+.recall-app select option,
+.recall-app select optgroup {
+  color: var(--paper-strong);
+  background-color: var(--ink-2);
+}
+
+.recall-app :is(button, input, textarea, select):focus-visible {
+  outline: 2px solid rgb(var(--focus-rgb) / 0.9);
+  outline-offset: 2px;
+}
+
+.home-action {
+  min-height: 38px;
+  padding: 0 var(--s4);
+  border-color: var(--glass-edge);
+  /* Buttons are compact instrument controls, not a field of generic SaaS
+     pills. Keep fully round geometry for status and small count chips only. */
+  border-radius: var(--radius-sm);
+  color: var(--paper-strong);
+  background: rgb(186 214 247 / 0.065);
+  box-shadow: inset 0 1px 0 rgb(216 236 248 / 0.16);
+}
+
+.home-action:hover {
+  border-color: rgb(216 236 248 / 0.28);
+  background: rgb(186 214 247 / 0.12);
+}
+
+.home-action--primary {
+  border-color: rgb(230 227 255 / 0.28);
+  background: linear-gradient(135deg, #6557d9, var(--signal));
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.3), 0 10px 28px rgb(var(--signal-rgb) / 0.3);
+}
+
+.home-action--primary:hover {
+  background: linear-gradient(135deg, #7568ec, #9b92ff);
+}
+
+.px-btn {
+  min-height: 32px;
+  height: auto;
+  padding: var(--s1) var(--s3);
+  border-color: var(--glass-edge);
+  border-radius: var(--radius-sm);
+  color: var(--paper);
+  background: var(--glass-fill);
+  box-shadow: inset 0 1px 0 rgb(216 236 248 / 0.12);
+}
+
+.px-btn:hover:not(:disabled) {
+  border-color: rgb(216 236 248 / 0.3);
+  background: var(--glass-fill-strong);
+}
+
+.px-btn--primary {
+  border-color: rgb(230 227 255 / 0.28);
+  color: #fff;
+  background: linear-gradient(135deg, #6557d9, var(--signal));
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.28), 0 8px 22px rgb(var(--signal-rgb) / 0.24);
+}
+
+.px-btn--primary:hover:not(:disabled) {
+  background: linear-gradient(135deg, #7568ec, #9b92ff);
+}
+
+.px-btn--danger {
+  color: #f0adb6;
+  background: rgb(220 90 106 / 0.06);
+}
+
+/* Active work is the one place a loop is honest: it exists only while the app
+   is waiting on a request, beside text that names the work in progress. */
+.px-loading-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s2);
+}
+
+.px-loading-spinner {
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  flex: none;
+  border: 2px solid rgb(var(--signal-rgb) / 0.2);
+  border-top-color: var(--signal);
+  border-right-color: rgb(216 236 248 / 0.9);
+  border-radius: 50%;
+  animation: px-loading-spin 880ms cubic-bezier(0.55, 0, 0.45, 1) infinite;
+}
+
+@keyframes px-loading-spin {
+  to { transform: rotate(360deg); }
+}
+
+.project-manager__header,
+.project-manager__projects,
+.project-manager__bridge,
+.project-manager__summary div,
+.project-manager__quickstart,
+.session-recap__panel,
+.session-recap--empty,
+.notes__list,
+.notes__page,
+.organizer__list,
+.organizer__detail,
+.organizer__detail--empty,
+.cheat-sheet,
+.bridge-setup,
+.settings-dialog {
+  border-color: var(--line);
+  border-radius: var(--radius);
+  background:
+    linear-gradient(145deg, rgb(216 236 248 / 0.065), transparent 42%),
+    var(--panel);
+  box-shadow: var(--glass-elevation);
+  backdrop-filter: blur(18px) saturate(120%);
+}
+
+.project-manager::before {
+  inset: calc(var(--s4) * -1) 8% auto;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgb(var(--signal-rgb) / 0.72), transparent);
+}
+
+.project-manager__header::after,
+.project-manager__summary div::before {
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgb(216 236 248 / 0.52), transparent);
+}
+
+.project-manager__notice:not(.project-manager__notice--error)::before {
+  animation: none;
+}
+
+.project-manager__summary div,
+.project-manager__quickstart {
+  border-radius: var(--radius);
+}
+
+.project-card,
+.project-version,
+.project-explorer__row,
+.notes__item,
+.organizer__item,
+.organizer__track,
+.release-preview__tracks > li,
+.cheat-card {
+  border-color: var(--line);
+  background: rgb(186 214 247 / 0.032);
+  box-shadow: inset 0 1px 0 rgb(216 236 248 / 0.055);
+}
+
+.project-card:hover,
+.project-version:hover,
+.project-explorer__row:hover,
+.notes__item:hover,
+.organizer__item:hover,
+.organizer__track:hover,
+.release-preview__tracks > li:hover,
+.cheat-card:hover {
+  border-color: rgb(186 215 247 / 0.24);
+  background: rgb(186 214 247 / 0.07);
+  box-shadow: inset 0 1px 0 rgb(216 236 248 / 0.12), 0 14px 38px rgb(0 0 0 / 0.18);
+}
+
+.project-version.is-selected,
+.project-explorer__row.is-selected,
+.notes__item.is-selected,
+.organizer__item.is-selected {
+  border-color: rgb(var(--signal-rgb) / 0.4);
+  background:
+    linear-gradient(100deg, rgb(var(--signal-rgb) / 0.18), transparent 78%),
+    rgb(186 214 247 / 0.06);
+}
+
+.organizer-now-playing {
+  border-color: var(--glass-edge);
+  border-radius: var(--radius);
+  background:
+    linear-gradient(130deg, rgb(var(--signal-rgb) / 0.12), transparent 44%),
+    rgb(5 6 15 / 0.78);
+  box-shadow: var(--glass-elevation);
+}
+
+/* Overlays are part of the same room, not a separate black product. */
+.relink-overlay,
+.report-scrim,
+.settings-dialog__backdrop,
+.planner-dialog__backdrop,
+.report-evidence-backdrop {
+  background: rgb(2 3 10 / 0.66);
+  backdrop-filter: blur(8px);
+}
+
+.relink-dialog,
+.report-dialog,
+.settings-dialog,
+.planner-dialog,
+.report-evidence {
+  border-color: var(--glass-edge);
+  border-radius: var(--radius);
+  background:
+    linear-gradient(145deg, rgb(var(--signal-rgb) / 0.14), transparent 44%),
+    rgb(5 6 15 / 0.9);
+  box-shadow: var(--glass-elevation);
+  backdrop-filter: blur(24px) saturate(125%);
+}
+
+.relink-dialog__file:hover:not(:disabled),
+.settings-dialog__theme:hover {
+  background: var(--glass-fill-strong);
+}
+
+/* Static light is enough to say that something has been captured. Historical
+   data does not breathe, scan, or chase the reader around the interface. */
+.px-dot,
+.px-skeleton,
+.startup-meter span,
+.tl-pulse__state.is-hot .tl-pulse__pip,
+.organizer__play.is-playing::after,
+.release-preview__tracks li.is-active .release-preview__play {
+  animation: none;
+}
+
+.px-skeleton {
+  background: rgb(186 214 247 / 0.12);
+}
+
+@media (max-width: 860px) {
+  .recall-app {
+    padding: var(--s3);
+  }
+
+  .recall-frame,
+  .home-surface,
+  .document-surface {
+    min-height: calc(100vh - var(--s5));
+  }
+
+  .home-surface,
+  .document-surface {
+    padding: var(--s5) var(--s4);
+  }
+}
+
+@media (max-width: 620px) {
+  .home-surface,
+  .document-surface {
+    padding: var(--s4);
+  }
+
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .px-loading-spinner {
+    animation: none;
+  }
+}

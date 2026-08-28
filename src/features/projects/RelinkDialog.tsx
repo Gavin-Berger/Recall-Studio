@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { LoadingSpinner } from "../../components/LoadingSpinner";
 
 export type AlsFileChoice = { name: string; path: string };
 
@@ -55,7 +56,7 @@ export function RelinkDialog({
         {error ? (
           <p className="relink-dialog__empty">{error}</p>
         ) : files === null ? (
-          <p className="relink-dialog__empty">Reading folder…</p>
+          <p className="relink-dialog__empty px-loading-inline" role="status"><LoadingSpinner />Reading folder…</p>
         ) : files.length === 0 ? (
           <p className="relink-dialog__empty">No .als files found in this project's folder.</p>
         ) : (

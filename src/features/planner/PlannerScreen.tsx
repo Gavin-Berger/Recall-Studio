@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import type { PlannerTask, PlannerTaskInput, PlannerTaskType, SavedProject } from "../../types";
 import { organizerRepository, type NativeProject } from "../organizer/repository";
 import { createPlannerTask, deletePlannerTask, listPlannerTasks, updatePlannerTask } from "./api";
+import { LoadingSpinner } from "../../components/LoadingSpinner";
 import {
   calendarDays,
   connectedCalendarItems,
@@ -455,7 +456,7 @@ export function PlannerScreen({ projects, onOpenOrganizer, onOpenTimeline }: Pla
               </section>
             )}
             {loading ? (
-              <p className="planner__quiet">Loading your plan…</p>
+              <p className="planner__quiet px-loading-inline" role="status"><LoadingSpinner />Loading your plan…</p>
             ) : selectedTasks.length === 0 ? (
               <div className="planner__empty-day">
                 <span>{selectedConnectedItems.length ? "No planned tasks yet." : "No tasks here yet."}</span>

@@ -27,6 +27,7 @@ import {
   type StoryActivity,
 } from "./songStory";
 import { ContributionRecord } from "./ContributionRecord";
+import { LoadingSpinner } from "../../components/LoadingSpinner";
 
 type ProjectBriefingScreenProps = {
   project: SavedProject | null;
@@ -394,7 +395,7 @@ export function ProjectBriefingScreen({
         </div>
 
         {status === "loading" && cards.length === 0 ? (
-          <p className="brief__hint">Reading the latest take…</p>
+          <p className="brief__hint px-loading-inline" role="status"><LoadingSpinner />Reading the latest take…</p>
         ) : cards.length === 0 ? (
           <p className="brief__hint">
             No tracks captured yet. Open this project in Ableton and make a move — the map builds

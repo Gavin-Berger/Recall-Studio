@@ -1054,7 +1054,7 @@
   inset: auto 0 0;
   height: 1px;
   background: linear-gradient(90deg, transparent, rgb(var(--signal-rgb) / 0.75), transparent);
-  animation: projectNoticeScan 1.4s ease-in-out infinite;
+  animation: none;
 }
 
 .project-manager__layout {
@@ -1629,9 +1629,9 @@
 }
 
 .document-filter.is-active {
-  color: #1a160f;
-  background: var(--accent, #e3b667);
-  border-color: var(--accent, #e3b667);
+  color: var(--paper-strong);
+  background: rgb(var(--signal-rgb) / 0.18);
+  border-color: var(--signal);
 }
 
 .document-filter.is-active .document-filter__count {
@@ -1916,9 +1916,13 @@
   align-items: center;
 }
 
+.cheat-sheet__search-wrap {
+  position: relative;
+}
+
 .cheat-sheet__search {
   width: 220px;
-  padding: 9px 12px;
+  padding: 9px 36px 9px 12px;
   color: var(--paper-strong);
   border: 1px solid var(--line);
   border-radius: var(--radius-sm);
@@ -1933,6 +1937,34 @@
 
 .cheat-sheet__search:focus {
   border-color: var(--signal);
+}
+
+.cheat-sheet__search-clear {
+  position: absolute;
+  top: 50%;
+  right: 5px;
+  display: grid;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  place-items: center;
+  border: 0;
+  border-radius: 50%;
+  color: var(--muted);
+  background: transparent;
+  cursor: pointer;
+  transform: translateY(-50%);
+}
+
+.cheat-sheet__search-clear:hover,
+.cheat-sheet__search-clear:focus-visible {
+  color: var(--paper-strong);
+  background: var(--glass-fill-strong);
+}
+
+.cheat-sheet__search-clear:focus-visible {
+  outline: 2px solid var(--signal);
+  outline-offset: 1px;
 }
 
 .cheat-sheet__surprise {
@@ -1950,6 +1982,24 @@
 .cheat-sheet__surprise:hover {
   filter: brightness(1.08);
   transform: translateY(-1px);
+}
+
+.cheat-sheet__reset {
+  padding: 8px 10px;
+  border: 1px solid transparent;
+  color: var(--muted);
+  background: transparent;
+  font: inherit;
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+
+.cheat-sheet__reset:hover,
+.cheat-sheet__reset:focus-visible {
+  color: var(--paper-strong);
+  border-color: var(--glass-edge);
+  border-radius: var(--radius-pill);
+  background: var(--glass-fill);
 }
 
 .cheat-sheet__surprise:active {
@@ -2548,7 +2598,9 @@
   height: 6px;
   border-radius: 50%;
   background: var(--signal);
-  animation: pxPulse 1.9s infinite;
+  /* This marks captured material, not live audio. The connection status is
+     the sole dot that may pulse in Recall. */
+  animation: none;
 }
 
 @keyframes pxPulse {
@@ -3015,7 +3067,9 @@
   border-radius: 6px;
   background: linear-gradient(90deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0.1), rgba(255, 255, 255, 0.04));
   background-size: 220% 100%;
-  animation: pxSkeleton 1.15s ease-in-out infinite;
+  /* Loading stays quiet. Status copy and the explicit spinner communicate
+     present work without making the surrounding record appear live. */
+  animation: none;
 }
 
 .px-skeleton--name { grid-column: 2; width: 60%; }
@@ -3716,12 +3770,73 @@
   border-bottom: 1px solid rgba(255, 255, 255, 0.06);
 }
 
+.notes__search {
+  position: relative;
+  margin: 10px 10px 4px;
+}
+
+.notes__search input {
+  width: 100%;
+  min-height: 34px;
+  padding: 7px 34px 7px 10px;
+  border: 1px solid var(--glass-edge);
+  border-radius: var(--radius-pill);
+  color: var(--paper);
+  background: var(--glass-fill);
+  font: inherit;
+  font-size: 0.78rem;
+}
+
+.notes__search input:focus-visible {
+  outline: 2px solid var(--signal);
+  outline-offset: 1px;
+}
+
+.notes__search button {
+  position: absolute;
+  top: 50%;
+  right: 4px;
+  display: grid;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  place-items: center;
+  border: 0;
+  border-radius: 50%;
+  color: var(--muted);
+  background: transparent;
+  cursor: pointer;
+  transform: translateY(-50%);
+}
+
+.notes__search button:hover,
+.notes__search button:focus-visible {
+  color: var(--paper-strong);
+  background: var(--glass-fill-strong);
+}
+
 .notes__list-empty {
   margin: 0;
   padding: 16px 14px;
   font-size: 0.78rem;
   line-height: 1.5;
   color: var(--muted);
+}
+
+.notes__list-empty p {
+  margin: 0;
+}
+
+.notes__list-empty button {
+  margin-top: var(--s2);
+  padding: 0;
+  border: 0;
+  color: var(--signal-soft);
+  background: transparent;
+  font: inherit;
+  font-size: inherit;
+  font-weight: 600;
+  cursor: pointer;
 }
 
 .notes__items {
@@ -4147,7 +4262,10 @@
 
 .organizer {
   width: 100%;
-  max-width: 1360px;
+  /* A release desk benefits from a wider working canvas on large displays.
+     The old 1360px cap left the track workspace compressed while decorative
+     cover art occupied most of an ultrawide monitor. */
+  max-width: 1760px;
   display: grid;
   grid-template-columns: 264px minmax(0, 1fr);
   gap: 14px;
@@ -4184,6 +4302,7 @@
   z-index: 0;
   top: -24px;
   bottom: -24px;
+  width: 220px;
   background-color: #080b13;
   background-position: center center;
   background-repeat: no-repeat;
@@ -4192,13 +4311,13 @@
 }
 
 .organizer__gutter-art--left {
-  left: calc((100vw - 100%) / -2);
-  right: calc(100% + 14px);
+  left: -234px;
+  right: auto;
 }
 
 .organizer__gutter-art--right {
   left: calc(100% + 14px);
-  right: calc((100vw - 100%) / -2);
+  right: auto;
 }
 
 .organizer__gutter-art::after {
@@ -4293,6 +4412,7 @@
   flex-direction: column;
   gap: 14px;
   min-width: 0;
+  container: organizer-detail / inline-size;
   padding: 4px 4px 40px;
 }
 
@@ -4311,6 +4431,28 @@
   grid-template-columns: minmax(0, 1fr) minmax(280px, 320px);
   align-items: start;
   gap: 14px;
+}
+
+/* This breakpoint follows the usable detail column, rather than the browser
+   viewport. It prevents a 320px Planner from squeezing the track workspace
+   merely because the app happens to be on a large display. */
+@container organizer-detail (max-width: 1180px) {
+  .organizer__release-workspace {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .organizer__release-workspace > .organizer__quick-plan,
+  .organizer__release-workspace > .organizer__mastering-overview,
+  .organizer__release-workspace > .organizer__tracklist-head,
+  .organizer__release-workspace > .organizer__analyzing--tracklist,
+  .organizer__release-workspace > .organizer__tracklist {
+    grid-column: 1;
+    grid-row: auto;
+  }
+
+  .organizer__quick-plan {
+    position: static;
+  }
 }
 
 
@@ -4808,7 +4950,7 @@
   border-left-color: var(--signal);
 }
 
-@container (max-width: 560px) {
+@container (max-width: 760px) {
   .organizer__versions-head,
   .organizer__bounce-head {
     align-items: flex-start;
@@ -5036,12 +5178,13 @@
 }
 
 .organizer__bounce-name {
+  display: block;
+  overflow-wrap: anywhere;
   font-family: var(--font-mono);
   font-size: 0.84rem;
+  line-height: 1.35;
   color: var(--paper-strong);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  white-space: normal;
 }
 
 .organizer__bounce-actions {
@@ -5173,7 +5316,9 @@
 }
 
 .organizer__play.is-playing::after {
-  animation: organizer-transport-pulse 1.8s ease-out infinite;
+  /* Playback is already explicit in the transport glyph. A static ring avoids
+     turning a saved version into a competing metered display. */
+  animation: none;
 }
 
 @keyframes organizer-transport-pulse {
@@ -5308,6 +5453,21 @@
   margin: 0;
   padding-top: 2px;
   border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+/* Six measurements need a deliberate hierarchy when a version card narrows.
+   Three readable columns are more useful than six cramped labels plus an
+   orphaned Format value on a second row. */
+@container (max-width: 920px) {
+  .organizer__stats {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@container (max-width: 520px) {
+  .organizer__stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 .organizer__stat {
@@ -5549,6 +5709,16 @@
   border: 1px solid var(--line);
   border-radius: 8px;
   background: rgb(255 255 255 / 0.018);
+}
+
+/* This must follow the base quick-plan rule so compact detail columns remove
+   its spanning, sticky sidebar behavior instead of only collapsing the grid. */
+@container organizer-detail (max-width: 1180px) {
+  .organizer__quick-plan {
+    position: static;
+    grid-column: 1;
+    grid-row: auto;
+  }
 }
 
 .organizer__release-workspace > .organizer__mastering-overview,
@@ -5853,7 +6023,7 @@
 .organizer__streaming-preview dt {
   margin-bottom: 2px;
   font-family: var(--font-mono);
-  font-size: 0.6rem;
+  font-size: var(--t-micro);
   text-transform: uppercase;
   color: var(--faint-aa);
 }
@@ -5882,8 +6052,8 @@
   justify-content: space-between;
   gap: 12px;
   min-height: 38px;
-  color: var(--muted-aa);
-  font-size: 0.76rem;
+  color: var(--muted);
+  font-size: var(--t-meta);
   cursor: pointer;
   list-style: none;
 }
@@ -5900,8 +6070,8 @@
 
 .organizer__mastering-count {
   font-family: var(--font-mono);
-  font-size: 0.66rem;
-  color: var(--warning, #e6b85c);
+  font-size: var(--t-micro);
+  color: var(--signal-muted);
 }
 
 .organizer__mastering-flags {
@@ -5917,8 +6087,8 @@
   padding: 4px 7px;
   border-left: 2px solid var(--muted);
   background: rgba(255, 255, 255, 0.025);
-  font-size: 0.69rem;
-  color: var(--muted-aa);
+  font-size: var(--t-meta);
+  color: var(--muted);
 }
 
 .organizer__mastering-flags li.is-critical {
@@ -5927,7 +6097,7 @@
 }
 
 .organizer__mastering-flags li.is-warning {
-  border-left-color: var(--warning, #e6b85c);
+  border-left-color: var(--signal-muted);
   color: var(--paper-strong);
 }
 
@@ -6114,8 +6284,8 @@
 .release-preview__status {
   max-width: min(48vw, 520px);
   overflow: hidden;
-  color: var(--muted-aa);
-  font-size: 0.72rem;
+  color: var(--faint-aa);
+  font-size: var(--t-meta);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -6145,7 +6315,7 @@
   display: grid;
   place-items: center;
   background: #1a202a;
-  color: var(--accent);
+  color: var(--paper-strong);
   font-size: 4rem;
   font-weight: 800;
 }
@@ -6156,7 +6326,7 @@
 }
 
 .release-preview__identity > span {
-  color: var(--accent);
+  color: var(--faint-aa);
   font-family: var(--font-mono);
   font-size: 0.66rem;
   font-weight: 750;
@@ -6166,7 +6336,8 @@
 .release-preview__identity h2 {
   margin: 8px 0 14px;
   color: var(--paper-strong);
-  font-size: clamp(2.5rem, 6vw, 5.4rem);
+  /* This is an in-app listening preview, not a release landing page. */
+  font-size: clamp(2rem, 3.5vw, 2.75rem);
   line-height: 0.98;
   overflow-wrap: anywhere;
 }
@@ -6178,15 +6349,15 @@
 
 .release-preview__identity p {
   margin: 7px 0 0;
-  color: var(--muted-aa);
-  font-size: 0.78rem;
+  color: var(--muted);
+  font-size: var(--t-meta);
 }
 
 .release-preview__notes {
   max-width: 760px;
   margin: 22px 28px 0;
-  color: var(--muted-aa);
-  font-size: 0.84rem;
+  color: var(--muted);
+  font-size: var(--t-body);
   line-height: 1.65;
   white-space: pre-wrap;
 }
@@ -6194,9 +6365,9 @@
 .release-preview__incomplete {
   margin: 18px 28px 0;
   padding-left: 10px;
-  border-left: 2px solid var(--warning, #e6b85c);
-  color: var(--muted-aa);
-  font-size: 0.74rem;
+  border-left: 2px solid var(--signal-muted);
+  color: var(--muted);
+  font-size: var(--t-meta);
 }
 
 .release-preview__tracks {
@@ -6231,8 +6402,8 @@
 }
 
 .release-preview__tracks li.is-active .release-preview__play {
-  border-color: var(--accent);
-  color: var(--accent);
+  border-color: var(--signal);
+  color: var(--signal-soft);
 }
 
 .release-preview__number,
@@ -6268,7 +6439,7 @@
 
 .release-preview__tracks input[type="range"] {
   width: 100%;
-  accent-color: var(--accent);
+  accent-color: var(--signal);
 }
 
 .release-preview__empty {
@@ -6284,7 +6455,7 @@
 .release-preview__footer {
   margin-top: 32px;
   font-family: var(--font-mono);
-  font-size: 0.62rem;
+  font-size: var(--t-micro);
   text-transform: uppercase;
 }
 
@@ -6515,7 +6686,7 @@
 
 .startup-meter span {
   transform-origin: bottom;
-  animation: recall-meter-flow 3.8s ease-in-out infinite;
+  animation: none;
 }
 
 .startup-meter span:nth-child(2) { animation-delay: -1.4s; }
@@ -6653,7 +6824,7 @@
 }
 
 .release-preview__tracks li.is-active .release-preview__play {
-  animation: recall-live-pulse var(--motion-live) ease-in-out infinite;
+  animation: none;
 }
 
 /* Matches the app-shell breakpoint above, where .recall-sidebar first switches to
@@ -7379,8 +7550,8 @@
   font-size: 0.76rem !important;
 }
 
-/* Take/Ableton drift warning. Uses --session warm (the producer's own mark) to
-   read as "your work is at stake", not as a system error. */
+/* Take/Ableton drift warning. This is a capture disagreement, not a producer
+   moment, so it must not borrow the warm pinned-moment accent. */
 .project-manager__mismatch {
   display: flex;
   align-items: center;
@@ -7388,9 +7559,9 @@
   gap: 16px;
   flex-wrap: wrap;
   padding: 12px 16px;
-  border: 1px solid rgba(255, 217, 138, 0.32);
+  border: 1px solid rgb(220 90 106 / 0.42);
   border-radius: var(--radius);
-  background: rgba(255, 217, 138, 0.08);
+  background: rgb(220 90 106 / 0.06);
 }
 
 .project-manager__mismatch-text {
@@ -7401,7 +7572,7 @@
 }
 
 .project-manager__mismatch-text strong {
-  color: var(--moment);
+  color: var(--paper-strong);
   font-size: 0.86rem;
 }
 

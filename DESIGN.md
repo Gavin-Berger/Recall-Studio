@@ -1,6 +1,6 @@
 # Recall Studio — Design System
 
-*v2.1 · 2026-08-25 · companion to [PRD.md](docs/PRD.md) / [SPEC.md](docs/SPEC.md).
+*v3.1 · 2026-08-27 · companion to [PRD.md](docs/PRD.md) / [SPEC.md](docs/SPEC.md).
 The PRD says **what and why**, SPEC says **how**, this says **what it looks like and
 why it looks that way**.*
 
@@ -18,13 +18,24 @@ why it looks that way**.*
 > **Nothing was loosened for aesthetics.** Monochrome holds, the motion tense-rule holds,
 > and the entity-color system stays retired.
 
-**`src/styles/tokens.css` has been rebuilt to match this doc (2026-08-04):** IBM Plex
-bundled via `@fontsource`, monochrome palette, `--signal` / `--moment` added, and the v1
-entity-color tokens kept as aliases pointing at the monochrome set. All hardcoded teal /
-violet / warm color literals across `components.css`, `SchemaTimeline.css`, `motion.css`,
-and the organizer were swept to the single signal blue. Remaining cleanup: retire the
-~100 `var(--track|--device|--parameter|…)` call sites in favour of type-based
-differentiation, then delete the alias tokens.
+> **v3.0 changes the atmosphere, not the product posture.** Recall is still the record
+> beside Ableton: calm, exact, and compact. But a strict ban on decorative gradients made
+> that record feel flat instead of premium. The canvas is now midnight glass — faint
+> restrained violet atmosphere, frosted edges, and soft light caught in panels. Blueprint
+> vocabulary is **sparse architecture, never all-over graph paper**: use a quiet seam or
+> horizon only when it orients the reader. Gradients may create depth and orientation; they
+> may never compete with the session data or imply that old work is still in motion.
+
+> **v3.1 closes the last product-language leaks.** Controls are compact rounded
+> rectangles, not a field of generic pills; visualized work uses one neutral
+> instrument tone instead of category colours; and the warm accent remains a
+> producer-pinned moment only. Historical activity is static, including playback
+> controls and momentum summaries — only the live Ableton connection may pulse.
+
+**Implementation source of truth:** `src/styles/tokens.css` supplies bundled IBM Plex,
+the midnight surfaces, one functional violet, the pinned-moment warm, spacing, type, stroke,
+and motion tokens. New or revised work resolves through those tokens; categories must never
+introduce their own colour system.
 
 ---
 
@@ -36,8 +47,10 @@ instrument that keeps a record**, not a productivity app and not a toy. Four con
 1. **Dark, always.** Not a theme choice — it sits beside Live's dark UI on a dim desk.
    There is no light mode in the app. (Exported documents get a light print variant; see §8.)
 2. **Calm surface hierarchy.** The producer's attention belongs to the music. Recall
-   never competes for it. No dashboard mosaics, no thick borders, no decorative
-   gradients, no ornamental icons, no colored chip rainbow.
+   never competes for it. No dashboard mosaics, no thick borders, no ornamental icons,
+   no colored chip rainbow. Soft cool gradients, sparse architectural seams, and frosted
+   edges are allowed when they establish a surface or orient the reader — never as
+   decoration for its own sake.
 3. **Dense but readable.** A session is thousands of small facts. The UI's job is to let
    the eye scan them, not to pad them into cards.
 4. **It reads like an instrument's readout, not an app's dashboard.** The look is a
@@ -57,17 +70,17 @@ carry the work.** The palette is a graphite ramp plus exactly two accents.
 
 All values are documentation until tokens.css is rebuilt to match.
 
-### Surfaces — a cool graphite ramp
+### Surfaces — midnight glass
 
 | Token | Value | Use |
 |---|---|---|
-| `--ink` | `#0d0f13` | Page base. Body applies a vertical gradient to `--ink-2` and back to `#090b0f`. |
-| `--ink-2` | `#12141a` | Gradient midpoint only. |
-| `--panel` | `#161922` | Primary panel / sidebar / card. |
-| `--panel-2` | `#1c2029` | Raised panel, row hover. |
-| `--panel-3` | `#232833` | Active nav item, badges, inline chips (`N×` run counts). |
-| `--line` | `#2a2f3a` | Hairline borders. **Always 1px** as a border or divider. Drawn graph geometry uses the stroke scale in §5. |
-| `--line-soft` | `#21262f` | Internal dividers inside a panel. |
+| `--ink` | `#05060f` | Midnight canvas below every surface. |
+| `--ink-2` | `#0b1020` | The cool midnight midpoint in the canvas gradient. |
+| `--panel` | `rgb(13 19 34 / 72%)` | Primary frosted-glass panel / sidebar / card. |
+| `--panel-2` | `rgb(30 40 61 / 68%)` | Raised glass, row hover. |
+| `--panel-3` | `rgb(59 73 103 / 48%)` | Active nav item, badges, inline chips (`N×` run counts). |
+| `--line` | `rgb(186 215 247 / 16%)` | Frosted hairline border. **Always 1px** as a border or divider. Drawn graph geometry uses the stroke scale in §5. |
+| `--line-soft` | `rgb(186 215 247 / 10%)` | Internal divider inside a glass panel. |
 
 The neutrals carry a slight cool/blue bias so they read as chosen, not as a default grey,
 and so the one signal accent sits in the same family.
@@ -76,11 +89,11 @@ and so the one signal accent sits in the same family.
 
 | Token | Value | Use | Contrast on `--panel` |
 |---|---|---|---|
-| `--paper-strong` | `#f3f5fa` | Headings, settled/after values, track names — the thing you want read. | ~15:1 |
-| `--paper` | `#d6dae4` | Body. | ~11:1 |
-| `--muted` | `#8b91a0` | Secondary text, parameter names, detail after a `·`. | ~5.6:1 ✅ |
-| `--faint-aa` | `#868d9c` | Small metadata: timestamps, hints, labels, take dates, `N×` badges. | ~4.6:1 ✅ |
-| `--faint` | `#666d7c` | **Large text only (≥19px, or ≥15px bold).** Decorative. | ~3.3:1 ❌ AA for body |
+| `--paper-strong` | `#f7fbff` | Headings, settled/after values, track names — the thing you want read. | ~15:1 |
+| `--paper` | `#d1e4fa` | Body. | ~11:1 |
+| `--muted` | `#a6b3c7` | Secondary text, parameter names, detail after a `·`. | ~6:1 ✅ |
+| `--faint-aa` | `#9da7ba` | Small metadata: timestamps, hints, labels, take dates, `N×` badges. | ~4.8:1 ✅ |
+| `--faint` | `#8f9bb0` | **Large text only (≥19px, or ≥15px bold).** Decorative. | ~3.5:1 ❌ AA for body |
 
 > **`--faint` fails WCAG AA for body text.** Never put `--faint` on text under 19px.
 > Small metadata uses `--faint-aa`. This rule survives from v1 and still holds.
@@ -89,7 +102,7 @@ and so the one signal accent sits in the same family.
 
 | Token | Value | Means | Rule |
 |---|---|---|---|
-| `--signal` | `#5e93ff` | **The live/active/interactive fact.** Focus ring (2px), current selection, the primary action, links, the connection dot. | The single cool accent. If something is interactive or *now*, it may be `--signal`. Nothing else is blue. |
+| `--signal` | `#8578ff` | **The live/active/interactive fact.** Focus ring (2px), current selection, the primary action, links, the connection dot. | The single functional violet. If something is interactive or *now*, it may be `--signal`. Nothing else is violet. |
 | `--moment` | `#e3b667` | **A pinned moment — the producer's own mark.** | The single warm accent, and the loudest thing on any screen it appears on. It earns that because the producer made it. Nothing else is warm. |
 | `--danger` | `#dc5a6a` | Removal, destructive action, error. | A *state*, not an entity accent. Used only for destructive/error, never for emphasis. |
 
@@ -165,11 +178,11 @@ either the scale is wrong (change it here) or the component is (change it there)
 
 ## 5 · Shape and depth
 
-- `--radius: 10px` — panels, cards, empty states.
-- `--radius-sm: 6px` — buttons, rows, chips, badges.
-- `--shadow` — **one** shadow, for genuinely floating things (dialogs). Depth otherwise
-  comes from the `--panel` → `--panel-2` → `--panel-3` ramp plus a `--line` hairline.
-  **A screen must look right with every shadow removed.**
+- `--radius: 16px` — panels, cards, empty states.
+- `--radius-sm: 8px` — compact rows, chips, badges, inputs.
+- `--radius-pill: 999px` — actions that read as controls, not containers.
+- Glass depth comes from a frosted top edge, a low-opacity internal wash, and a dark outer
+  halo. It should read as a plate lit from behind, never as a generic floating card.
 
 ### Stroke — chrome vs. geometry
 
@@ -226,6 +239,10 @@ If a motion is neither of these, it does not ship.
 **The connection-status dot may pulse** — and it may use `--signal`. It is the single
 element that reports a genuinely live fact (is Ableton talking to us *right now*). It has
 earned the living vocabulary precisely because everything else gave it up.
+
+**A transient loading indicator may rotate while an active request is running.** It must sit
+next to plain-language progress copy, disappear as soon as the request resolves, and respect
+`prefers-reduced-motion`. It describes present work by the app, never the captured session.
 
 ### Tokens
 
@@ -429,8 +446,9 @@ then hold. **Edges must not animate along their own path** — that is `travel`,
 | 2026-07-15 | Initial design system (v1.0) | `/plan-design-review` — dark studio instrument, entity-color system, Bahnschrift/Aptos, the motion tense-rule. |
 | 2026-08-04 | **v2.0 professional redesign** | `/design-consultation`. The v1 look read as playful/consumer, not as a professional record. Two changes: (1) typography → **IBM Plex Sans + Mono**, bundled — an engineering face that reads like instrumentation; (2) color → **fully monochrome**, a graphite ramp plus one signal blue (`--signal`, interactive/now) and one warm moment accent (`--moment`). The entity-color system (track/device/parameter hues) was **retired**; type is now told apart by weight, monospace, and luminance. Motion tense-rule, spacing, layout, component patterns, and voice were kept — they were already right. Chosen direction: "Technical record / the instrument's logbook." |
 | 2026-08-25 | **v2.1 — structure vocabulary (§11)** | The system described rows, and the version graph is not a row. Three rules written for rows were **scoped, not repealed**: the 1px hairline now governs chrome while drawn geometry gets a 3-step stroke scale (§5); single-column now governs reading surfaces while graph surfaces are 2D and horizontally scrollable (§8); "hue does almost nothing" is unchanged for *entities*, and lanes are differentiated by **luminance depth** instead (§11). Monochrome, the retired entity-color system, and the motion tense-rule all hold — the graph draws once and never travels. |
+| 2026-08-26 | **v3.0 — midnight glass atmosphere** | The utility-first graphite system had become flat, not calm. Introduced a cool midnight canvas, sparse architectural light, transparent glass panels, frosted edges, restrained depth gradients, and violet as the functional signal. Information hierarchy, IBM Plex, the producer vocabulary, and the past-tense motion rule remain. |
+| 2026-08-27 | **v3.1 — instrument discipline** | Removed remaining category-rainbow canvas treatment and generic warm emphasis, reserved full pills for status/chips, and made historical playback and momentum surfaces static. The only persistent motion left in the product is the connected Ableton status. |
 
-*Next: retire the ~100 remaining `var(--track|--device|--parameter|…)` alias call sites in
-favour of the type-based differentiation in §2, then delete the alias tokens. For v2.1, add
-the §5 stroke scale and the §11 lane ramp (`--lane-0…3`, `--radius-node`) to
-`src/styles/tokens.css` before building the version graph.*
+*Next: validate the hierarchy against a few real, dense projects and decide whether wider
+history maps need a sixth visible lane before older lines fold. That is a producer workflow
+decision, not a styling default.*

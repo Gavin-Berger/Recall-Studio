@@ -133,7 +133,7 @@ function TrackTooltip({ active, payload }: TooltipContentProps) {
         ))}
       </div>
       <span>{countLabel(track.sourceEventCount, "change")} · {countLabel(track.actionCount, "hands-on move")}</span>
-      <small>Click to see every change on this track</small>
+      <small>Click to see work changes on this track</small>
     </div>
   );
 }
@@ -451,7 +451,7 @@ export function InteractiveReportChart({
               <Area
                 type="monotone"
                 dataKey="total"
-                name="Changes captured"
+                name="Work changes"
                 stroke="#6498fb"
                 strokeWidth={2.5}
                 fill="url(#report-activity-fill)"

@@ -12,10 +12,12 @@ import {
   describeBridgeSet,
   formatSessionDate,
   formatSessionDuration,
+  formatSpan,
   preferredCaptureTitle,
   preferredProjectReportSession,
 } from "../sessionFormat";
 import { RelinkDialog, type AlsFileChoice } from "./RelinkDialog";
+import { sittings, type Sitting } from "./sittings";
 import { ReportIcon } from "./ReportIcons";
 import { detectTakeMismatch } from "./takeMismatch";
 import type {
@@ -41,7 +43,7 @@ type ProjectManagerScreenProps = {
   onNewTake: (projectId?: string | null) => Promise<void>;
   onEndTake: () => Promise<void>;
   onOpenTimeline: (sessionId: string) => void;
-  onOpenRecap: (sessionId: string) => void;
+  onOpenRecap: (sessionId: string, scope?: "sitting" | "project") => void;
   onRenameProject: (projectId: string, displayName: string) => Promise<void>;
   onArchiveProject: (projectId: string) => Promise<void>;
   onRenameCapture: (sessionId: string, captureName: string) => Promise<void>;
@@ -151,6 +153,15 @@ export function ProjectManagerScreen({
       : unassignedSessions;
     return [...list].sort((a, b) => b.started_at_ms - a.started_at_ms);
   }, [unassignedSessions, trimmedQuery]);
+
+  // Loose takes get the same reading as filed ones: a duration measured to the
+  // last thing Recall saw, and a work count folded across a capture Recall
+  // split from the one before it. Keyed by the capture that opens the sitting,
+  // which is the row this list draws.
+  const looseSittings = useMemo(() => {
+    const found = sittings(unassignedSessions);
+    return new Map(found.sittings.map((sitting) => [sitting.id, sitting]));
+  }, [unassignedSessions]);
 
   const displayedProjects = visibleProjects.slice(0, projectLimit);
   const remainingProjectCount = Math.max(visibleProjects.length - displayedProjects.length, 0);
@@ -313,8 +324,10 @@ export function ProjectManagerScreen({
               <button
                 type="button"
                 className="home-action home-action--report"
-                title={`Open the producer report for ${captureName(reportSession)}`}
-                onClick={() => onOpenRecap(reportSession.id)}
+                title={`Open the producer report for every sitting in ${
+                  reportSession.project_name ?? "this project"
+                }`}
+                onClick={() => onOpenRecap(reportSession.id, "project")}
               >
                 <ReportIcon name="overview" />
                 {reportSession.ended_at_ms === null ? "Open Live Report" : "Open Report"}
@@ -540,6 +553,7 @@ export function ProjectManagerScreen({
                 <TakeRow
                   key={session.id}
                   session={session}
+                  sitting={looseSittings.get(session.id) ?? null}
                   projects={projects}
                   activeSessionId={activeSessionId}
                   selectedSessionId={selectedSessionId}
@@ -642,7 +656,7 @@ function ProjectRow({
   onOpenVersions: (projectId: string) => void;
   onNewTake: (projectId?: string | null) => Promise<void>;
   onOpenTimeline: (sessionId: string) => void;
-  onOpenRecap: (sessionId: string) => void;
+  onOpenRecap: (sessionId: string, scope?: "sitting" | "project") => void;
   onRenameProject: (projectId: string, displayName: string) => Promise<void>;
   onArchiveProject: (projectId: string) => Promise<void>;
   onRenameCapture: (sessionId: string, captureName: string) => Promise<void>;
@@ -656,10 +670,28 @@ function ProjectRow({
   const hasTakes = project.captures.length > 0;
   const recording = project.active_capture_count > 0;
 
-  const takes = useMemo(
-    () => [...project.captures].sort((a, b) => b.started_at_ms - a.started_at_ms),
+  // What a producer sees here is SITTINGS, not captures.
+  //
+  // A capture starts and stops for Recall's reasons — a reconnect, a rotation —
+  // so this list was showing nine rows for about five evenings, two of them
+  // reading "0 moments" because Live was opened and nothing happened, and two
+  // claiming over an hour of work that was three seconds and four minutes.
+  // `sittings` is the one place that rule lives; see sittings.ts.
+  //
+  // Versions found on disk are not sittings and stay as they were: nobody sat
+  // through them, and the row says so in its own words.
+  const { sittings: worked, recordedNothing } = useMemo(
+    () => sittings(project.captures),
     [project.captures],
   );
+  const takes = useMemo(() => {
+    const scanned = project.captures.filter((capture) => capture.take_origin === "scanned");
+    const rows: { session: SavedSessionMetadata; sitting: Sitting | null; startMs: number }[] = [
+      ...scanned.map((session) => ({ session, sitting: null, startMs: session.started_at_ms })),
+      ...worked.map((sitting) => ({ session: sitting.first, sitting, startMs: sitting.startMs })),
+    ];
+    return rows.sort((a, b) => b.startMs - a.startMs);
+  }, [project.captures, worked]);
   const reportTake = preferredProjectReportSession(project.captures);
 
   function handleArchive() {
@@ -739,8 +771,12 @@ function ProjectRow({
               className="px-btn px-btn--report"
               disabled={busy}
               aria-label={`Read ${project.display_name}'s report`}
-              title={`Read the saved report for ${captureName(reportTake)}`}
-              onClick={() => onOpenRecap(reportTake.id)}
+              // Opens the PROJECT, every set and every sitting in it. It used
+              // to open `preferredProjectReportSession` — the single most
+              // active capture underneath the folder — which looked like a
+              // project report and was one evening of one set.
+              title={`Read the report for every sitting in ${project.display_name}`}
+              onClick={() => onOpenRecap(reportTake.id, "project")}
             >
               <ReportIcon name="overview" />
               Report
@@ -830,10 +866,11 @@ function ProjectRow({
       {expanded && (
         <div className="px-takes">
           {hasTakes ? (
-            takes.map((session) => (
+            takes.map(({ session, sitting }) => (
               <TakeRow
                 key={session.id}
                 session={session}
+                sitting={sitting}
                 projects={projects}
                 activeSessionId={activeSessionId}
                 selectedSessionId={selectedSessionId}
@@ -851,6 +888,17 @@ function ProjectRow({
           ) : (
             <p className="px-takes__empty">No takes recorded yet.</p>
           )}
+          {/* Said once, quietly, rather than given a row each. A capture that
+              recorded nothing is a fact about Recall watching, not about the
+              producer working — and nine rows where two say "0 moments" reads
+              as two evenings that went nowhere. */}
+          {recordedNothing > 0 && (
+            <p className="px-takes__nothing">
+              {recordedNothing === 1
+                ? "1 more time this set was open, Recall saw nothing you did."
+                : `${recordedNothing} more times this set was open, Recall saw nothing you did.`}
+            </p>
+          )}
         </div>
       )}
     </div>
@@ -859,6 +907,7 @@ function ProjectRow({
 
 function TakeRow({
   session,
+  sitting,
   projects,
   activeSessionId,
   selectedSessionId,
@@ -873,12 +922,14 @@ function TakeRow({
   runAction,
 }: {
   session: SavedSessionMetadata;
+  /** The sitting this row stands for, or null for a version found on disk. */
+  sitting: Sitting | null;
   projects: SavedProject[];
   activeSessionId: string | null;
   selectedSessionId: string | null;
   busy: boolean;
   onOpenTimeline: (sessionId: string) => void;
-  onOpenRecap: (sessionId: string) => void;
+  onOpenRecap: (sessionId: string, scope?: "sitting" | "project") => void;
   onRenameCapture: (sessionId: string, captureName: string) => Promise<void>;
   onMoveCapture: (sessionId: string, projectId: string | null) => Promise<void>;
   onDeleteCapture: (sessionId: string) => Promise<void>;
@@ -931,9 +982,14 @@ function TakeRow({
           <span className="px-take__meta">
             {formatSessionDate(session.started_at_ms)}
             {" · "}
-            {formatSessionDuration(session)}
+            {/* Measured to the last thing Recall saw, not to the moment it
+                stopped watching — see formatSpan. */}
+            {isActive || !sitting
+              ? formatSessionDuration(session)
+              : formatSpan(sitting.startMs, sitting.endMs)}
             {" · "}
-            {session.creative_event_count} {countLabel(session.creative_event_count, "moment")}
+            {sitting ? sitting.work : session.creative_event_count}{" "}
+            {countLabel(sitting ? sitting.work : session.creative_event_count, "moment")}
             {isActive ? " · live" : ""}
           </span>
         )}

@@ -249,7 +249,7 @@
 
 .brief-state {
   flex-shrink: 0;
-  font-size: 10.5px;
+  font-size: var(--t-micro);
   letter-spacing: 0.05em;
   text-transform: uppercase;
   padding: 2px 7px;

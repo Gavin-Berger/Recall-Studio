@@ -266,6 +266,18 @@ describe("ProjectHistoryScreen · the loaded panel", () => {
     expect(within(steps).getAllByRole("listitem").length).toBeGreaterThan(0);
   });
 
+  it("lets the clock say when, without restating it as a gap", async () => {
+    // Each step already carries its own time, and the steps read in order, so
+    // "1m later" under 8:16 PM beneath 8:15 PM says the same thing twice in two
+    // units — on every row of a list that is nothing but rows.
+    renderScreen();
+    const steps = await screen.findByLabelText("What happened, in order");
+
+    expect(within(steps).queryByText(/\d+[mhd] later/)).not.toBeInTheDocument();
+    // The times themselves stay: removing the noise must not remove the fact.
+    expect(within(steps).getAllByText(/\d?\d:\d\d/).length).toBeGreaterThan(0);
+  });
+
   it("shows where a control was left, not just that it moved", async () => {
     renderScreen();
     const steps = await screen.findByLabelText("What happened, in order");

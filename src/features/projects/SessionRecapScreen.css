@@ -116,12 +116,20 @@
   color: var(--signal-soft);
 }
 
+/* The title's column is `minmax(0, 1fr)` and this one is `auto`, so whatever
+   the widest <select> option says decides how much room the title gets. A
+   dropdown once carried a whole sentence and left the set name rendering as
+   "Breaki…". Options are short now, and this caps the column as well: the
+   name of the thing the report is about outranks the controls for changing
+   which thing that is. */
 .session-report__header-tools {
   display: flex;
-  align-items: center;
+  align-items: flex-end;
   justify-content: flex-end;
   flex-wrap: nowrap;
   gap: var(--s2);
+  max-width: none;
+  min-width: 0;
 }
 
 .session-report__take-picker,
@@ -141,9 +149,23 @@
   text-transform: uppercase;
 }
 
+.session-report__take-picker,
+.report-ledger__toolbar label {
+  min-width: 0;
+}
+
+.session-report__take-picker {
+  flex: 0 1 220px;
+}
+
 .session-report__take-picker select,
 .report-ledger__toolbar select {
-  min-width: 210px;
+  /* Was 210px, which is wider than any option now says and was part of what
+     pushed the title out. Wide enough to hit (§9), free to shrink below that
+     rather than taking room from the title. */
+  min-width: 140px;
+  max-width: 100%;
+  text-overflow: ellipsis;
   height: 38px;
   padding: 0 var(--s3);
   border: 1px solid var(--line);
@@ -2882,17 +2904,27 @@
 .report-loading {
   display: grid;
   place-items: center;
-  min-height: 104px;
-  padding: var(--s3) 0;
+  min-height: clamp(120px, 9vw, 168px);
+  padding: var(--s4) 0;
   color: var(--paper);
+}
+
+.session-report__take-picker select {
+  width: 100%;
 }
 
 .report-loading__status-line {
   display: grid;
-  width: 28px;
-  height: 28px;
+  width: clamp(32px, 2.2vw, 42px);
+  height: clamp(32px, 2.2vw, 42px);
   place-items: center;
   justify-self: center;
+}
+
+.report-loading__spinner {
+  width: 100%;
+  height: 100%;
+  border-width: 3px;
 }
 
 .report-loading.is-compact {
@@ -2900,6 +2932,7 @@
   padding: var(--s2) 0;
 }
 
+.report-loading.is-compact .report-loading__status-line,
 .report-loading.is-compact .report-loading__spinner {
   width: 14px;
   height: 14px;

@@ -2609,7 +2609,16 @@ export function SchemaTimeline({
                                       ? "Sample inserted"
                                       : "Clip added"
                             }</b></span>
-                            <span className="tl-ci__val">{lead.assetName ?? lead.clipName ?? "Untitled clip"}</span>
+                            {/* A description, not a title (issue #12): most clips
+                                in Live are never named, and "Untitled clip" reads
+                                as one the producer could go and find. */}
+                            <span className="tl-ci__val">{
+                              lead.assetName
+                                ?? lead.clipName
+                                ?? (lead.eventType === "midi_clip_created" || lead.eventType === "midi_clip_recorded"
+                                  ? "MIDI clip"
+                                  : "audio clip")
+                            }</span>
                           </span>
                           <span className="tl-ci__when">{when}</span>
                         </li>

@@ -623,6 +623,10 @@
   border-top: var(--stroke-hair) solid var(--line-soft);
 }
 
+.ph-contents__group {
+  min-width: 0;
+}
+
 .ph-contents__quiet {
   margin: var(--s3) 0 0;
   padding-top: var(--s3);
@@ -630,10 +634,6 @@
   color: var(--muted);
   font-size: var(--t-meta);
   max-width: 62ch;
-}
-
-.ph-contents__group {
-  min-width: 0;
 }
 
 .ph-contents__head {
@@ -947,12 +947,6 @@ button.ph-contents__more:focus-visible {
   font-size: var(--t-micro);
   color: var(--faint-aa);
   font-variant-numeric: tabular-nums;
-}
-
-/* A pause worth naming. Quieter than the clock it sits under: the time is the
-   fact, the gap is the colour. */
-.ph-step__gap {
-  color: var(--muted);
 }
 
 .ph-step__body {

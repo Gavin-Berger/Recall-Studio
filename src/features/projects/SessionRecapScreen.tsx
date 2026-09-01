@@ -9,6 +9,7 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
 } from "react";
 import { createPortal } from "react-dom";
+import { sittingCaptureIds, projectCaptureIds } from "./sittings";
 import "./SessionRecapScreen.css";
 import {
   getNoteEdits,
@@ -32,6 +33,7 @@ import { formatSessionDate, preferredCaptureTitle } from "../sessionFormat";
 import { createPlannerTask } from "../planner/api";
 import { localDateKey } from "../planner/planner";
 import { LoadingSpinner } from "../../components/LoadingSpinner";
+import { ReportLoading } from "./ReportLoading";
 import {
   buildVersionReport,
   compareSessionReports,
@@ -62,6 +64,14 @@ const TrackConstellation = lazy(() => import("./TrackConstellation").then((modul
 type SessionRecapScreenProps = {
   sessionId: string | null;
   sessions: SavedSessionMetadata[];
+  /**
+   * What the report covers when it opens, decided by where it was opened FROM.
+   *
+   * A producer clicking Report on a project means the project; clicking it on
+   * one row means that row. Making them land somewhere generic and then hunt
+   * for a scope control is how the same click came to mean two things.
+   */
+  openScope?: "sitting" | "version" | "project";
   onSelectSession: (sessionId: string) => void;
   onOpenTimeline: (sessionId: string) => void;
   onOpenProjects: () => void;
@@ -69,7 +79,17 @@ type SessionRecapScreenProps = {
 
 type LoadState = "idle" | "loading" | "ready" | "error";
 type ReportTab = "summary" | "chapters" | "work" | "changes" | "compare";
-type ReportScope = "capture" | "version";
+/**
+ * What one report covers.
+ *
+ * A CAPTURE is not on this list on purpose. It is Recall's bookkeeping — a
+ * capture starts and stops when the bridge reconnects or a rotation fires, and
+ * one evening routinely spans two of them. Offering "this capture" asked the
+ * producer to choose between two halves of their own evening without telling
+ * them the halves existed, and a report opened from a folded row would have
+ * covered only the first half while the row it came from counted both.
+ */
+type ReportScope = "sitting" | "version" | "project";
 type EvidenceRequest = { title: string; subtitle?: string; ids: string[] };
 
 /**
@@ -105,13 +125,6 @@ async function loadCapture(sessionId: string): Promise<SessionReportInput> {
   return { session, schema, changes, noteEdits, clipEvents, moments };
 }
 
-/**
- * Read one version — every sitting captured against its `.als`, as one report.
- *
- * A version may contain several captures (app restarts, long breaks, reopening
- * the set). The caller chooses whether to read one capture or that full span;
- * opening a node from History always starts with the exact capture selected.
- */
 async function loadVersion(sessionIds: string[]): Promise<SessionReport> {
   if (import.meta.env.DEV && sessionIds.some(isReportPreviewSession)) {
     return buildReportPreview(sessionIds[0]!);
@@ -136,16 +149,20 @@ function sessionLabel(session: SavedSessionMetadata): string {
  * checkpoints as though they were readable versions. A version now reports its
  * own span and how many sittings went into it.
  */
+/**
+ * A version picker names versions. That is all it does.
+ *
+ * It used to print name + total events + how many sittings + the date, which is
+ * a sentence: "Breaking Point v2 mixdown · 2,506 captured events across 7
+ * sittings · Aug 19, 2026". A <select> sizes itself to its widest option, and
+ * the header lays out as [title | tools] with the tools sized `auto` — so that
+ * sentence set the width of the whole right-hand column and squeezed the title
+ * beside it down to "Breaki…". The counts it carried are on screen anyway, in
+ * the line under the title, where they are read rather than measured against.
+ */
 function versionPickerLabel(version: ProjectVersion): string {
-  const sittings = versionSittingCount(version);
-  if (sittings === 0) return `${version.name} · opened, nothing captured yet`;
-
-  const events = countLabel(version.eventCount, "captured event");
-  const across = sittings === 1 ? "one sitting" : `${sittings} sittings`;
-  // The date is the part that was missing. Two rows an hour apart on the clock
-  // can be a week apart in the project.
-  const when = formatSessionDate(version.lastUpdatedAtMs);
-  return `${version.name} · ${events} across ${across} · ${when}`;
+  if (versionSittingCount(version) === 0) return `${version.name} · nothing captured yet`;
+  return version.name;
 }
 
 function formatMetric(value: number | null | undefined): string {
@@ -316,6 +333,7 @@ function evidenceInRange(report: SessionReport, startMs: number, endMs: number):
 export function SessionRecapScreen({
   sessionId,
   sessions,
+  openScope = "sitting",
   onSelectSession,
   onOpenTimeline,
   onOpenProjects,
@@ -324,7 +342,7 @@ export function SessionRecapScreen({
   const [status, setStatus] = useState<LoadState>("idle");
   const [error, setError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<ReportTab>("summary");
-  const [reportScope, setReportScope] = useState<ReportScope>("capture");
+  const [reportScope, setReportScope] = useState<ReportScope>(openScope);
   const [evidenceRequest, setEvidenceRequest] = useState<EvidenceRequest | null>(null);
   const [baselineId, setBaselineId] = useState<string | null>(null);
   const [baselineReport, setBaselineReport] = useState<SessionReport | null>(null);
@@ -358,14 +376,32 @@ export function SessionRecapScreen({
   // those are different things and how one .als ended up with five rows.
   const versions = useMemo(() => projectVersions(projectSessions), [projectSessions]);
   const activeVersion = useMemo(() => versionForSession(versions, sessionId), [versions, sessionId]);
+  // Which captures the open sitting was split across, worked out from the same
+  // one place the project list uses so a row and the report it opens can never
+  // disagree about what an evening was.
+  const sittingIds = useMemo(
+    () => sittingCaptureIds(projectSessions, sessionId ?? null),
+    [projectSessions, sessionId],
+  );
+  const projectIds = useMemo(() => projectCaptureIds(projectSessions), [projectSessions]);
+  // A scope only earns a place in the list when it covers MORE than the one
+  // below it. A project with one set would otherwise offer "every set" as a
+  // third way to ask for the same report.
+  const projectScopeAdds = projectIds.length > (activeVersion ? versionSessionsToRead(activeVersion).length : 0);
   const reportSessions = useMemo(
     () => {
       if (!fallbackSession) return [];
-      return reportScope === "version" && activeVersion
-        ? versionSessionsToRead(activeVersion)
-        : [fallbackSession];
+      if (reportScope === "project") {
+        const everySet = projectSessions.filter((session) => projectIds.includes(session.id));
+        if (everySet.length > 0) return everySet;
+      }
+      if (reportScope === "version" && activeVersion) return versionSessionsToRead(activeVersion);
+      // Every capture the sitting was split across, not just the one clicked.
+      const inSitting = projectSessions.filter((session) => sittingIds.includes(session.id));
+      if (inSitting.length > 0) return inSitting;
+      return [fallbackSession];
     },
-    [fallbackSession, reportScope, activeVersion],
+    [fallbackSession, reportScope, activeVersion, sittingIds, projectIds, projectSessions],
   );
   const reportSessionIds = useMemo(() => reportSessions.map((session) => session.id), [reportSessions]);
   // Keyed on the ids themselves: adding a sitting to the selected version must
@@ -388,8 +424,8 @@ export function SessionRecapScreen({
   // earlier "all sittings" choice into a different node and silently change
   // the total the user is trying to inspect.
   useEffect(() => {
-    setReportScope("capture");
-  }, [sessionId]);
+    setReportScope(openScope);
+  }, [sessionId, openScope]);
 
   useEffect(() => {
     if (!sessionId || reportSessionIds.length === 0) {
@@ -557,44 +593,48 @@ export function SessionRecapScreen({
         .filter((item): item is ReportEvidence => Boolean(item))
         .sort((a, b) => a.atMs - b.atMs)
     : [];
-  // Was recomputed on every render — two Sets over every decision plus two
-  // filters — including renders caused by opening the evidence drawer.
   const comparison = useMemo(
     () => (report && baselineReport ? compareSessionReports(report, baselineReport) : null),
     [report, baselineReport],
   );
   const activeStepIndex = Math.max(0, REPORT_TABS.findIndex((tab) => tab.id === activeTab));
   const activeStep = REPORT_TABS[activeStepIndex];
+
   // How far the rendered report is behind what capture has recorded. Shown
   // rather than silently absorbed, because a stale report that looks current is
   // the failure mode this refresh threshold introduces.
   const pendingChanges = report
     ? Math.max(0, scopedEventCount - renderedEventCountRef.current)
     : 0;
-  const renderedEventCount = report?.session.events.length ?? scopedEventCount;
-  const sittingCount = reportScope === "version" && activeVersion ? versionSittingCount(activeVersion) : 1;
   const reportTitle = reportScope === "version" && activeVersion
     ? activeVersion.name
     : sessionLabel(fallbackSession);
-  const scopeLabel = sittingCount === 1
-    ? `${countLabel(renderedEventCount, "captured event")} in this sitting`
-    : `${sittingCount} sittings · ${countLabel(renderedEventCount, "captured event")}`;
+  // The header carried three numbers and two dates: the raw event count for
+  // this scope, the version's total across all sittings, and the date on each.
+  // One number, in the noun the project list already uses for it — a producer
+  // moving between the two surfaces should not have to work out whether
+  // "captured events" and "moments" are the same thing. (They are; see #22.)
+  const scopeWork = reportSessions.reduce(
+    (total, session) => total + session.creative_event_count,
+    0,
+  );
+  const scopeLabel = countLabel(scopeWork, "moment");
   // Once a scope is open, quote the same raw list the report is rendering.
   // Metadata is still the only honest preview of the *other* scope until it
   // is read, but the selected scope must never print an older poll total next
   // to the report's current event total.
-  const captureScopeEventCount = reportScope === "capture" && report
-    ? report.session.events.length
-    : fallbackSession.event_count;
-  const versionScopeEventCount = reportScope === "version" && report
-    ? report.session.events.length
-    : activeVersion?.eventCount ?? 0;
 
   return (
     <div className="session-report">
       <header className="session-report__header">
         <div className="session-report__identity">
-          <span className="eyebrow">{reportScope === "version" ? "Version report" : "Capture report"}</span>
+          <span className="eyebrow">
+            {reportScope === "project"
+              ? "Every set"
+              : reportScope === "version"
+                ? "Every sitting"
+                : "One sitting"}
+          </span>
           <h1>{reportTitle}</h1>
           <div className="session-report__context">
             <span>{formatSessionDate(reportScope === "version" ? activeVersion?.startedAtMs ?? fallbackSession.started_at_ms : fallbackSession.started_at_ms)}</span>
@@ -616,16 +656,15 @@ export function SessionRecapScreen({
                 onChange={(event) => setReportScope(event.target.value as ReportScope)}
                 aria-label="Report scope"
               >
-                <option value="capture">This capture · {countLabel(captureScopeEventCount, "event")}</option>
-                <option value="version">All {versionSittingCount(activeVersion)} sittings · {countLabel(versionScopeEventCount, "event")}</option>
+                <option value="sitting">This sitting</option>
+                <option value="version">Every sitting in this set</option>
+                {projectScopeAdds && <option value="project">Every set in this project</option>}
               </select>
             </label>
           )}
           {versions.length > 1 && (
             <label className="session-report__take-picker">
               <span>Version</span>
-              {/* Selecting a version selects its most recent recorded sitting,
-                  because the rest of the app still addresses captures by id. */}
               <select
                 value={activeVersion?.id ?? ""}
                 onChange={(event) => {
@@ -681,7 +720,6 @@ export function SessionRecapScreen({
             </div>
           )}
 
-          {/* How much to trust everything below, stated before any of it. */}
           <div className={`session-report__trust is-${report.trust.level}`}>
             <span className="session-report__trust-mark" aria-hidden="true"><ReportIcon name="evidence" /></span>
             <strong>{report.trust.label}</strong>
@@ -715,9 +753,6 @@ export function SessionRecapScreen({
             role="tabpanel"
             aria-labelledby={`report-tab-${activeTab}`}
           >
-            {/* Whatever step the reader lands on, it opens by saying which
-                question it answers. Six unlabelled panels of dense numbers was
-                the thing that made this page hard to read. */}
             <p className="session-report__question">
               <b>Step {activeStepIndex + 1} of {REPORT_TABS.length}</b>
               {activeStep?.question}
@@ -728,7 +763,7 @@ export function SessionRecapScreen({
             {activeTab === "changes" && <ChangesStep report={report} onInspect={openEvidence} />}
             {activeTab === "compare" && (
               <ComparisonStep
-                captureOnly={reportScope === "capture"}
+                captureOnly={reportScope === "sitting"}
                 baselineCandidates={baselineCandidates}
                 baselineId={baselineId}
                 baselineReport={baselineReport}
@@ -2028,21 +2063,6 @@ function CloseIcon() {
   );
 }
 
-export function ReportLoading({ compact = false }: { compact?: boolean }) {
-  return (
-    <section
-      className={`report-loading ${compact ? "is-compact" : ""}`}
-      role="status"
-      aria-live="polite"
-      aria-label={compact ? "Loading report detail" : "Building session report"}
-    >
-      <span className="report-loading__status-line">
-        <LoadingSpinner className="report-loading__spinner" />
-      </span>
-    </section>
-  );
-}
-
 function ReportEmpty({ title, body }: { title: string; body: string }) {
   return <div className="report-empty"><span aria-hidden="true" /><strong>{title}</strong><p>{body}</p></div>;
 }
@@ -2057,3 +2077,5 @@ function TimelineIcon() {
     </svg>
   );
 }
+
+export { ReportLoading };

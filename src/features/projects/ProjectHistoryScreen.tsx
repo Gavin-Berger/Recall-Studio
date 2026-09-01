@@ -38,11 +38,7 @@ import {
 import { commitRacks, RACK_CONTENTS_LIMIT, type CommitRack } from "./commitRacks";
 import { wayBack, type WayBack } from "./wayBack";
 import { WayBackPanel } from "./WayBackPanel";
-import {
-  describeGap as describeStepGap,
-  sessionSteps,
-  type SessionStep,
-} from "./sessionSteps";
+import { sessionSteps, type SessionStep } from "./sessionSteps";
 import {
   commitDiff,
   diffHeadline,
@@ -180,12 +176,12 @@ function Steps({ steps }: { steps: SessionStep[] }) {
       <ol className="ph-steps__list">
         {steps.map((step) => (
           <li key={step.id} className="ph-step">
-            <span className="ph-step__when">
-              {formatClock(step.startMs)}
-              {step.gapBeforeMs !== null && step.gapBeforeMs > 0 && (
-                <span className="ph-step__gap">{describeStepGap(step.gapBeforeMs)}</span>
-              )}
-            </span>
+            {/* The clock is the fact. "1m later" beside 8:16 PM under 8:15 PM
+                restates what the two timestamps already say, in a second unit,
+                on every row — and a step list is nothing but rows. The gap is
+                still carried on the step for anything that needs it; it just
+                does not need saying here. */}
+            <span className="ph-step__when">{formatClock(step.startMs)}</span>
             <span className="ph-step__body">
               <span className="ph-step__title">
                 {step.title}

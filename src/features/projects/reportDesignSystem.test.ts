@@ -142,3 +142,88 @@ describe("report page · the accent points at the data", () => {
     expect(value).toMatch(/font-variant-numeric:\s*proportional-nums/);
   });
 });
+
+// ── The same floor, everywhere else (issue #18) ────────────────────────────
+//
+// The report page was brought to the floor first and guarded above, which left
+// 226 declarations below 11px in the rest of the app — 143 of them in the
+// timeline alone, the smallest at 8px. DESIGN.md §1 puts the reader at a dim
+// desk at 1am next to Live; an 8px label is not readable there, which is the
+// entire use case.
+//
+// The guard is widened rather than duplicated, so there is one definition of
+// the floor and no stylesheet can be added outside it.
+const APP_STYLESHEETS = [
+  "../../styles/components.css",
+  "../../components/schema/SchemaTimeline.css",
+  "../planner/PlannerScreen.css",
+  "./ProjectBriefingScreen.css",
+  "./ProjectHistoryScreen.css",
+  "./VersionGraphView.css",
+  "./VersionTimelineScreen.css",
+];
+
+describe("the whole app · DESIGN.md §3 type floor", () => {
+  it.each(APP_STYLESHEETS)("sets no type below the 11px floor in %s", (relative) => {
+    const sheet = readFileSync(fileURLToPath(new URL(relative, import.meta.url)), "utf8")
+      .replace(/\/\*[\s\S]*?\*\//g, "");
+
+    // Reported as file-relative "0.58rem -> 9.28px" strings so a failure names
+    // the value to fix rather than only a count.
+    const offenders: string[] = [];
+    for (const match of sheet.matchAll(/font-size:\s*(\d*\.?\d+)(rem|px)/g)) {
+      const px = match[2] === "rem" ? Number(match[1]) * 16 : Number(match[1]);
+      if (px < 11) offenders.push(`${match[1]}${match[2]} -> ${px}px`);
+    }
+    expect(offenders).toEqual([]);
+  });
+});
+
+describe("version timeline · producer-readable work trail", () => {
+  const timeline = readFileSync(
+    fileURLToPath(new URL("./VersionTimelineScreen.css", import.meta.url)),
+    "utf8",
+  ).replace(/\/\*[\s\S]*?\*\//g, "");
+
+  function rule(selector: string): string {
+    const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    return timeline.match(new RegExp(`${escaped}\\s*\\{[^}]*\\}`))?.[0] ?? "";
+  }
+
+  it("makes every movement card's subject and result readable body text", () => {
+    expect(rule(".vt-movement-card__head h4")).toMatch(/color:\s*var\(--paper-strong\)/);
+    expect(rule(".vt-movement-card__head h4")).toMatch(/font-size:\s*var\(--t-body\)/);
+    expect(rule(".vt-movement-card__facts dd")).toMatch(/color:\s*var\(--paper-strong\)/);
+    expect(rule(".vt-movement-card__facts dd")).toMatch(/font-size:\s*var\(--t-meta\)/);
+  });
+
+  it("lays track, result, and movement count out as labelled facts", () => {
+    const facts = rule(".vt-movement-card__facts");
+    expect(facts).toMatch(/display:\s*grid/);
+    expect(facts).toMatch(/grid-template-columns:/);
+    expect(timeline).toMatch(/\.vt-movement-card__facts dt[\s\S]*?color:\s*var\(--muted\)/);
+  });
+
+  it("separates song position and expandable raw evidence from the result", () => {
+    const positions = rule(".vt-movement-card__positions");
+    expect(positions).toMatch(/border-top:/);
+    expect(positions).toMatch(/grid-template-columns:/);
+    expect(rule(".vt-movement-card__evidence > ol")).toMatch(/display:\s*grid/);
+    expect(rule(".vt-movement-card__evidence-detail")).toMatch(/font-size:\s*var\(--t-meta\)/);
+  });
+
+  it("draws MIDI before and after on one shared pitch scale", () => {
+    expect(rule(".vt-midi-scale__row")).toMatch(/display:\s*grid/);
+    expect(rule(".vt-midi-scale__lane")).toMatch(/repeating-linear-gradient/);
+    expect(rule(".vt-midi-scale__bar.is-before")).toMatch(/border:/);
+    expect(rule(".vt-midi-scale__bar.is-after")).toMatch(/background:\s*var\(--paper-strong\)/);
+  });
+
+  it("draws exact MIDI notes across pitch and beat when the snapshot exists", () => {
+    expect(rule(".vt-midi-pattern__row")).toMatch(/display:\s*grid/);
+    expect(rule(".vt-midi-pattern__row svg")).toMatch(/height:\s*88px/);
+    expect(rule(".vt-midi-pattern rect.is-before")).toMatch(/stroke:\s*var\(--muted\)/);
+    expect(rule(".vt-midi-pattern rect.is-after")).toMatch(/fill:\s*var\(--paper-strong\)/);
+    expect(rule(".vt-midi-note-list li")).toMatch(/flex-wrap:\s*wrap/);
+  });
+});

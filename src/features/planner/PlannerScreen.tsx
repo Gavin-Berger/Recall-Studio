@@ -3,13 +3,12 @@ import { createPortal } from "react-dom";
 import type { PlannerTask, PlannerTaskInput, PlannerTaskType, SavedProject } from "../../types";
 import { organizerRepository, type NativeProject } from "../organizer/repository";
 import { createPlannerTask, deletePlannerTask, listPlannerTasks, updatePlannerTask } from "./api";
-import { LoadingSpinner } from "../../components/LoadingSpinner";
 import {
   calendarDays,
   connectedCalendarItems,
   connectedItemsForDate,
+  dateFromKey,
   formatPlannerDate,
-  isPastDue,
   localDateKey,
   monthStart,
   moveMonth,
@@ -61,14 +60,6 @@ function CalendarIcon() {
   );
 }
 
-function CheckIcon() {
-  return (
-    <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
-      <path d="m5 12 4.2 4L19 6.5" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  );
-}
-
 function PlusIcon() {
   return (
     <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
@@ -86,38 +77,10 @@ function PencilIcon() {
   );
 }
 
-function MoreIcon() {
-  return (
-    <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true">
-      <circle cx="5" cy="12" r="1.6" />
-      <circle cx="12" cy="12" r="1.6" />
-      <circle cx="19" cy="12" r="1.6" />
-    </svg>
-  );
-}
-
 function ArrowIcon({ direction }: { direction: "previous" | "next" }) {
   return (
     <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.9" aria-hidden="true">
       <path d={direction === "previous" ? "m14.5 5-7 7 7 7" : "m9.5 5 7 7-7 7"} strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  );
-}
-
-function ReleaseIcon() {
-  return (
-    <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
-      <path d="M12 3.5 14.6 9l5.9.8-4.3 4.1 1 5.8-5.2-2.8-5.2 2.8 1-5.8-4.3-4.1 5.9-.8L12 3.5Z" strokeLinejoin="round" />
-    </svg>
-  );
-}
-
-function CaptureIcon() {
-  return (
-    <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
-      <circle cx="12" cy="12" r="8.5" />
-      <circle cx="12" cy="12" r="2.6" />
-      <path d="M4 8.5h3M17 8.5h3M4 15.5h3M17 15.5h3" strokeLinecap="round" />
     </svg>
   );
 }
@@ -137,8 +100,8 @@ export function PlannerScreen({ projects, onOpenOrganizer, onOpenTimeline }: Pla
   const [form, setForm] = useState<TaskForm>(() => blankForm(today));
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editorOpen, setEditorOpen] = useState(false);
-  const [openTaskMenuId, setOpenTaskMenuId] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
+  const [timelinePrompt, setTimelinePrompt] = useState<{ title: string; sessionId: string } | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -151,24 +114,38 @@ export function PlannerScreen({ projects, onOpenOrganizer, onOpenTimeline }: Pla
     [organizerProjects, projects],
   );
   const days = useMemo(() => calendarDays(visibleMonth), [visibleMonth]);
-  const selectedTasks = useMemo(() => tasksForDate(tasks, selectedDate), [tasks, selectedDate]);
-  const selectedConnectedItems = useMemo(
-    () => connectedItemsForDate(connectedItems, selectedDate),
-    [connectedItems, selectedDate],
+  const selectedTask = useMemo(
+    () => tasks.find((task) => task.id === selectedTaskId) ?? null,
+    [selectedTaskId, tasks],
   );
-  const dayTitle = formatPlannerDate(selectedDate);
-  const todayTasks = useMemo(() => tasksForDate(tasks, today).filter((task) => !task.completed), [tasks, today]);
-  const nextSevenDays = useMemo(() => {
-    const end = new Date();
-    end.setDate(end.getDate() + 7);
-    const endKey = localDateKey(end);
-    return tasks.filter((task) => !task.completed && task.due_date >= today && task.due_date <= endKey).length;
-  }, [tasks, today]);
-  const completedCount = useMemo(() => tasks.filter((task) => task.completed).length, [tasks]);
-  const releaseCount = useMemo(
-    () => connectedItems.filter((item) => item.kind === "release").length,
-    [connectedItems],
-  );
+  const selectedWeek = useMemo(() => {
+    const weekStart = dateFromKey(selectedDate);
+    weekStart.setDate(weekStart.getDate() - weekStart.getDay());
+    const entries = Array.from({ length: 7 }, (_, offset) => {
+      const date = new Date(weekStart);
+      date.setDate(weekStart.getDate() + offset);
+      const dateKey = localDateKey(date);
+      const planned = tasksForDate(tasks, dateKey);
+      const connected = connectedItemsForDate(connectedItems, dateKey);
+      return {
+        date,
+        dateKey,
+        planned,
+        sessions: connected.filter((item) => item.kind === "capture"),
+        releases: connected.filter((item) => item.kind === "release"),
+      };
+    });
+    return {
+      entries,
+      label: `${formatPlannerDate(entries[0].dateKey, { month: "short", day: "numeric" })} – ${formatPlannerDate(entries[6].dateKey, { month: "short", day: "numeric" })}`,
+      planned: entries.reduce((count, entry) => count + entry.planned.filter((task) => !task.completed).length, 0),
+      sessions: entries.reduce((count, entry) => count + entry.sessions.length, 0),
+      releases: entries.reduce((count, entry) => count + entry.releases.length, 0),
+      plannedItems: entries.flatMap((entry) => entry.planned.filter((task) => !task.completed).map((task) => ({ task, dateKey: entry.dateKey }))),
+      sessionItems: entries.flatMap((entry) => entry.sessions.map((session) => ({ session, dateKey: entry.dateKey }))),
+      releaseItems: entries.flatMap((entry) => entry.releases.map((release) => ({ release, dateKey: entry.dateKey }))),
+    };
+  }, [connectedItems, selectedDate, tasks]);
 
   useEffect(() => {
     let mounted = true;
@@ -179,9 +156,6 @@ export function PlannerScreen({ projects, onOpenOrganizer, onOpenTimeline }: Pla
       .catch((loadError) => {
         if (mounted) setError(String(loadError));
       })
-      .finally(() => {
-        if (mounted) setLoading(false);
-      });
     return () => {
       mounted = false;
     };
@@ -189,9 +163,14 @@ export function PlannerScreen({ projects, onOpenOrganizer, onOpenTimeline }: Pla
 
   useEffect(() => {
     function closeWithEscape(event: KeyboardEvent) {
-      if (event.key === "Escape" && openTaskMenuId) {
+      if (event.key === "Escape" && timelinePrompt) {
         event.preventDefault();
-        setOpenTaskMenuId(null);
+        setTimelinePrompt(null);
+        return;
+      }
+      if (event.key === "Escape" && selectedTaskId) {
+        event.preventDefault();
+        setSelectedTaskId(null);
         return;
       }
       if (event.key === "Escape" && editorOpen) {
@@ -201,7 +180,7 @@ export function PlannerScreen({ projects, onOpenOrganizer, onOpenTimeline }: Pla
     }
     window.addEventListener("keydown", closeWithEscape);
     return () => window.removeEventListener("keydown", closeWithEscape);
-  }, [editorOpen, openTaskMenuId]);
+  }, [editorOpen, selectedTaskId, timelinePrompt]);
 
   useEffect(() => {
     let mounted = true;
@@ -227,7 +206,6 @@ export function PlannerScreen({ projects, onOpenOrganizer, onOpenTimeline }: Pla
 
   function startNewTask() {
     setEditingId(null);
-    setOpenTaskMenuId(null);
     setError(null);
     setForm(blankForm(selectedDate));
     setEditorOpen(true);
@@ -235,7 +213,7 @@ export function PlannerScreen({ projects, onOpenOrganizer, onOpenTimeline }: Pla
 
   function startEditing(task: PlannerTask) {
     setEditingId(task.id);
-    setOpenTaskMenuId(null);
+    setSelectedTaskId(null);
     setError(null);
     setSelectedDate(task.due_date);
     setVisibleMonth(monthStart(new Date(`${task.due_date}T12:00:00`)));
@@ -248,6 +226,16 @@ export function PlannerScreen({ projects, onOpenOrganizer, onOpenTimeline }: Pla
     setError(null);
     setForm(blankForm(selectedDate));
     setEditorOpen(false);
+  }
+
+  function openTaskDetails(task: PlannerTask) {
+    setSelectedDate(task.due_date);
+    setVisibleMonth(monthStart(new Date(`${task.due_date}T12:00:00`)));
+    setSelectedTaskId(task.id);
+  }
+
+  function askToOpenTimeline(title: string, sessionId: string) {
+    setTimelinePrompt({ title, sessionId });
   }
 
   async function saveTask(event: FormEvent<HTMLFormElement>) {
@@ -313,7 +301,7 @@ export function PlannerScreen({ projects, onOpenOrganizer, onOpenTimeline }: Pla
     try {
       await deletePlannerTask(task.id);
       setTasks((current) => current.filter((item) => item.id !== task.id));
-      setOpenTaskMenuId(null);
+      if (selectedTaskId === task.id) setSelectedTaskId(null);
       if (editingId === task.id) cancelEditing();
     } catch (deleteError) {
       setError(String(deleteError));
@@ -332,13 +320,6 @@ export function PlannerScreen({ projects, onOpenOrganizer, onOpenTimeline }: Pla
           <PlusIcon /> Plan a task
         </button>
       </header>
-
-      <section className="planner__summary" aria-label="Planning summary">
-        <div><strong>{todayTasks.length}</strong><span>due today</span></div>
-        <div><strong>{nextSevenDays}</strong><span>next 7 days</span></div>
-        <div><strong>{releaseCount}</strong><span>release dates</span></div>
-        <div><strong>{completedCount}</strong><span>completed</span></div>
-      </section>
 
       {error && <div className="planner__error" role="alert">{error}</div>}
 
@@ -367,18 +348,18 @@ export function PlannerScreen({ projects, onOpenOrganizer, onOpenTimeline }: Pla
               const visibleItems = [
                 ...dayConnectedItems.map((item) => ({
                   id: item.id,
-                  label: item.kind === "release" ? `Release · ${item.title}` : `Worked on · ${item.title}`,
+                  label: item.kind === "release" ? `Release · ${item.title}` : item.title,
                   className: `is-${item.kind}`,
                   onClick: () => {
                     if (item.kind === "release") onOpenOrganizer();
-                    else if (item.session_id) onOpenTimeline(item.session_id);
+                    else if (item.session_id) askToOpenTimeline(item.title, item.session_id);
                   },
                 })),
                 ...dayTasks.map((task) => ({
                   id: task.id,
                   label: task.title,
                   className: `is-${task.task_type} ${task.completed ? "is-done" : ""}`,
-                  onClick: () => selectDate(dateKey),
+                  onClick: () => openTaskDetails(task),
                 })),
               ];
               const inMonth = day.getMonth() === visibleMonth.getMonth();
@@ -405,10 +386,9 @@ export function PlannerScreen({ projects, onOpenOrganizer, onOpenTimeline }: Pla
                     {!inMonth && <span className="planner-day__month" aria-hidden="true">{day.toLocaleDateString(undefined, { month: "short" })}</span>}
                   </button>
                   <div className="planner-day__tasks">
-                    {visibleItems.slice(0, 2).map((item) => (
+                    {visibleItems.map((item) => (
                       <button key={item.id} type="button" className={`planner-day__chip ${item.className}`} onClick={item.onClick} title={item.label}>{item.label}</button>
                     ))}
-                    {visibleItems.length > 2 && <span className="planner-day__more">+{visibleItems.length - 2} more</span>}
                   </div>
                 </article>
               );
@@ -417,90 +397,69 @@ export function PlannerScreen({ projects, onOpenOrganizer, onOpenTimeline }: Pla
         </section>
 
         <aside className="planner__aside">
-          <section className="planner__day-card">
-            <div className="planner__day-card-head">
+          <section className="planner__week-card" aria-label="Week at a glance">
+            <div className="planner__week-head">
               <div>
-                <span className="planner__section-label">Day plan</span>
-                <h2>{dayTitle}</h2>
+                <span className="planner__section-label">Week at a glance</span>
+                <h2>{selectedWeek.label}</h2>
               </div>
-              <button type="button" className="planner__text-btn" onClick={startNewTask}>Add task</button>
+              <span>{selectedWeek.planned} planned</span>
             </div>
-            {selectedConnectedItems.length > 0 && (
-              <section className="planner__connected" aria-label="Connected studio data">
-                <div className="planner__connected-head">
-                  <span>Connected studio data</span>
-                  <small>Auto-synced</small>
-                </div>
-                <ol className="planner__connected-list">
-                  {selectedConnectedItems.map((item) => (
-                    <li key={item.id} className={`planner-connected-item is-${item.kind}`}>
-                      <span className="planner-connected-item__icon">{item.kind === "release" ? <ReleaseIcon /> : <CaptureIcon />}</span>
-                      <button
-                        type="button"
-                        className="planner-connected-item__body"
-                        onClick={() => item.kind === "release" ? onOpenOrganizer() : item.session_id && onOpenTimeline(item.session_id)}
-                        title={item.kind === "release" ? "Open Organizer" : "Open captured timeline"}
-                      >
-                        <span className="planner-connected-item__top">
-                          <strong>{item.kind === "release" ? "Release date" : "Captured work"}</strong>
-                          {item.kind === "capture" && item.timestamp_ms && (
-                            <time>{new Date(item.timestamp_ms).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</time>
-                          )}
-                        </span>
-                        <span>{item.title}</span>
-                        <small>{item.detail}</small>
-                      </button>
-                    </li>
-                  ))}
-                </ol>
-              </section>
-            )}
-            {loading ? (
-              <p className="planner__quiet px-loading-inline" role="status"><LoadingSpinner />Loading your plan…</p>
-            ) : selectedTasks.length === 0 ? (
-              <div className="planner__empty-day">
-                <span>{selectedConnectedItems.length ? "No planned tasks yet." : "No tasks here yet."}</span>
-                <button type="button" onClick={startNewTask}><PlusIcon /> Plan this day</button>
-              </div>
-            ) : (
-              <ol className="planner__tasks">
-                {selectedTasks.map((task) => (
-                  <li key={task.id} className={`planner-task is-${task.task_type} ${task.completed ? "is-complete" : ""} ${isPastDue(task, today) ? "is-overdue" : ""}`}>
-                    <button type="button" className="planner-task__check" onClick={() => void toggleTask(task)} aria-label={`${task.completed ? "Reopen" : "Complete"} ${task.title}`} title={task.completed ? "Mark incomplete" : "Mark complete"}>
-                      {task.completed && <CheckIcon />}
-                    </button>
-                    <div className="planner-task__body">
-                      <span className="planner-task__top"><strong>{task.title}</strong>{task.due_time && <time>{task.due_time}</time>}</span>
-                      <span className="planner-task__meta"><span>{TASK_TYPE_LABEL[task.task_type]}</span>{task.project_id && projectNames.get(task.project_id) && <span>{projectNames.get(task.project_id)}</span>}</span>
-                      {task.notes && <span className="planner-task__notes">{task.notes}</span>}
-                    </div>
-                    <div className="planner-task__actions">
-                      <button type="button" className="planner-task__edit" onClick={() => startEditing(task)} aria-label={`Edit ${task.title}`} title="Edit task">
-                        <PencilIcon />
-                      </button>
-                      <div className="planner-task__overflow">
-                        <button
-                          type="button"
-                          className="planner-task__more"
-                          onClick={() => setOpenTaskMenuId((current) => current === task.id ? null : task.id)}
-                          aria-label={`More options for ${task.title}`}
-                          aria-expanded={openTaskMenuId === task.id}
-                          title="More task options"
-                        >
-                          <MoreIcon />
+            <div className="planner__week-summary">
+              <div><strong>{selectedWeek.planned}</strong><span>planned</span></div>
+              <div><strong>{selectedWeek.sessions}</strong><span>studio captures</span></div>
+              <div><strong>{selectedWeek.releases}</strong><span>releases</span></div>
+            </div>
+            <div className="planner__week-work">
+              {selectedWeek.plannedItems.length > 0 && (
+                <section aria-labelledby="planner-week-planned-title">
+                  <h3 id="planner-week-planned-title">Your next moves</h3>
+                  <ol>
+                    {selectedWeek.plannedItems.map(({ task, dateKey }) => (
+                      <li key={task.id}>
+                        <button type="button" onClick={() => openTaskDetails(task)}>
+                          <time dateTime={dateKey}>{formatPlannerDate(dateKey, { weekday: "short", month: "short", day: "numeric" })}</time>
+                          <span>{task.title}</span>
                         </button>
-                        {openTaskMenuId === task.id && (
-                          <div className="planner-task__menu" role="menu" aria-label={`${task.title} options`}>
-                            <button type="button" role="menuitem" onClick={() => startEditing(task)}>Edit task</button>
-                            <button type="button" role="menuitem" className="is-danger" onClick={() => void removeTask(task)}>Remove task</button>
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  </li>
-                ))}
-              </ol>
-            )}
+                      </li>
+                    ))}
+                  </ol>
+                </section>
+              )}
+              {selectedWeek.sessionItems.length > 0 && (
+                <section aria-labelledby="planner-week-captures-title">
+                  <h3 id="planner-week-captures-title">What Recall captured</h3>
+                  <ol>
+                    {selectedWeek.sessionItems.map(({ session, dateKey }) => (
+                      <li key={session.id}>
+                        <button type="button" onClick={() => session.session_id && askToOpenTimeline(session.title, session.session_id)} disabled={!session.session_id}>
+                          <time dateTime={dateKey}>{formatPlannerDate(dateKey, { weekday: "short", month: "short", day: "numeric" })}</time>
+                          <span>{session.title}</span>
+                        </button>
+                      </li>
+                    ))}
+                  </ol>
+                </section>
+              )}
+              {selectedWeek.releaseItems.length > 0 && (
+                <section aria-labelledby="planner-week-releases-title">
+                  <h3 id="planner-week-releases-title">Release dates</h3>
+                  <ol>
+                    {selectedWeek.releaseItems.map(({ release, dateKey }) => (
+                      <li key={release.id}>
+                        <button type="button" onClick={onOpenOrganizer}>
+                          <time dateTime={dateKey}>{formatPlannerDate(dateKey, { weekday: "short", month: "short", day: "numeric" })}</time>
+                          <span>{release.title}</span>
+                        </button>
+                      </li>
+                    ))}
+                  </ol>
+                </section>
+              )}
+              {selectedWeek.plannedItems.length === 0 && selectedWeek.sessionItems.length === 0 && selectedWeek.releaseItems.length === 0 && (
+                <p>Nothing is scheduled or captured in this week yet.</p>
+              )}
+            </div>
           </section>
 
           {editorOpen && createPortal(
@@ -548,12 +507,77 @@ export function PlannerScreen({ projects, onOpenOrganizer, onOpenTimeline }: Pla
                 </label>
               </div>
               <label>
-                <span>Notes <em>optional</em></span>
-                <textarea value={form.notes} onChange={(event) => setForm((current) => ({ ...current, notes: event.target.value }))} placeholder="What does done look like?" rows={3} maxLength={4000} />
+                <span>Notes &amp; comments <em>optional</em></span>
+                <textarea value={form.notes} onChange={(event) => setForm((current) => ({ ...current, notes: event.target.value }))} placeholder="Context, notes, or a handoff for the next session" rows={3} maxLength={4000} />
               </label>
               <button type="submit" className="planner__primary" disabled={saving}>{saving ? "Saving…" : editingId ? "Save changes" : "Add to plan"}</button>
             </form>
             </section>
+            </>
+          , document.body)}
+
+          {selectedTask && createPortal(
+            <>
+              <div className="planner-dialog__backdrop" aria-hidden="true" onMouseDown={() => setSelectedTaskId(null)} />
+              <section className="planner-task-detail planner-dialog" role="dialog" aria-modal="true" aria-labelledby="planner-task-detail-title">
+                <header className="planner-task-detail__head">
+                  <div>
+                    <span className="planner__section-label">Task details</span>
+                    <h2 id="planner-task-detail-title">{selectedTask.title}</h2>
+                    <p>{selectedTask.completed ? "Completed" : "Planned"} · {TASK_TYPE_LABEL[selectedTask.task_type]}</p>
+                  </div>
+                  <button type="button" className="planner-dialog__close" onClick={() => setSelectedTaskId(null)} aria-label="Close task details" title="Close task details · Esc">&times;</button>
+                </header>
+                <div className="planner-task-detail__content">
+                  <dl className="planner-task-detail__facts">
+                    <div>
+                      <dt>What</dt>
+                      <dd>{selectedTask.title}<small>{TASK_TYPE_LABEL[selectedTask.task_type]}</small></dd>
+                    </div>
+                    <div>
+                      <dt>When</dt>
+                      <dd><time dateTime={selectedTask.due_date}>{formatPlannerDate(selectedTask.due_date, { weekday: "long", month: "long", day: "numeric", year: "numeric" })}</time><small>{selectedTask.due_time ? `At ${selectedTask.due_time}` : "No time set"}</small></dd>
+                    </div>
+                    <div>
+                      <dt>Where</dt>
+                      <dd>{selectedTask.project_id && projectNames.get(selectedTask.project_id) ? projectNames.get(selectedTask.project_id) : "Not linked to a project"}<small>Studio planner</small></dd>
+                    </div>
+                  </dl>
+                  <section className="planner-task-detail__notes" aria-label="Notes and comments">
+                    <span>Notes &amp; comments</span>
+                    <p>{selectedTask.notes || "No notes or comments have been added yet."}</p>
+                  </section>
+                </div>
+                <footer className="planner-task-detail__actions">
+                  <button type="button" className="planner__text-btn is-danger" onClick={() => void removeTask(selectedTask)}>Remove task</button>
+                  <button type="button" className="planner__text-btn" onClick={() => void toggleTask(selectedTask)}>{selectedTask.completed ? "Mark incomplete" : "Mark complete"}</button>
+                  <button type="button" className="planner__primary" onClick={() => startEditing(selectedTask)}><PencilIcon /> Edit task</button>
+                </footer>
+              </section>
+            </>
+          , document.body)}
+
+          {timelinePrompt && createPortal(
+            <>
+              <div className="planner-dialog__backdrop" aria-hidden="true" onMouseDown={() => setTimelinePrompt(null)} />
+              <section className="planner-timeline-prompt planner-dialog" role="dialog" aria-modal="true" aria-labelledby="planner-timeline-prompt-title">
+                <div className="planner-task-detail__head">
+                  <div>
+                    <span className="planner__section-label">Studio capture</span>
+                    <h2 id="planner-timeline-prompt-title">See the time you spent?</h2>
+                    <p>Open the Timeline to review this session.</p>
+                  </div>
+                  <button type="button" className="planner-dialog__close" onClick={() => setTimelinePrompt(null)} aria-label="Close session prompt" title="Close · Esc">&times;</button>
+                </div>
+                <div className="planner-timeline-prompt__content">
+                  <strong>{timelinePrompt.title}</strong>
+                  <p>Would you like to see how long you worked on this and review what Recall captured?</p>
+                </div>
+                <footer className="planner-task-detail__actions">
+                  <button type="button" className="planner__text-btn" onClick={() => setTimelinePrompt(null)}>Not now</button>
+                  <button type="button" className="planner__primary" onClick={() => { onOpenTimeline(timelinePrompt.sessionId); setTimelinePrompt(null); }}>Open Timeline</button>
+                </footer>
+              </section>
             </>
           , document.body)}
         </aside>

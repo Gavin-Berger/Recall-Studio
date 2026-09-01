@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { save } from "@tauri-apps/plugin-dialog";
 import { writeTextFile } from "../../lib/schema/api";
 import { LoadingSpinner } from "../../components/LoadingSpinner";
+import type { SavedProject } from "../../types/recall";
+import { projectVersions } from "../projects/projectVersions";
 
 // A producer notebook: free-form documents that live outside any one session or
 // take — lyric ideas, mix checklists, reference notes, arrangement plans. One
@@ -15,6 +17,8 @@ export type NoteDoc = {
   id: string;
   title: string;
   body: string;
+  /** Notes stay free-form unless the producer explicitly links one to a project. */
+  project_id?: string | null;
   created_at_ms: number;
   updated_at_ms: number;
 };
@@ -33,7 +37,8 @@ function loadNotes(): NoteDoc[] {
         typeof note === "object" &&
         note !== null &&
         typeof note.id === "string" &&
-        typeof note.body === "string",
+        typeof note.body === "string" &&
+        (note.project_id === undefined || note.project_id === null || typeof note.project_id === "string"),
     );
   } catch {
     return [];
@@ -62,7 +67,12 @@ function wordCount(text: string): number {
   return words.length;
 }
 
-export function NotesScreen() {
+type NotesScreenProps = {
+  projects?: SavedProject[];
+  onOpenTimeline?: (projectId: string) => void;
+};
+
+export function NotesScreen({ projects = [], onOpenTimeline }: NotesScreenProps) {
   const [notes, setNotes] = useState<NoteDoc[]>(loadNotes);
   const [selectedId, setSelectedId] = useState<string | null>(() => loadNotes()[0]?.id ?? null);
   const [query, setQuery] = useState("");
@@ -108,7 +118,7 @@ export function NotesScreen() {
   }, []);
 
   const updateSelected = useCallback(
-    (patch: Partial<Pick<NoteDoc, "title" | "body">>) => {
+    (patch: Partial<Pick<NoteDoc, "title" | "body" | "project_id">>) => {
       if (!selected) return;
       const now = Date.now();
       setNotes((prev) =>
@@ -126,6 +136,7 @@ export function NotesScreen() {
       id: `note-${now}`,
       title: "",
       body: "",
+      project_id: null,
       created_at_ms: now,
       updated_at_ms: now,
     };
@@ -163,6 +174,20 @@ export function NotesScreen() {
       setExportError(String(error));
     }
   }
+
+  const linkedProject = selected?.project_id
+    ? projects.find((project) => project.id === selected.project_id) ?? null
+    : null;
+  const linkedVersions = useMemo(
+    () => linkedProject ? projectVersions(linkedProject.captures) : [],
+    [linkedProject],
+  );
+  const latestVersion = linkedVersions.at(-1) ?? null;
+  const recentWork = linkedProject
+    ? [...linkedProject.captures]
+        .sort((left, right) => right.last_updated_at_ms - left.last_updated_at_ms)
+        .slice(0, 3)
+    : [];
 
   return (
     <div className="notes">
@@ -253,26 +278,85 @@ export function NotesScreen() {
 
           {exportError && <p className="notes__error">{exportError}</p>}
 
-          <div className="notes__sheet">
-            <input
-              ref={titleRef}
-              className="notes__title"
-              value={selected.title}
-              placeholder="Untitled note"
-              aria-label="Note title"
-              onChange={(event) => updateSelected({ title: event.target.value })}
-            />
-            <textarea
-              className="notes__body"
-              value={selected.body}
-              placeholder="Write anything — it saves as you type."
-              aria-label="Note body"
-              onChange={(event) => updateSelected({ body: event.target.value })}
-            />
-            <div className="notes__foot">
-              <span>{wordCount(selected.body)} words</span>
-              <span>Started {formatNoteDate(selected.created_at_ms)}</span>
+          <div className="notes__workspace">
+            <div className="notes__sheet">
+              <input
+                ref={titleRef}
+                className="notes__title"
+                value={selected.title}
+                placeholder="Untitled note"
+                aria-label="Note title"
+                onChange={(event) => updateSelected({ title: event.target.value })}
+              />
+              <textarea
+                className="notes__body"
+                value={selected.body}
+                placeholder="Write anything — it saves as you type."
+                aria-label="Note body"
+                onChange={(event) => updateSelected({ body: event.target.value })}
+              />
+              <div className="notes__foot">
+                <span>{wordCount(selected.body)} words</span>
+                <span>Started {formatNoteDate(selected.created_at_ms)}</span>
+              </div>
             </div>
+
+            <aside className="notes__context" aria-label="Note context">
+              <section className="notes__context-card">
+                <span className="eyebrow">Linked project</span>
+                <label className="notes__context-picker">
+                  <span className="sr-only">Linked project</span>
+                  <select
+                    value={selected.project_id ?? ""}
+                    onChange={(event) => updateSelected({ project_id: event.target.value || null })}
+                    aria-label="Linked project"
+                  >
+                    <option value="">Not linked</option>
+                    {projects.map((project) => <option key={project.id} value={project.id}>{project.display_name}</option>)}
+                  </select>
+                </label>
+                {linkedProject ? (
+                  <>
+                    <p className="notes__context-project">{linkedProject.display_name}</p>
+                    <p className="notes__context-copy">
+                      {latestVersion
+                        ? `${latestVersion.name}.als · ${latestVersion.creativeEventCount.toLocaleString()} work events`
+                        : "No captured versions yet."}
+                    </p>
+                    <button
+                      type="button"
+                      className="px-btn notes__context-open"
+                      onClick={() => onOpenTimeline?.(linkedProject.id)}
+                    >
+                      Open Timeline
+                    </button>
+                  </>
+                ) : (
+                  <p className="notes__context-copy">Link a project when this note belongs with a song or release.</p>
+                )}
+              </section>
+
+              {linkedProject && (
+                <section className="notes__context-card">
+                  <span className="eyebrow">Recent work</span>
+                  {recentWork.length > 0 ? (
+                    <ol className="notes__context-work">
+                      {recentWork.map((capture) => (
+                        <li key={capture.id}>
+                          <span>{formatNoteDate(capture.last_updated_at_ms)}</span>
+                          <strong>{capture.creative_event_count.toLocaleString()} work events</strong>
+                        </li>
+                      ))}
+                    </ol>
+                  ) : <p className="notes__context-copy">Nothing captured in this project yet.</p>}
+                </section>
+              )}
+
+              <section className="notes__context-card notes__context-card--quiet">
+                <span className="eyebrow">Notebook</span>
+                <p className="notes__context-copy">Notes save locally as you type.</p>
+              </section>
+            </aside>
           </div>
         </section>
       ) : (

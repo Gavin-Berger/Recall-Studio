@@ -658,10 +658,13 @@ export function ProjectOrganizerScreen({
   const [quickTaskDueDate, setQuickTaskDueDate] = useState(() => localDateKey(new Date()));
   const [quickTaskSaving, setQuickTaskSaving] = useState(false);
   const [quickTaskStatus, setQuickTaskStatus] = useState<string | null>(null);
+  const [quickPlanOpen, setQuickPlanOpen] = useState(false);
+  const [expandedReleaseField, setExpandedReleaseField] = useState<"artist" | "notes" | null>(null);
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const coverInputRef = useRef<HTMLInputElement | null>(null);
+  const artistInputRef = useRef<HTMLInputElement | null>(null);
   const pendingExportTrackId = useRef<string | null>(null);
   const pendingReplaceBounceId = useRef<string | null>(null);
   const pendingExportAutoPlay = useRef(false);
@@ -683,6 +686,13 @@ export function ProjectOrganizerScreen({
     [projects],
   );
   const selected = ordered.find((p) => p.id === selectedId) ?? ordered[0] ?? null;
+  const artistName = selected?.artist.trim() ?? "";
+  const notesSummary = selected?.notes.trim().replace(/\s+/g, " ") ?? "";
+
+  useEffect(() => {
+    setExpandedReleaseField(null);
+  }, [selected?.id]);
+
   const previewTracks = useMemo(
     () => selected ? selectReleasePreviewTracks(selected) : [],
     [selected],
@@ -1271,6 +1281,22 @@ export function ProjectOrganizerScreen({
     }));
   }
 
+  async function showAlsInFolder(alsFile: AlsFile) {
+    setError(null);
+    // The browser fallback has no filesystem to reveal. Make that limitation
+    // explicit instead of leaving a control that appears to do nothing.
+    if (!isTauri()) {
+      setError("Showing an Ableton set in its folder only works in the Recall desktop app.");
+      return;
+    }
+    try {
+      const { revealItemInDir } = await import("@tauri-apps/plugin-opener");
+      await revealItemInDir(alsFile.path);
+    } catch {
+      setError("Couldn't show that Ableton set in its folder. It may have been moved or renamed.");
+    }
+  }
+
   async function startAddExport(trackId: string, playWhenReady = false, replaceBounceId: string | null = null) {
     setExpandedTrackIds((current) => new Set(current).add(trackId));
     if (isTauri()) {
@@ -1798,29 +1824,12 @@ export function ProjectOrganizerScreen({
               aria-label="Project name"
               onChange={(event) => handleRename(event.target.value)}
             />
-            <div className="organizer__detail-actions">
-              <button
-                type="button"
-                className="px-btn"
-                onClick={() => {
-                  setPreviewExportStatus(null);
-                  setPreviewOpen(true);
-                }}
-              >
-                Preview release
-              </button>
-              <button
-                type="button"
-                className="px-btn px-btn--danger"
-                onClick={() => void handleDeleteProject(selected)}
-              >
-                Delete
-              </button>
-            </div>
           </div>
 
           {error && <p className="organizer__error">{error}</p>}
 
+          <div className="organizer__release-desk">
+            <div className="organizer__release-main">
           <div className="organizer__album-head">
             <div className="organizer__cover">
               {selected.coverImageDataUrl ? (
@@ -1838,26 +1847,96 @@ export function ProjectOrganizerScreen({
               </div>
             </div>
             <div className="organizer__album-meta">
-              <div className="organizer__type" role="group" aria-label="Release type">
-                {RELEASE_TYPES.map((type) => (
-                  <button key={type} type="button" className={`organizer__type-btn ${selected.releaseType === type ? "is-active" : ""}`} aria-pressed={selected.releaseType === type} onClick={() => handleSetType(type)}>
-                    {releaseTypeLabel(type)}
-                  </button>
-                ))}
+              <div className="organizer__release-topline">
+                <div className="organizer__type" role="group" aria-label="Release type">
+                  {RELEASE_TYPES.map((type) => (
+                    <button key={type} type="button" className={`organizer__type-btn ${selected.releaseType === type ? "is-active" : ""}`} aria-pressed={selected.releaseType === type} onClick={() => handleSetType(type)}>
+                      {releaseTypeLabel(type)}
+                    </button>
+                  ))}
+                </div>
+
               </div>
 
-              <div className="organizer__project-fields">
-                <label className="organizer__project-field">
-                  <span className="organizer__field-label">Artist</span>
-                  <input
-                    className="organizer__project-input"
-                    value={selected.artist}
-                    placeholder="Artist or alias"
-                    aria-label="Artist"
-                    onChange={(event) => handleSetArtist(event.target.value)}
-                  />
-                </label>
-                <label className="organizer__project-field organizer__project-field--date">
+              <div className="organizer__release-disclosures" aria-label="Release details">
+                <button
+                  type="button"
+                  className={`organizer__release-disclosure ${expandedReleaseField === "artist" ? "is-open" : ""}`}
+                  aria-expanded={expandedReleaseField === "artist"}
+                  aria-controls="release-artist-editor"
+                  onClick={() => {
+                    const opening = expandedReleaseField !== "artist";
+                    setExpandedReleaseField(opening ? "artist" : null);
+                    if (opening) window.setTimeout(() => artistInputRef.current?.focus(), 0);
+                  }}
+                >
+                  <span className="organizer__release-disclosure-label">Artist</span>
+                  <strong>{artistName || "Add artist"}</strong>
+                  <span className="organizer__release-disclosure-chevron" aria-hidden="true">▾</span>
+                </button>
+                <button
+                  type="button"
+                  className={`organizer__release-disclosure ${expandedReleaseField === "notes" ? "is-open" : ""}`}
+                  aria-expanded={expandedReleaseField === "notes"}
+                  aria-controls="release-notes-editor"
+                  onClick={() => setExpandedReleaseField((current) => current === "notes" ? null : "notes")}
+                >
+                  <span className="organizer__release-disclosure-label">Notes</span>
+                  <strong>{notesSummary || "Add notes"}</strong>
+                  <span className="organizer__release-disclosure-chevron" aria-hidden="true">▾</span>
+                </button>
+              </div>
+
+              {expandedReleaseField === "artist" && (
+                <div id="release-artist-editor" className="organizer__release-detail">
+                  <label className="organizer__project-field organizer__project-field--compact">
+                    <span className="organizer__field-label">Artist</span>
+                    <input
+                      ref={artistInputRef}
+                      className="organizer__project-input"
+                      value={selected.artist}
+                      placeholder="Artist or alias"
+                      aria-label="Artist"
+                      onChange={(event) => handleSetArtist(event.target.value)}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter" || event.key === "Escape") setExpandedReleaseField(null);
+                      }}
+                    />
+                  </label>
+                </div>
+              )}
+
+              {expandedReleaseField === "notes" && (
+                <div id="release-notes-editor" className="organizer__release-detail organizer__release-detail--notes">
+                  <label className="organizer__project-field organizer__project-field--notes">
+                    <span className="organizer__field-label">Notes</span>
+                    <textarea
+                      className="organizer__project-notes"
+                      value={selected.notes}
+                      placeholder="The concept, the vibe, the order in your head — what this release is."
+                      aria-label="Project notes"
+                      rows={2}
+                      onChange={(event) => handleSetNotes(event.target.value)}
+                    />
+                  </label>
+                </div>
+              )}
+
+              {releaseStats && (
+                <div className="organizer__release-meta">
+                  <span>{releaseStats.trackCount} track{releaseStats.trackCount === 1 ? "" : "s"}</span>
+                  {releaseStats.completedCount > 0 && <span>{releaseStats.completedCount} final{releaseStats.completedCount === 1 ? "" : "s"} selected</span>}
+                  {releaseStats.completedCount > 0 && <span>{formatTotalDuration(releaseStats.totalSec)}</span>}
+                  {releaseStats.loudnessSpan && <span title="Integrated loudness span across tracks">{releaseStats.loudnessSpan.min.toFixed(1)} to {releaseStats.loudnessSpan.max.toFixed(1)} LUFS</span>}
+                </div>
+              )}
+            </div>
+          </div>
+
+            </div>
+            <div className="organizer__release-rail">
+              <div className="organizer__detail-actions">
+                <label className="organizer__project-field organizer__project-field--date organizer__project-field--date-compact">
                   <span className="organizer__field-label">Release date</span>
                   <input
                     className="organizer__project-input"
@@ -1867,99 +1946,133 @@ export function ProjectOrganizerScreen({
                     onChange={(event) => handleSetReleaseDate(event.target.value)}
                   />
                 </label>
-              </div>
-
-              <label className="organizer__project-field organizer__project-field--notes">
-                <span className="organizer__field-label">Notes</span>
-                <textarea
-                  className="organizer__project-notes"
-                  value={selected.notes}
-                  placeholder="The concept, the vibe, the order in your head — what this release is."
-                  aria-label="Project notes"
-                  rows={2}
-                  onChange={(event) => handleSetNotes(event.target.value)}
-                />
-              </label>
-
-              {releaseStats && (
-                <div className="organizer__release-meta">
-                  <span>{releaseStats.trackCount} track{releaseStats.trackCount === 1 ? "" : "s"}</span>
-                  {releaseStats.completedCount > 0 && <span>{releaseStats.completedCount} mixed</span>}
-                  {releaseStats.completedCount > 0 && <span>{formatTotalDuration(releaseStats.totalSec)}</span>}
-                  {releaseStats.loudnessSpan && <span title="Integrated loudness span across tracks">{releaseStats.loudnessSpan.min.toFixed(1)} to {releaseStats.loudnessSpan.max.toFixed(1)} LUFS</span>}
+                <div className="organizer__release-action-buttons">
+                <button
+                  type="button"
+                  className="px-btn"
+                  onClick={() => {
+                    setPreviewExportStatus(null);
+                    setPreviewOpen(true);
+                  }}
+                >
+                  Preview release
+                </button>
+                <button
+                  type="button"
+                  className="px-btn px-btn--danger"
+                  onClick={() => void handleDeleteProject(selected)}
+                >
+                  Delete
+                </button>
                 </div>
-              )}
+              </div>
+          <section className="organizer__quick-plan" aria-labelledby="quick-plan-title">
+            <div className="organizer__quick-plan-overview">
+              <div className="organizer__quick-plan-overview-head">
+                <div>
+                  <span className="organizer__field-label">Release overview</span>
+                  <strong>Current release</strong>
+                </div>
+                <span>{releaseStats?.trackCount ?? 0} track{releaseStats?.trackCount === 1 ? "" : "s"}</span>
+              </div>
+              <dl>
+                <div>
+                  <dt>Finals</dt>
+                  <dd>{releaseStats?.completedCount ?? 0} selected</dd>
+                </div>
+                <div>
+                  <dt>Duration</dt>
+                  <dd>{releaseStats && releaseStats.completedCount > 0 ? formatTotalDuration(releaseStats.totalSec) : "—"}</dd>
+                </div>
+                <div>
+                  <dt>Delivery</dt>
+                  <dd>{releaseStats && releaseStats.completedCount > 0 ? (releaseStats.formatsMatch ? "Consistent" : "Mismatch") : "—"}</dd>
+                </div>
+              </dl>
             </div>
+            <button
+              type="button"
+              className={`organizer__quick-plan-toggle ${quickPlanOpen ? "is-open" : ""}`}
+              aria-expanded={quickPlanOpen}
+              aria-controls="quick-plan-editor"
+              onClick={() => setQuickPlanOpen((current) => !current)}
+            >
+              <span className="organizer__quick-plan-toggle-copy">
+                <span className="organizer__field-label">Quick task</span>
+                <strong id="quick-plan-title">Plan a task</strong>
+              </span>
+              <span className="organizer__quick-plan-toggle-meta">
+                <span>Studio Planner</span>
+                <span aria-hidden="true">▾</span>
+              </span>
+            </button>
+            {quickPlanOpen && (
+              <div id="quick-plan-editor" className="organizer__quick-plan-body">
+                <p>Recall keeps release details factual. It will never assume a mix or master is needed—you can add those tasks when they are part of your plan.</p>
+                <div className="organizer__quick-plan-actions" aria-label="Quick task actions">
+                  <button
+                    type="button"
+                    disabled={quickTaskSaving}
+                    onClick={() => void addQuickPlannerTask(`Master ${selected.name.trim() || "this release"}`, "master")}
+                  >
+                    Add mastering task
+                  </button>
+                  {selected.tracks.slice(0, 3).map((track, index) => (
+                    <button key={track.id} type="button" disabled={quickTaskSaving} onClick={() => addTrackMixTask(track, index)}>
+                      Add mix task · {track.title.trim() || `Track ${index + 1}`}
+                    </button>
+                  ))}
+                </div>
+                <form
+                  className="organizer__quick-task-form"
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    void addQuickPlannerTask(quickTaskTitle, quickTaskType);
+                  }}
+                >
+                  <input
+                    value={quickTaskTitle}
+                    onChange={(event) => setQuickTaskTitle(event.target.value)}
+                    placeholder="Add your own task"
+                    aria-label="Custom task title"
+                    maxLength={160}
+                    required
+                  />
+                  <select
+                    value={quickTaskType}
+                    onChange={(event) => setQuickTaskType(event.target.value as QuickTaskType)}
+                    aria-label="Custom task work type"
+                  >
+                    <option value="artist">Artist work</option>
+                    <option value="mix">Mixing</option>
+                    <option value="master">Mastering</option>
+                    <option value="admin">Studio admin</option>
+                  </select>
+                  <input
+                    type="date"
+                    value={quickTaskDueDate}
+                    onChange={(event) => setQuickTaskDueDate(event.target.value)}
+                    aria-label="Custom task date"
+                    required
+                  />
+                  <button type="submit" className="px-btn px-btn--primary" disabled={quickTaskSaving || !quickTaskTitle.trim()}>
+                    {quickTaskSaving ? "Adding…" : "Add to planner"}
+                  </button>
+                </form>
+                {quickTaskStatus ? <p className="organizer__quick-task-status" role="status">{quickTaskStatus}</p> : null}
+              </div>
+            )}
+          </section>
+          </div>
           </div>
 
           <div className="organizer__release-workspace">
-          <section className="organizer__quick-plan" aria-labelledby="quick-plan-title">
-            <div className="organizer__quick-plan-head">
-              <div>
-                <span className="organizer__field-label">Quick task</span>
-                <strong id="quick-plan-title">Plan only what you decide needs attention</strong>
-              </div>
-              <span>Studio Planner</span>
-            </div>
-            <p>Recall keeps release details factual. It will never assume a mix or master is needed—you can add those tasks when they are part of your plan.</p>
-            <div className="organizer__quick-plan-actions" aria-label="Quick task actions">
-              <button
-                type="button"
-                disabled={quickTaskSaving}
-                onClick={() => void addQuickPlannerTask(`Master ${selected.name.trim() || "this release"}`, "master")}
-              >
-                Add mastering task
-              </button>
-              {selected.tracks.slice(0, 3).map((track, index) => (
-                <button key={track.id} type="button" disabled={quickTaskSaving} onClick={() => addTrackMixTask(track, index)}>
-                  Add mix task · {track.title.trim() || `Track ${index + 1}`}
-                </button>
-              ))}
-            </div>
-            <form
-              className="organizer__quick-task-form"
-              onSubmit={(event) => {
-                event.preventDefault();
-                void addQuickPlannerTask(quickTaskTitle, quickTaskType);
-              }}
-            >
-              <input
-                value={quickTaskTitle}
-                onChange={(event) => setQuickTaskTitle(event.target.value)}
-                placeholder="Add your own task"
-                aria-label="Custom task title"
-                maxLength={160}
-                required
-              />
-              <select
-                value={quickTaskType}
-                onChange={(event) => setQuickTaskType(event.target.value as QuickTaskType)}
-                aria-label="Custom task work type"
-              >
-                <option value="artist">Artist work</option>
-                <option value="mix">Mixing</option>
-                <option value="master">Mastering</option>
-                <option value="admin">Studio admin</option>
-              </select>
-              <input
-                type="date"
-                value={quickTaskDueDate}
-                onChange={(event) => setQuickTaskDueDate(event.target.value)}
-                aria-label="Custom task date"
-                required
-              />
-              <button type="submit" className="px-btn px-btn--primary" disabled={quickTaskSaving || !quickTaskTitle.trim()}>
-                {quickTaskSaving ? "Adding…" : "Add to planner"}
-              </button>
-            </form>
-            {quickTaskStatus ? <p className="organizer__quick-task-status" role="status">{quickTaskStatus}</p> : null}
-          </section>
 
           {releaseStats && releaseStats.completedCount > 0 && (
             <section className="organizer__mastering-overview" aria-label="Release mastering consistency">
               <div>
                 <span className="organizer__field-label">Release consistency</span>
-                <strong>{releaseStats.completedCount} selected mix{releaseStats.completedCount === 1 ? "" : "es"}</strong>
+                <strong>{releaseStats.completedCount} final{releaseStats.completedCount === 1 ? "" : "s"} selected</strong>
               </div>
               <dl>
                 <div>
@@ -2030,6 +2143,7 @@ export function ProjectOrganizerScreen({
                     </div>
                     <div className="organizer__source-actions">
                       <button type="button" className="px-btn" onClick={() => void handleAddAls(track.id)}>{track.alsFile ? "Change .als" : "Link .als"}</button>
+                      {track.alsFile && <button type="button" className="px-btn" onClick={() => void showAlsInFolder(track.alsFile!)} title={`Show ${track.alsFile.name} in its folder`}>Show in folder</button>}
                       {track.alsFile && <button type="button" className="px-btn px-btn--danger" onClick={() => handleRemoveAls(track.id)}>Unlink</button>}
                     </div>
                   </div>

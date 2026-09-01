@@ -94,7 +94,7 @@
 
 .recall-sidebar__brand > span > span {
   color: var(--paper);
-  font-size: 0.58rem;
+  font-size: var(--t-micro);
   font-weight: 850;
   letter-spacing: 0.16em;
   text-transform: uppercase;
@@ -160,7 +160,7 @@
 }
 
 .recall-sidebar__item-hint {
-  font-size: 0.64rem;
+  font-size: var(--t-micro);
   letter-spacing: 0.04em;
   color: var(--muted);
   opacity: 0.7;
@@ -250,7 +250,7 @@
   border-radius: 50%;
   color: var(--signal-bright);
   background: rgb(var(--signal-rgb) / 0.1);
-  font-size: 0.65rem;
+  font-size: var(--t-micro);
   cursor: pointer;
 }
 
@@ -282,7 +282,7 @@
 
 .organizer-now-playing__identity span {
   color: var(--muted);
-  font-size: 0.58rem;
+  font-size: var(--t-micro);
 }
 
 .organizer-now-playing__timeline {
@@ -318,7 +318,7 @@
 .organizer-now-playing__timeline span {
   color: #9aa3b7;
   font-family: var(--font-mono);
-  font-size: 0.58rem;
+  font-size: var(--t-micro);
   white-space: nowrap;
 }
 
@@ -490,7 +490,7 @@
   border-radius: 7px;
   color: var(--signal-soft);
   background: rgb(var(--signal-rgb) / 0.07);
-  font-size: 0.68rem;
+  font-size: var(--t-micro);
   font-weight: 850;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -679,7 +679,7 @@
   border-radius: 8px;
   color: var(--faint);
   background: rgba(255, 255, 255, 0.032);
-  font-size: 0.68rem;
+  font-size: var(--t-micro);
   font-weight: 830;
   letter-spacing: 0.07em;
   text-transform: uppercase;
@@ -811,7 +811,7 @@
   display: block;
   margin-top: 3px;
   color: var(--faint);
-  font-size: 0.64rem;
+  font-size: var(--t-micro);
   font-weight: 820;
   letter-spacing: 0.07em;
   text-transform: uppercase;
@@ -2041,7 +2041,7 @@
 
 .cheat-chip__count {
   padding: 1px 6px;
-  font-size: 0.66rem;
+  font-size: var(--t-micro);
   font-weight: 800;
   border-radius: 999px;
   background: rgba(0, 0, 0, 0.18);
@@ -2095,7 +2095,7 @@
 
 .cheat-card__category {
   color: var(--muted);
-  font-size: 0.62rem;
+  font-size: var(--t-micro);
   font-weight: 800;
   letter-spacing: 0.1em;
   text-transform: uppercase;
@@ -2139,7 +2139,7 @@
   display: block;
   margin-bottom: 3px;
   color: var(--signal);
-  font-size: 0.62rem;
+  font-size: var(--t-micro);
   font-weight: 800;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -2317,7 +2317,7 @@
   border-bottom: 1px solid rgba(255, 255, 255, 0.07);
   background: rgba(8, 11, 20, 0.4);
   font-family: var(--font-display);
-  font-size: 0.62rem;
+  font-size: var(--t-micro);
   letter-spacing: 0.1em;
   text-transform: uppercase;
   color: #5d647d;
@@ -2378,7 +2378,7 @@
 .project-explorer__more-count {
   color: var(--faint-aa);
   font-family: var(--font-mono);
-  font-size: 0.68rem;
+  font-size: var(--t-micro);
   font-variant-numeric: tabular-nums;
 }
 
@@ -2581,7 +2581,7 @@
   gap: 6px;
   padding: 3px 8px;
   border-radius: 6px;
-  font-size: 0.62rem;
+  font-size: var(--t-micro);
   font-weight: 700;
   letter-spacing: 0.06em;
   text-transform: uppercase;
@@ -2617,7 +2617,7 @@
   border-radius: 6px;
   background: rgb(var(--signal-rgb) / 0.09);
   color: var(--signal-soft);
-  font-size: 0.58rem;
+  font-size: var(--t-micro);
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -2629,7 +2629,7 @@
   max-width: 100%;
   color: #9aa7cb;
   font-family: var(--font-mono);
-  font-size: 0.67rem;
+  font-size: var(--t-micro);
   font-variant-numeric: tabular-nums;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -2741,6 +2741,17 @@
   padding: 10px 14px 10px 52px;
   color: var(--muted);
   font-size: 0.78rem;
+}
+
+/* Said once under the rows, not given a row of its own. A capture that recorded
+   nothing is a fact about Recall watching, and it must not read like a stretch
+   of work that came to nothing. --faint-aa, not --faint: this is under 19px and
+   DESIGN.md bans --faint there. */
+.px-takes__nothing {
+  margin: 0;
+  padding: 6px 14px 10px 52px;
+  color: var(--faint-aa);
+  font-size: 0.72rem;
 }
 
 .px-take {
@@ -2862,7 +2873,7 @@
 }
 
 .relink-dialog__current {
-  font-size: 0.62rem;
+  font-size: var(--t-micro);
   text-transform: uppercase;
   letter-spacing: 0.04em;
   color: var(--faint);
@@ -2887,7 +2898,7 @@
   margin-left: 8px;
   padding: 1px 6px;
   border-radius: 999px;
-  font-size: 0.6rem;
+  font-size: var(--t-micro);
   font-weight: 600;
   letter-spacing: 0.04em;
   text-transform: uppercase;
@@ -3018,7 +3029,7 @@
 .row-menu__label {
   padding: 6px 9px 3px;
   color: #5d647d;
-  font-size: 0.6rem;
+  font-size: var(--t-micro);
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -3308,7 +3319,7 @@
 }
 
 .vr-item__meta {
-  font-size: 0.68rem;
+  font-size: var(--t-micro);
   font-family: var(--font-mono);
   color: var(--faint);
   white-space: nowrap;
@@ -3325,7 +3336,7 @@
   flex-shrink: 0;
   padding: 1px 6px;
   border-radius: 999px;
-  font-size: 0.6rem;
+  font-size: var(--t-micro);
   font-weight: 600;
   letter-spacing: 0.04em;
   text-transform: uppercase;
@@ -3508,7 +3519,7 @@
 .vd-compare-missing__state {
   flex-shrink: 0;
   font-family: var(--font-mono);
-  font-size: 0.68rem;
+  font-size: var(--t-micro);
   color: var(--faint);
 }
 
@@ -3536,7 +3547,7 @@
 }
 
 .vd-stat span {
-  font-size: 0.68rem;
+  font-size: var(--t-micro);
   letter-spacing: 0.04em;
   text-transform: uppercase;
   color: var(--faint);
@@ -3676,7 +3687,7 @@
 }
 
 .vd-file dt {
-  font-size: 0.64rem;
+  font-size: var(--t-micro);
   letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--faint);
@@ -3884,7 +3895,7 @@
 }
 
 .notes__item-meta {
-  font-size: 0.68rem;
+  font-size: var(--t-micro);
   font-family: var(--font-mono);
   color: var(--faint);
   white-space: nowrap;
@@ -3897,6 +3908,8 @@
   flex-direction: column;
   gap: 10px;
   min-width: 0;
+  padding: 14px;
+  container-type: inline-size;
 }
 
 .notes__page-bar {
@@ -3904,7 +3917,7 @@
   align-items: center;
   justify-content: space-between;
   gap: 10px;
-  padding: 0 4px;
+  padding: 0;
 }
 
 .notes__page-actions {
@@ -3914,7 +3927,7 @@
 }
 
 .notes__save {
-  font-size: 0.68rem;
+  font-size: var(--t-micro);
   font-family: var(--font-mono);
   letter-spacing: 0.04em;
   text-transform: uppercase;
@@ -3935,13 +3948,117 @@
   color: #e8a2ac;
 }
 
+/* Context rail: the note stays a calm writing space, while project evidence
+   stays beside it instead of turning the document itself into a dashboard. */
+.notes__workspace {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 250px;
+  align-items: stretch;
+  gap: 14px;
+  min-width: 0;
+}
+
+.notes__context {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+.notes__context-card {
+  padding: 13px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-sm);
+  background: rgb(var(--signal-rgb) / 0.035);
+}
+
+.notes__context-card--quiet { margin-top: auto; }
+
+.notes__context-picker { display: block; margin-top: var(--s2); }
+
+.notes__context-picker select {
+  width: 100%;
+  min-height: 34px;
+  padding: 6px 8px;
+  border: 1px solid var(--glass-edge);
+  border-radius: var(--radius-sm);
+  background: var(--glass-fill);
+  color: var(--paper);
+  font: inherit;
+  font-size: var(--t-meta);
+}
+
+.notes__context-project {
+  margin: var(--s3) 0 var(--s1);
+  color: var(--paper);
+  font-size: var(--t-meta);
+  font-weight: 600;
+}
+
+.notes__context-copy {
+  margin: var(--s2) 0 0;
+  color: var(--muted);
+  font-size: var(--t-meta);
+  line-height: 1.5;
+}
+
+.notes__context-open { width: 100%; margin-top: var(--s3); }
+
+.notes__context-work {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s1);
+  margin: var(--s2) 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.notes__context-work li {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--s2);
+  padding-top: var(--s2);
+  border-top: 1px solid var(--line-soft);
+}
+
+.notes__context-work span {
+  color: var(--faint-aa);
+  font-family: var(--font-mono);
+  font-size: var(--t-micro);
+}
+
+.notes__context-work strong {
+  color: var(--paper);
+  font-size: var(--t-micro);
+  font-weight: 500;
+  text-align: right;
+}
+
+/* The app sidebar and note list both consume desktop width. Switch based on
+   the editor's real container so the context rail never crushes writing. */
+@container (max-width: 760px) {
+  .notes__workspace { grid-template-columns: 1fr; }
+
+  .notes__context {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .notes__context-card--quiet { margin-top: 0; }
+}
+
+@container (max-width: 520px) {
+  .notes__context { grid-template-columns: 1fr; }
+}
+
 /* The writing sheet itself: one calm page, comfortable measure, no chrome. */
 .notes__sheet {
   flex: 1;
   display: flex;
   flex-direction: column;
   width: 100%;
-  max-width: 860px;
+  max-width: none;
   min-height: calc(100vh - 190px);
   padding: 34px 44px 20px;
   border: 1px solid rgba(255, 255, 255, 0.08);
@@ -4004,7 +4121,7 @@
   margin-top: 14px;
   padding-top: 10px;
   border-top: 1px solid rgba(255, 255, 255, 0.05);
-  font-size: 0.68rem;
+  font-size: var(--t-micro);
   font-family: var(--font-mono);
   color: var(--faint);
 }
@@ -4081,6 +4198,21 @@
     min-height: 55vh;
     padding: 24px 26px 16px;
   }
+
+  .notes__workspace {
+    grid-template-columns: 1fr;
+  }
+
+  .notes__context {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .notes__context-card--quiet { margin-top: 0; }
+}
+
+@media (max-width: 700px) {
+  .notes__context { grid-template-columns: 1fr; }
 }
 
 /* Project table: drop the Ableton column, then the Updated column, before the
@@ -4399,7 +4531,7 @@
 }
 
 .organizer__item-meta {
-  font-size: 0.68rem;
+  font-size: var(--t-micro);
   font-family: var(--font-mono);
   color: var(--faint-aa);
   white-space: nowrap;
@@ -4426,9 +4558,50 @@
   }
 }
 
+.organizer__release-desk {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(400px, 420px);
+  align-items: start;
+  gap: 14px;
+}
+
+.organizer__release-main {
+  min-width: 0;
+}
+
+.organizer__release-rail {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  position: sticky;
+  top: 14px;
+  align-self: start;
+}
+
+.organizer__release-rail > .organizer__detail-actions {
+  justify-content: space-between;
+  align-items: flex-end;
+  flex-wrap: wrap;
+}
+
+.organizer__release-rail .organizer__project-field--date-compact {
+  width: 132px;
+  margin-left: 0;
+}
+
+.organizer__release-rail .organizer__project-field--date-compact .organizer__field-label {
+  display: inline;
+}
+
+.organizer__release-action-buttons {
+  display: flex;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
 .organizer__release-workspace {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(280px, 320px);
+  grid-template-columns: minmax(0, 1fr);
   align-items: start;
   gap: 14px;
 }
@@ -4437,11 +4610,10 @@
    viewport. It prevents a 320px Planner from squeezing the track workspace
    merely because the app happens to be on a large display. */
 @container organizer-detail (max-width: 1180px) {
-  .organizer__release-workspace {
+  .organizer__release-desk {
     grid-template-columns: minmax(0, 1fr);
   }
 
-  .organizer__release-workspace > .organizer__quick-plan,
   .organizer__release-workspace > .organizer__mastering-overview,
   .organizer__release-workspace > .organizer__tracklist-head,
   .organizer__release-workspace > .organizer__analyzing--tracklist,
@@ -4451,6 +4623,10 @@
   }
 
   .organizer__quick-plan {
+    position: static;
+  }
+
+  .organizer__release-rail {
     position: static;
   }
 }
@@ -4516,6 +4692,77 @@
   flex-wrap: wrap;
 }
 
+.organizer__release-topline {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+}
+
+.organizer__release-disclosures {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.organizer__release-disclosure {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  max-width: min(100%, 340px);
+  padding: 5px 8px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 6px;
+  background: rgba(15, 18, 29, 0.44);
+  color: var(--paper);
+  font-family: var(--font-body);
+  font-size: 0.76rem;
+  cursor: pointer;
+}
+
+.organizer__release-disclosure:hover,
+.organizer__release-disclosure:focus-visible,
+.organizer__release-disclosure.is-open {
+  border-color: rgb(var(--signal-rgb) / 0.52);
+  background: rgb(var(--signal-rgb) / 0.09);
+  outline: none;
+}
+
+.organizer__release-disclosure-label,
+.organizer__release-disclosure-chevron {
+  flex: 0 0 auto;
+  color: var(--faint-aa);
+  font-family: var(--font-mono);
+  font-size: var(--t-micro);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.organizer__release-disclosure strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.organizer__release-disclosure-chevron {
+  color: rgb(var(--signal-rgb) / 0.82);
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.organizer__release-detail {
+  display: flex;
+  min-width: 0;
+  padding-top: 2px;
+}
+
+.organizer__release-detail--notes {
+  max-width: 760px;
+}
+
 .organizer__project-fields {
   display: flex;
   flex-wrap: wrap;
@@ -4534,8 +4781,30 @@
   flex: 0 0 auto;
 }
 
+.organizer__project-field--date-compact {
+  width: 142px;
+  margin-left: 0;
+}
+
+.organizer__project-field--compact {
+  flex: 0 1 340px;
+}
+
 .organizer__project-field--notes {
   flex: 1 1 100%;
+}
+
+/* When the project list is open, the release header is narrow enough that the
+   artist and date labels are redundant. Keep the useful values on one line
+   instead of dropping the date between the release type and notes. */
+@media (max-width: 1350px) {
+  .organizer__project-field--date-compact .organizer__field-label {
+    display: none;
+  }
+
+  .organizer__project-field--date-compact {
+    width: 138px;
+  }
 }
 
 .organizer__project-input,
@@ -4683,7 +4952,7 @@
 .organizer__volume output {
   color: var(--faint-aa);
   font-family: var(--font-mono);
-  font-size: 0.66rem;
+  font-size: var(--t-micro);
   letter-spacing: 0;
   text-transform: uppercase;
 }
@@ -4997,7 +5266,7 @@
   border-radius: 5px;
   color: var(--signal-soft);
   font-family: var(--font-mono);
-  font-size: 0.66rem;
+  font-size: var(--t-micro);
   text-transform: uppercase;
 }
 
@@ -5009,22 +5278,58 @@
 .organizer__detail-bar {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-start;
+  flex-wrap: wrap;
   gap: 12px;
 }
 
-.organizer__name {
-  flex: 1;
+/* The app-level field chrome applies to every input. The release name is the
+   detail header itself, though, so it must remain text-only rather than becoming
+   a full-width rectangular field that runs into the panel edge. */
+.recall-app .organizer__detail-bar .organizer__name {
+  flex: 0 1 420px;
+  width: min(100%, 420px);
   min-width: 0;
   border: none;
   border-bottom: 1px solid transparent;
   background: transparent;
+  box-shadow: none;
   color: var(--paper-strong);
   font-family: var(--font-display);
   font-size: 1.6rem;
   line-height: 1.2;
-  padding: 2px 0;
+  /* The title is editable, so leave enough breathing room inside the focus
+     outline for the text rather than letting its first glyph hug the edge. */
+  padding: 2px 10px;
   transition: border-color var(--m-settle) var(--ease-arrive);
+}
+
+@container organizer-detail (max-width: 640px) {
+  .recall-app .organizer__detail-bar .organizer__name {
+    flex-basis: 100%;
+  }
+}
+
+/* Keep release-level actions on the right, but only as far as the work column.
+   The adjacent Planner is its own lane, so controls should line up with the
+   tracklist edge rather than jump across that lane to the window edge. */
+@container organizer-detail (min-width: 1181px) {
+  .organizer__detail-bar {
+    width: calc(100% - 334px);
+  }
+
+  .organizer__detail-bar {
+    justify-content: space-between;
+  }
+
+  .recall-app .organizer__detail-bar .organizer__name {
+    flex: 1;
+    width: auto;
+  }
+
+  .organizer__project-field--date-compact {
+    margin-left: auto;
+  }
 }
 
 .organizer__name::placeholder {
@@ -5046,7 +5351,7 @@
 }
 
 .organizer__field-label {
-  font-size: 0.66rem;
+  font-size: var(--t-micro);
   font-family: var(--font-mono);
   letter-spacing: 0.09em;
   text-transform: uppercase;
@@ -5195,7 +5500,7 @@
 }
 
 .organizer__bounce-added {
-  font-size: 0.68rem;
+  font-size: var(--t-micro);
   font-family: var(--font-mono);
   color: var(--faint-aa);
 }
@@ -5243,7 +5548,7 @@
   flex: 0 0 auto;
   color: var(--signal-bright);
   font-family: var(--font-mono);
-  font-size: 0.68rem;
+  font-size: var(--t-micro);
   text-transform: uppercase;
 }
 
@@ -5368,7 +5673,7 @@
   min-width: 72px;
   color: var(--faint-aa);
   font-family: var(--font-mono);
-  font-size: 0.64rem;
+  font-size: var(--t-micro);
   text-align: center;
 }
 
@@ -5478,7 +5783,7 @@
 }
 
 .organizer__stat dt {
-  font-size: 0.62rem;
+  font-size: var(--t-micro);
   font-family: var(--font-mono);
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -5551,7 +5856,7 @@
   color: var(--signal-soft);
   background: rgb(var(--signal-rgb) / 0.09);
   font-family: var(--font-mono);
-  font-size: 0.59rem;
+  font-size: var(--t-micro);
   font-weight: 700;
   letter-spacing: 0.06em;
   text-transform: uppercase;
@@ -5576,7 +5881,7 @@
 
 .organizer__readiness-copy span {
   color: var(--muted);
-  font-size: 0.62rem;
+  font-size: var(--t-micro);
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -5672,7 +5977,7 @@
 
 .organizer__finish-line-list small {
   color: var(--muted);
-  font-size: 0.64rem;
+  font-size: var(--t-micro);
   line-height: 1.35;
 }
 
@@ -5680,7 +5985,7 @@
   margin-top: 1px;
   color: var(--signal-soft);
   font-family: var(--font-mono);
-  font-size: 0.58rem;
+  font-size: var(--t-micro);
   font-weight: 700;
   letter-spacing: 0.04em;
   text-transform: uppercase;
@@ -5697,18 +6002,19 @@
 /* Quick tasks are intentionally opt-in: a personal planning lane alongside the
    release record, not Recall prescribing a mix or master. */
 .organizer__quick-plan {
-  grid-column: 2;
-  grid-row: 1 / span 4;
   min-width: 0;
   position: sticky;
   top: 14px;
   align-self: start;
-  display: grid;
-  gap: 10px;
-  padding: 13px 14px 14px;
+  overflow: hidden;
+  padding: 0;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: rgb(255 255 255 / 0.018);
+}
+
+.organizer__release-rail .organizer__quick-plan {
+  position: static;
 }
 
 /* This must follow the base quick-plan rule so compact detail columns remove
@@ -5728,24 +6034,29 @@
   grid-column: 1;
 }
 
-.organizer__quick-plan-head {
+.organizer__quick-plan-overview {
+  padding: 13px 13px 10px;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.organizer__quick-plan-overview-head {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 14px;
+  gap: 10px;
 }
 
-.organizer__quick-plan-head > div {
+.organizer__quick-plan-overview-head > div {
   display: grid;
   gap: 3px;
 }
 
-.organizer__quick-plan-head strong {
+.organizer__quick-plan-overview-head strong {
   color: var(--paper-strong);
   font-size: 0.81rem;
 }
 
-.organizer__quick-plan-head > span {
+.organizer__quick-plan-overview-head > span {
   flex: 0 0 auto;
   padding: 3px 6px;
   border: 1px solid rgb(var(--signal-rgb) / 0.28);
@@ -5753,15 +6064,102 @@
   color: var(--signal-soft);
   background: rgb(var(--signal-rgb) / 0.07);
   font-family: var(--font-mono);
-  font-size: 0.57rem;
+  font-size: var(--t-micro);
   font-weight: 700;
   letter-spacing: 0.05em;
   text-transform: uppercase;
 }
 
-.organizer__quick-plan > p {
+.organizer__quick-plan-overview dl {
+  display: grid;
+  gap: 7px;
+  margin: 12px 0 0;
+}
+
+.organizer__quick-plan-overview dl > div {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  padding-top: 7px;
+  border-top: 1px solid var(--line-soft);
+}
+
+.organizer__quick-plan-overview dt {
+  color: var(--muted);
+  font-size: var(--t-meta);
+}
+
+.organizer__quick-plan-overview dd {
+  margin: 0;
+  color: var(--paper);
+  font-family: var(--font-mono);
+  font-size: var(--t-meta);
+}
+
+.organizer__quick-plan-toggle {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 12px 13px;
+  border: 0;
+  background: transparent;
+  color: var(--paper);
+  cursor: pointer;
+  text-align: left;
+}
+
+.organizer__quick-plan-toggle:hover,
+.organizer__quick-plan-toggle:focus-visible,
+.organizer__quick-plan-toggle.is-open {
+  background: rgb(var(--signal-rgb) / 0.06);
+  outline: none;
+}
+
+.organizer__quick-plan-toggle-copy {
+  display: grid;
+  gap: 3px;
+}
+
+.organizer__quick-plan-toggle strong {
+  color: var(--paper-strong);
+  font-size: 0.81rem;
+}
+
+.organizer__quick-plan-toggle-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  padding: 3px 6px;
+  border: 1px solid rgb(var(--signal-rgb) / 0.28);
+  border-radius: 999px;
+  color: var(--signal-soft);
+  background: rgb(var(--signal-rgb) / 0.07);
+  font-family: var(--font-mono);
+  font-size: var(--t-micro);
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.organizer__quick-plan-toggle.is-open .organizer__quick-plan-toggle-meta > span:last-child {
+  transform: rotate(180deg);
+}
+
+.organizer__quick-plan-body {
+  display: grid;
+  gap: 10px;
+  padding: 0 13px 13px;
+  border-top: 1px solid var(--line-soft);
+}
+
+.organizer__quick-plan-body > p {
   max-width: 760px;
-  margin: -2px 0 0;
+  margin: 0;
+  padding-top: 10px;
   color: var(--muted);
   font-size: 0.7rem;
   line-height: 1.45;
@@ -5782,7 +6180,7 @@
   background: rgb(var(--signal-rgb) / 0.055);
   cursor: pointer;
   font: inherit;
-  font-size: 0.66rem;
+  font-size: var(--t-micro);
   font-weight: 680;
 }
 
@@ -5841,7 +6239,7 @@
 .organizer__quick-task-status {
   margin: -3px 0 0;
   color: var(--signal-soft);
-  font-size: 0.67rem;
+  font-size: var(--t-micro);
 }
 
 .organizer__mix-profile {
@@ -5882,7 +6280,7 @@
 .organizer__mix-profile-labels {
   color: var(--faint-aa);
   font-family: var(--font-mono);
-  font-size: 0.66rem;
+  font-size: var(--t-micro);
   letter-spacing: 0.045em;
   text-transform: uppercase;
 }
@@ -5891,7 +6289,7 @@
   display: block;
   margin-top: 3px;
   color: var(--faint);
-  font-size: 0.61rem;
+  font-size: var(--t-micro);
   font-style: normal;
   letter-spacing: 0;
   text-transform: none;
@@ -5909,7 +6307,7 @@
 
 .organizer__mix-profile-version i {
   color: var(--signal-soft);
-  font-size: 0.6rem;
+  font-size: var(--t-micro);
   font-style: normal;
   text-transform: uppercase;
 }
@@ -5976,7 +6374,7 @@
     content: attr(data-metric);
     color: var(--faint-aa);
     font-family: var(--font-mono);
-    font-size: 0.61rem;
+    font-size: var(--t-micro);
     letter-spacing: 0.035em;
     text-transform: uppercase;
   }
@@ -5987,7 +6385,9 @@
   grid-template-columns: minmax(150px, 0.7fr) minmax(0, 3fr);
   gap: 18px;
   align-items: center;
-  padding: 12px 0;
+  /* Match the title's inset so the release summary does not start against the
+     section edge when the first metric is short, such as “1 selected mix”. */
+  padding: 12px 10px;
   border-top: 1px solid rgba(255, 255, 255, 0.08);
   border-bottom: 1px solid rgba(255, 255, 255, 0.08);
 }
@@ -6124,7 +6524,7 @@
 .organizer__streaming-preview small {
   display: block;
   margin-top: 9px;
-  font-size: 0.64rem;
+  font-size: var(--t-micro);
   line-height: 1.35;
 }
 
@@ -6328,7 +6728,7 @@
 .release-preview__identity > span {
   color: var(--faint-aa);
   font-family: var(--font-mono);
-  font-size: 0.66rem;
+  font-size: var(--t-micro);
   font-weight: 750;
   text-transform: uppercase;
 }
@@ -6554,7 +6954,7 @@
   .organizer__mix-profile-meter b {
     display: block;
     margin-top: 3px;
-    font-size: 0.64rem;
+    font-size: var(--t-micro);
   }
 
   .organizer__cover {
@@ -7240,7 +7640,7 @@
   flex: 1 1 auto;
   gap: 4px;
   color: var(--faint-aa);
-  font-size: 0.64rem;
+  font-size: var(--t-micro);
   letter-spacing: 0.08em;
   text-transform: uppercase;
 }
@@ -7331,7 +7731,7 @@
   background: rgba(255, 255, 255, 0.045);
   color: var(--paper);
   font-family: var(--font-mono);
-  font-size: 0.64rem;
+  font-size: var(--t-micro);
   text-align: center;
 }
 
@@ -7507,7 +7907,7 @@
 .app-error-boundary__eyebrow {
   margin: 0 0 8px;
   color: var(--danger);
-  font-size: 0.68rem;
+  font-size: var(--t-micro);
   font-weight: 800;
   letter-spacing: 0.12em;
   text-transform: uppercase;

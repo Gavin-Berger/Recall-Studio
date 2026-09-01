@@ -4,15 +4,17 @@ import { RecallMark } from "./RecallMark";
 // The milestone surfaces: project management, a project's version memory, a recap
 // for the selected capture, the project's version history, the release organizer,
 // the producer notebook, and the producer reference. "versions" and "briefing"
-// are drill-ins under Projects, so they share the Projects nav item; "workspace"
-// is a drill-in under Timeline and shares its.
+// are drill-ins under Projects, so they share the Projects nav item.
+//
+// There is no "workspace" surface any more. The per-capture SchemaTimeline is
+// still in the tree but is not routed to from anywhere — it is stashed, not
+// deleted, until the version graph is doing its job.
 export type AppSurface =
   | "projects"
   | "briefing"
   | "versions"
   | "recap"
   | "timeline"
-  | "workspace"
   | "organizer"
   | "planner"
   | "notes"
@@ -44,7 +46,6 @@ type AppShellProps = {
   versions: ReactNode;
   recap: ReactNode;
   timeline: ReactNode;
-  workspace: ReactNode;
   organizer: ReactNode;
   planner: ReactNode;
   notes: ReactNode;
@@ -63,7 +64,6 @@ export function AppShell({
   versions,
   recap,
   timeline,
-  workspace,
   organizer,
   planner,
   notes,
@@ -100,11 +100,7 @@ export function AppShell({
             {NAV_ITEMS.map((item) => {
               const active =
                 surface === item.id ||
-                (item.id === "projects" && (surface === "versions" || surface === "briefing")) ||
-                // The per-capture workspace is a drill-in under Timeline, the
-                // same way versions is one under Projects: you get there from a
-                // version, so the nav should still say where you are.
-                (item.id === "timeline" && surface === "workspace");
+                (item.id === "projects" && (surface === "versions" || surface === "briefing"));
               return (
                 <button
                   key={item.id}
@@ -172,10 +168,11 @@ export function AppShell({
                 <div className="home-surface">{notes}</div>
               ) : surface === "glossary" ? (
                 <div className="document-surface">{glossary}</div>
-              ) : surface === "timeline" ? (
-                <div className="home-surface">{timeline}</div>
               ) : (
-                <div className="schema-surface">{workspace}</div>
+                // Timeline is the fallback: it is the project's whole history,
+                // so an unrecognised surface lands somewhere meaningful rather
+                // than on a blank stage.
+                <div className="home-surface">{timeline}</div>
               )}
             </div>
           )}

@@ -14,6 +14,8 @@ type SettingsDialogProps = {
   onThemeChange: (theme: StudioTheme) => void;
   dailyPlanReminder: DailyPlanReminderSettings;
   onDailyPlanReminderChange: (settings: DailyPlanReminderSettings) => Promise<boolean>;
+  saveReminderEnabled: boolean;
+  onSaveReminderChange: (enabled: boolean) => Promise<boolean>;
   onSendTestReminder: () => Promise<boolean>;
   connection: ConnectionStatus;
   onClose: () => void;
@@ -48,6 +50,8 @@ export function SettingsDialog({
   onThemeChange,
   dailyPlanReminder,
   onDailyPlanReminderChange,
+  saveReminderEnabled,
+  onSaveReminderChange,
   onSendTestReminder,
   connection,
   onClose,
@@ -275,6 +279,22 @@ export function SettingsDialog({
                   {testingReminder ? "Sending…" : "Send test"}
                 </button>
               </div>
+              <label className="settings-dialog__reminder-toggle">
+                <span className="settings-dialog__reminder-icon" aria-hidden="true"><BellIcon /></span>
+                <span>
+                  <strong>Remind me to save</strong>
+                  <small>
+                    When work has been going a while with nothing written to disk. Recall watches
+                    the set file itself, so it knows.
+                  </small>
+                </span>
+                <input
+                  type="checkbox"
+                  checked={saveReminderEnabled}
+                  onChange={(event) => void onSaveReminderChange(event.target.checked)}
+                  aria-label="Remind me to save unsaved work"
+                />
+              </label>
               <p className="settings-dialog__background-note">
                 Closing Recall keeps it in the system tray. Use <strong>Quit Recall</strong> in that tray menu to fully stop background reminders.
               </p>

@@ -7,5 +7,6 @@ export { PlannerScreen } from "./planner/PlannerScreen";
 export { ProjectBriefingScreen } from "./projects/ProjectBriefingScreen";
 export { ProjectManagerScreen } from "./projects/ProjectManagerScreen";
 export { ProjectVersionsScreen } from "./projects/ProjectVersionsScreen";
+export { VersionTimelineScreen } from "./projects/VersionTimelineScreen";
 export { SessionRecapScreen } from "./projects/SessionRecapScreen";
 export { StartupScreen } from "./startup/StartupScreen";

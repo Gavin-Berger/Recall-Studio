@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
@@ -9,8 +9,6 @@ import type { AppSurface } from "./components/AppShell";
 import { SettingsDialog } from "./components/SettingsDialog";
 import type { StudioTheme } from "./components/SettingsDialog";
 import { ProductionCheatSheet } from "./components/ProductionCheatSheet";
-import { SchemaTimeline } from "./components/schema/SchemaTimeline";
-import { ProjectHistoryScreen } from "./features/projects/ProjectHistoryScreen";
 import {
   NotesScreen,
   PlannerScreen,
@@ -20,6 +18,7 @@ import {
   ProjectVersionsScreen,
   SessionRecapScreen,
   StartupScreen,
+  VersionTimelineScreen,
 } from "./features";
 import { ReportDialog } from "./features/diagnostics/ReportDialog";
 import { organizerRepository } from "./features/organizer/repository";
@@ -30,9 +29,18 @@ import {
   loadDailyPlanReminder,
   requestDailyPlanPermission,
   sendDailyPlanNotification,
+  requestNotificationPermission,
+  sendDesktopNotification,
   storeDailyPlanReminder,
 } from "./features/planner/notifications";
 import { localDateKey } from "./features/planner/planner";
+import { libraryPollInterval } from "./libraryPolling";
+import {
+  loadSaveReminderEnabled,
+  saveReminder,
+  storeSaveReminderEnabled,
+} from "./features/projects/saveReminder";
+import { getObservedSaves } from "./lib/schema/api";
 import { abletonSetName } from "./features/sessionFormat";
 import {
   REPORT_PREVIEW_SESSION_ID,
@@ -65,11 +73,39 @@ type FolderMetadataRefresh = {
 
 const POLL_INTERVAL_MS = 1000;
 const BACKGROUND_POLL_INTERVAL_MS = 30_000;
+/**
+ * How often unsaved work is checked while a capture is live.
+ *
+ * Five minutes, not five seconds: the rule will not fire until twenty
+ * minutes of unsaved work anyway, so a tighter loop buys nothing but a query.
+ */
+const SAVE_REMINDER_CHECK_MS = 5 * 60_000;
 const PRODUCER_NAME_STORAGE_KEY = "recall-studio.producer-name";
 const THEME_STORAGE_KEY = "recall-studio.theme";
 const REPORT_PREVIEW =
   import.meta.env.DEV &&
   new URLSearchParams(window.location.search).get("reportPreview") === "1";
+const TIMELINE_PREVIEW =
+  import.meta.env.DEV &&
+  new URLSearchParams(window.location.search).get("timelinePreview") === "1";
+const PREVIEW_MODE = REPORT_PREVIEW || TIMELINE_PREVIEW;
+
+// Local visual QA for the Timeline uses the same two version-shaped preview
+// captures as the Report. It is development-only and never touches a user's
+// library; the real Timeline continues to read from saved projects.
+const timelinePreviewProject: SavedProject = {
+  id: "preview-project",
+  display_name: "Nightdrive",
+  ableton_name: "Nightdrive",
+  ableton_path: "C:\\Music\\Nightdrive",
+  archived_at_ms: null,
+  created_at_ms: reportPreviewSessions[0]?.started_at_ms ?? 0,
+  updated_at_ms: reportPreviewSessions.at(-1)?.last_updated_at_ms ?? 0,
+  last_updated_at_ms: reportPreviewSessions.at(-1)?.last_updated_at_ms ?? 0,
+  capture_count: reportPreviewSessions.length,
+  active_capture_count: 0,
+  captures: reportPreviewSessions,
+};
 
 function loadProducerName(): string {
   try {
@@ -109,7 +145,9 @@ function isTypingTarget(target: EventTarget | null): boolean {
 }
 
 function App() {
-  const [surface, setSurface] = useState<AppSurface>(REPORT_PREVIEW ? "recap" : "projects");
+  const [surface, setSurface] = useState<AppSurface>(
+    REPORT_PREVIEW ? "recap" : TIMELINE_PREVIEW ? "timeline" : "projects",
+  );
   const [reportOpen, setReportOpen] = useState(false);
   const [connection, setConnection] = useState<ConnectionStatus>({
     connected: false,
@@ -118,23 +156,38 @@ function App() {
     bridge_version: null,
   });
   const [savedSessions, setSavedSessions] = useState<SavedSessionMetadata[]>(
-    REPORT_PREVIEW ? reportPreviewSessions : [],
+    PREVIEW_MODE ? reportPreviewSessions : [],
   );
-  const [savedProjects, setSavedProjects] = useState<SavedProject[]>([]);
+  const [savedProjects, setSavedProjects] = useState<SavedProject[]>(
+    TIMELINE_PREVIEW ? [timelinePreviewProject] : [],
+  );
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(
-    REPORT_PREVIEW ? REPORT_PREVIEW_SESSION_ID : null,
+    PREVIEW_MODE ? REPORT_PREVIEW_SESSION_ID : null,
   );
   // Which project the versions surface is showing. The library poll keeps the
   // project object itself fresh, so new .als versions appear while you look.
-  const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
-  const [libraryReady, setLibraryReady] = useState(REPORT_PREVIEW);
-  const [enteredStudio, setEnteredStudio] = useState(REPORT_PREVIEW);
+  const [selectedProjectId, setSelectedProjectId] = useState<string | null>(
+    TIMELINE_PREVIEW ? timelinePreviewProject.id : null,
+  );
+  const [libraryReady, setLibraryReady] = useState(PREVIEW_MODE);
+  const [enteredStudio, setEnteredStudio] = useState(PREVIEW_MODE);
   const [producerName, setProducerName] = useState(loadProducerName);
   const [theme, setTheme] = useState<StudioTheme>(loadTheme);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [dailyPlanReminder, setDailyPlanReminder] = useState<DailyPlanReminderSettings>(loadDailyPlanReminder);
   const [inTrayBackground, setInTrayBackground] = useState(false);
+  const [saveReminderEnabled, setSaveReminderEnabled] = useState(loadSaveReminderEnabled);
+  // Not state: changing it must never re-render, and the rule reads it to
+  // avoid repeating itself for one stretch of unsaved work.
+  const lastSaveReminderMs = useRef<number | null>(null);
   const pollInterval = inTrayBackground ? BACKGROUND_POLL_INTERVAL_MS : POLL_INTERVAL_MS;
+  // The library is not a live fact. It only changes when a capture writes to
+  // it, so its refresh follows the capture instead of the clock — see
+  // libraryPolling.ts. The 1Hz poll above stays, for connection status alone.
+  const libraryInterval = libraryPollInterval({
+    inTrayBackground,
+    captureConnected: connection.connected,
+  });
 
   useEffect(() => {
     document.documentElement.dataset.recallTheme = theme;
@@ -163,6 +216,7 @@ function App() {
     });
     return () => unlisten?.();
   }, []);
+
 
   const sendTodayStudioPlan = useCallback(async (): Promise<boolean> => {
     try {
@@ -273,6 +327,71 @@ function App() {
     () => savedProjects.find((project) => project.id === selectedProjectId) ?? null,
     [savedProjects, selectedProjectId],
   );
+
+  const handleSaveReminderChange = useCallback(async (enabled: boolean): Promise<boolean> => {
+    // The OS prompt IS the opt-in. Turning it on without permission would leave
+    // a switch that says "on" and does nothing.
+    if (enabled && !(await requestNotificationPermission())) return false;
+    setSaveReminderEnabled(enabled);
+    storeSaveReminderEnabled(enabled);
+    if (!enabled) lastSaveReminderMs.current = null;
+    return true;
+  }, []);
+
+  // Nudge the producer when work has been going a while with nothing written.
+  //
+  // Rides the connection poll's cadence rather than a timer of its own: the
+  // reminder is only ever relevant while a capture is live, which is exactly
+  // when that poll is already running. The decision itself is in
+  // saveReminder.ts, so this effect only gathers the facts.
+  useEffect(() => {
+    if (!saveReminderEnabled || !isTauri()) return;
+    const sessionId = currentSession?.id ?? null;
+    if (!sessionId || currentSession?.capture_status !== "active") return;
+
+    let cancelled = false;
+
+    async function check() {
+      try {
+        const saves = await getObservedSaves([sessionId!]);
+        if (cancelled) return;
+        const lastSaveMs = saves.length > 0 ? saves[saves.length - 1]!.saved_at_ms : null;
+
+        const reminder = saveReminder({
+          nowMs: Date.now(),
+          lastSaveMs,
+          lastActivityMs: currentSession?.last_updated_at_ms ?? null,
+          captureStartedMs: currentSession?.started_at_ms ?? null,
+          lastRemindedMs: lastSaveReminderMs.current,
+          setName: abletonSetName(currentSession ?? null),
+        });
+        if (!reminder || cancelled) return;
+
+        // Stamped BEFORE awaiting the send: a slow notification must not let a
+        // second check through and fire the same reminder twice.
+        lastSaveReminderMs.current = Date.now();
+        await sendDesktopNotification(reminder, "the save reminder");
+      } catch (error) {
+        console.error("Failed to check for unsaved work:", error);
+      }
+    }
+
+    void check();
+    const interval = window.setInterval(() => void check(), SAVE_REMINDER_CHECK_MS);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [
+    saveReminderEnabled,
+    currentSession?.id,
+    currentSession?.capture_status,
+    currentSession?.last_updated_at_ms,
+    currentSession?.started_at_ms,
+    currentSession?.als_path,
+  ]);
+
+
   const currentTimelineProject = useMemo(
     () =>
       currentSession?.project_id
@@ -357,22 +476,28 @@ function App() {
       }
     }
 
+    // Runs immediately on every interval change too, which is what makes
+    // connecting Ableton feel instant: the moment `connected` flips, this
+    // effect re-runs and reads the library once before the faster timer starts.
     refreshSavedSessions();
-    const interval = window.setInterval(refreshSavedSessions, pollInterval);
+    const interval = window.setInterval(refreshSavedSessions, libraryInterval);
 
     return () => {
       mounted = false;
       window.clearInterval(interval);
     };
-  }, [pollInterval, reloadLibrary]);
+  }, [libraryInterval, reloadLibrary]);
 
-  // "Open timeline" everywhere in the app means the per-capture workspace —
-  // one sitting, its events on a ruler. That surface moved down a level when
-  // the Timeline slot became the project's version history, so these callers
-  // keep their meaning and only their destination changed.
+  // "Open timeline" everywhere in the app means the project's version history.
+  //
+  // It used to mean the per-capture workspace — one sitting, its events on a
+  // ruler. That surface is stashed (SchemaTimeline is still in the tree, routed
+  // to from nowhere) because the version graph is the surface that is supposed
+  // to answer "what happened", and two answers to that question is one too many.
+  // The capture is still carried: the graph selects the version containing it.
   function handleOpenTimeline(sessionId?: string) {
     setSelectedSessionId(sessionId ?? effectiveSessionId);
-    setSurface("workspace");
+    setSurface("timeline");
   }
 
   // The Timeline proper: a project's whole history as a graph.
@@ -381,8 +506,19 @@ function App() {
     setSurface("timeline");
   }
 
-  function handleOpenRecap(sessionId?: string) {
+  // Where you click decides what the report covers. Opening from a project
+  // opens the whole project; opening from a row opens that one sitting. The
+  // producer never has to find a scope control to get the report they meant —
+  // the control is there to move between scopes afterwards, not to reach the
+  // right one in the first place.
+  const [openReportScope, setOpenReportScope] = useState<"sitting" | "version" | "project">("sitting");
+
+  function handleOpenRecap(
+    sessionId?: string,
+    scope: "sitting" | "version" | "project" = "sitting",
+  ) {
     setSelectedSessionId(sessionId ?? effectiveSessionId);
+    setOpenReportScope(scope);
     setSurface("recap");
   }
 
@@ -403,7 +539,8 @@ function App() {
       await reloadLibrary();
       if (status.session_id) {
         setSelectedSessionId(status.session_id);
-        setSurface("workspace");
+        setSelectedProjectId(projectId);
+        setSurface("timeline");
       }
     } catch (error) {
       console.error("Failed to open project take:", error);
@@ -418,7 +555,8 @@ function App() {
       });
       await reloadLibrary();
       setSelectedSessionId(status.session_id);
-      setSurface("workspace");
+      if (projectId) setSelectedProjectId(projectId);
+      setSurface("timeline");
     } catch (error) {
       console.error("Failed to start capture:", error);
       throw error;
@@ -451,7 +589,8 @@ function App() {
       });
       await reloadLibrary();
       setSelectedSessionId(status.session_id);
-      setSurface("workspace");
+      if (projectId) setSelectedProjectId(projectId);
+      setSurface("timeline");
     } catch (error) {
       console.error("Failed to start a new take:", error);
       throw error;
@@ -626,30 +765,20 @@ function App() {
         <SessionRecapScreen
           sessionId={effectiveSessionId}
           sessions={savedSessions}
+          openScope={openReportScope}
           onSelectSession={handleOpenRecap}
           onOpenTimeline={handleOpenTimeline}
           onOpenProjects={() => setSurface("projects")}
         />
       }
       timeline={
-        <ProjectHistoryScreen
+        <VersionTimelineScreen
           projects={savedProjects}
           projectId={selectedProjectId ?? currentTimelineProject?.id ?? null}
           onSelectProject={handleOpenHistory}
-          onOpenReport={handleOpenRecap}
-          onOpenWorkspace={handleOpenTimeline}
+          focusSessionId={selectedSessionId}
+          onOpenReport={(sessionId) => handleOpenRecap(sessionId, "version")}
           onOpenProjects={() => setSurface("projects")}
-        />
-      }
-      workspace={
-        <SchemaTimeline
-          sessionId={effectiveSessionId}
-          session={currentSession}
-          project={currentTimelineProject}
-          producerName={producerName}
-          onOpenProjects={() => setSurface("projects")}
-          onStartCapture={(projectId) => void handleOpenProject(projectId)}
-          onOpenTimeline={handleOpenTimeline}
         />
       }
       organizer={
@@ -665,7 +794,7 @@ function App() {
           onOpenTimeline={handleOpenTimeline}
         />
       }
-      notes={<NotesScreen />}
+      notes={<NotesScreen projects={savedProjects} onOpenTimeline={handleOpenHistory} />}
       glossary={<ProductionCheatSheet />}
     />
     <SettingsDialog
@@ -674,6 +803,8 @@ function App() {
       onThemeChange={setTheme}
       dailyPlanReminder={dailyPlanReminder}
       onDailyPlanReminderChange={handleDailyPlanReminderChange}
+      saveReminderEnabled={saveReminderEnabled}
+      onSaveReminderChange={handleSaveReminderChange}
       onSendTestReminder={sendTodayStudioPlan}
       connection={connection}
       onClose={() => setSettingsOpen(false)}

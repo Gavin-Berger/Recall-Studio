@@ -1,0 +1,1932 @@
+/* Timeline — a project-level version graph with a selected-version inspector.
+   Sittings are facts inside a version; they never become the graph's nodes. */
+.vt {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s5);
+}
+
+.vt__bar,
+.vt__surface,
+.vt-empty {
+  border: var(--stroke-hair) solid var(--glass-edge);
+  border-radius: var(--radius);
+  background:
+    linear-gradient(145deg, rgb(var(--signal-rgb) / 0.11), transparent 46%),
+    var(--panel);
+  box-shadow: var(--glass-elevation);
+  backdrop-filter: blur(18px) saturate(120%);
+}
+
+.vt__bar {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: var(--s4);
+  padding: clamp(16px, 1.4vw, 28px);
+  flex-wrap: wrap;
+}
+
+.vt__eyebrow {
+  margin: 0 0 var(--s1);
+  color: var(--signal-soft);
+  font-family: var(--font-mono);
+  font-size: var(--t-micro);
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.vt__bar h1,
+.vt__surface-head h2,
+.vt-inspector h2 {
+  margin: 0;
+  color: var(--paper-strong);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.vt__bar h1 { font-size: var(--t-h1); }
+
+.vt__subtitle {
+  margin: var(--s1) 0 0;
+  color: var(--faint-aa);
+  font-family: var(--font-mono);
+  font-size: var(--t-micro);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.vt__picker {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+}
+
+.vt__picker > span {
+  color: var(--faint-aa);
+  font-family: var(--font-mono);
+  font-size: var(--t-micro);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.vt__picker select {
+  min-height: 28px;
+  padding: var(--s1) var(--s2);
+  border: var(--stroke-hair) solid var(--glass-edge);
+  border-radius: var(--radius-pill);
+  background: var(--glass-fill);
+  color: var(--paper);
+  font-size: var(--t-meta);
+}
+
+/* `clip` preserves the rounded shell without turning this non-scrolling panel
+   into the jump bar's scroll container (which would disable sticky). */
+.recall-app--timeline,
+.vt__surface { overflow: clip; }
+
+.vt__surface-head {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: var(--s4);
+  padding: var(--s4);
+  border-bottom: var(--stroke-hair) solid var(--line-soft);
+}
+
+.vt__surface-head h2 { font-size: var(--t-h2); }
+
+.vt__surface-head > p {
+  max-width: 42ch;
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--t-meta);
+  line-height: 1.55;
+  text-align: right;
+}
+
+.vt__body {
+  display: grid;
+  grid-template-columns: minmax(360px, 1.1fr) minmax(320px, 0.9fr);
+  align-items: stretch;
+}
+
+.vt__graph-panel { min-width: 0; }
+
+.vt-graph {
+  --vt-graph-width: 144px;
+  position: relative;
+  min-height: 120px;
+  padding: var(--s3) var(--s3) var(--s3) 0;
+  background: rgb(1 3 10 / 0.1);
+}
+
+.vt-graph__drawing {
+  position: absolute;
+  top: var(--s3);
+  left: var(--s3);
+  overflow: visible;
+}
+
+.vt-graph__drawing path {
+  stroke: var(--lane-0);
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: var(--stroke-edge);
+}
+
+.vt-graph__drawing path.is-inferred { stroke-dasharray: 4 3; }
+
+.vt-graph__axis {
+  stroke: var(--line-soft);
+  stroke-width: var(--stroke-hair);
+}
+
+.vt-graph__axis-label,
+.vt-graph__idle-break text {
+  fill: var(--muted);
+  font-family: var(--font-mono);
+  font-size: var(--t-meta);
+  font-variant-numeric: tabular-nums;
+}
+
+.vt-graph__axis-label { letter-spacing: 0.02em; }
+
+/* The rule and its label are a deliberate discontinuity: it names the time
+   removed from the scale instead of pretending a five-month return was a
+   quiet afternoon. */
+.vt-graph__idle-break line {
+  stroke: var(--line);
+  stroke-dasharray: 2 4;
+  stroke-width: var(--stroke-hair);
+}
+
+.vt-graph__idle-break text { letter-spacing: 0.06em; }
+
+.vt-graph__lane {
+  stroke: var(--lane-0);
+  stroke-linecap: round;
+  stroke-width: var(--stroke-edge);
+}
+
+.vt-graph__lane.is-depth-0,
+.vt-graph__drawing path.is-depth-0 { stroke: var(--lane-0); stroke-width: var(--stroke-trunk); }
+.vt-graph__lane.is-depth-1,
+.vt-graph__drawing path.is-depth-1 { stroke: var(--lane-1); }
+.vt-graph__lane.is-depth-2,
+.vt-graph__drawing path.is-depth-2 { stroke: var(--lane-2); }
+.vt-graph__lane.is-depth-3,
+.vt-graph__drawing path.is-depth-3 { stroke: var(--lane-3); }
+
+/* Sittings are the producer's returns to the desk, not Recall's bookkeeping
+   captures. An observed save is the deliberate state marker, so it is a
+   little longer without spending a colour to say so. */
+.vt-graph__sitting,
+.vt-graph__save {
+  stroke: var(--faint-aa);
+  stroke-linecap: round;
+  stroke-width: var(--stroke-hair);
+}
+
+.vt-graph__save {
+  stroke: var(--paper-strong);
+  stroke-width: var(--stroke-edge);
+}
+
+.vt-graph__drawing circle {
+  fill: var(--panel-2);
+  stroke: var(--lane-0);
+  stroke-width: var(--stroke-edge);
+}
+
+.vt-graph__drawing circle.is-hollow {
+  fill: transparent;
+  stroke-dasharray: 3 2;
+}
+
+.vt-graph__drawing circle.is-selected {
+  fill: var(--signal);
+  stroke: var(--signal-bright);
+  stroke-width: var(--stroke-trunk);
+}
+
+.vt-graph__rows {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 120px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* 120px is the closed record height in versionTimelineLayout.ts. The SVG dots
+   and the HTML records share that exact measurement; an expanded work trail
+   writes a larger --vt-row-height from the same layout model. */
+.vt-graph__rows li {
+  min-height: var(--vt-row-height, 120px);
+}
+
+.vt-graph__rows button {
+  width: 100%;
+  min-height: 0;
+  padding: var(--s2) var(--s3) var(--s1) calc(var(--vt-graph-width) + var(--s3));
+  border: var(--stroke-hair) solid transparent;
+  border-left-width: 2px;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.vt-graph__rows button:hover,
+.vt-graph__rows button:focus-visible,
+.vt-graph__rows button.is-selected {
+  border-color: rgb(var(--signal-rgb) / 0.38);
+  background: rgb(var(--signal-rgb) / 0.08);
+}
+
+.vt-graph__rows button.is-selected {
+  border-left-color: var(--signal);
+  background: rgb(var(--signal-rgb) / 0.14);
+}
+
+.vt-graph__name {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  min-width: 0;
+  color: var(--paper);
+  font-size: var(--t-body);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.vt-graph__rows button.is-selected .vt-graph__name { color: var(--paper-strong); }
+
+/* Temporal orientation replaces cross-capture totals here. Track and device
+   identities are not guaranteed to survive a reopen, while dates and actual
+   sitting boundaries are stable evidence. */
+.vt-graph__headline {
+  display: -webkit-box;
+  overflow: hidden;
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: var(--t-meta);
+  line-height: 1.35;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.vt-graph__rows button.is-selected .vt-graph__headline { color: var(--paper); }
+
+.vt-graph__meta {
+  display: block;
+  margin-top: var(--s1);
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: var(--t-meta);
+  font-variant-numeric: tabular-nums;
+}
+
+/* The work lives on the span under a version, not behind a Report shortcut.
+   Its closed state is enough to scan; opening reserves space in the timeline
+   layout before the browser paints the trail, keeping later graph points in
+   alignment with their records. */
+.vt-work {
+  padding: 0 var(--s3) var(--s2) calc(var(--vt-graph-width) + var(--s3));
+}
+
+.vt-work__summary,
+.vt-work__status {
+  margin: 0;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: var(--t-meta);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.45;
+}
+
+.vt-work__details { margin-top: var(--s1); }
+
+.vt-work__details summary {
+  color: var(--paper);
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: var(--t-meta);
+  font-variant-numeric: tabular-nums;
+}
+
+.vt-work__details summary:focus-visible {
+  outline: 2px solid var(--signal);
+  outline-offset: 2px;
+}
+
+.vt-work__details[open] {
+  max-height: 220px;
+  overflow: auto;
+  padding-top: var(--s1);
+  border-top: var(--stroke-hair) solid var(--line-soft);
+}
+
+.vt-work__trail {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+  margin: var(--s2) 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.vt-work__trail li {
+  display: grid;
+  grid-template-columns: 112px minmax(0, 1fr);
+  gap: var(--s2);
+}
+
+.vt-work__trail time,
+.vt-work__ending {
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: var(--t-meta);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.4;
+}
+
+.vt-work__trail strong {
+  display: block;
+  color: var(--paper-strong);
+  font-size: var(--t-body);
+  font-weight: 600;
+}
+
+.vt-work__ending {
+  display: block;
+  margin-top: var(--s1);
+}
+
+.vt-badge {
+  flex: none;
+  padding: 1px var(--s2);
+  border: var(--stroke-hair) solid rgba(var(--signal-rgb), 0.48);
+  border-radius: var(--radius-pill);
+  color: var(--signal-soft);
+  font-family: var(--font-mono);
+  font-size: var(--t-micro);
+  font-weight: 500;
+  letter-spacing: 0.03em;
+}
+
+.vt-inspector {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s4);
+  padding: var(--s4);
+  border-left: var(--stroke-hair) solid var(--line-soft);
+  background:
+    linear-gradient(145deg, rgb(var(--signal-rgb) / 0.055), transparent 46%),
+    rgb(1 3 10 / 0.13);
+}
+
+.vt-inspector__head {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: var(--s3);
+}
+
+.vt-inspector h2 { font-size: var(--t-h2); overflow-wrap: anywhere; }
+
+.vt-inspector__facts {
+  display: grid;
+  gap: var(--s2);
+  margin: 0;
+}
+
+.vt-inspector__facts > div {
+  display: grid;
+  grid-template-columns: 88px minmax(0, 1fr);
+  gap: var(--s2);
+  align-items: start;
+  padding-top: var(--s2);
+  border-top: var(--stroke-hair) solid var(--line-soft);
+}
+
+.vt-inspector dt {
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: var(--t-meta);
+}
+
+.vt-inspector dd {
+  margin: 0;
+  color: var(--paper);
+  font-size: var(--t-body);
+  line-height: 1.55;
+}
+
+.vt-inspector dd.is-inferred { color: var(--faint-aa); }
+.vt-inspector dd.is-observed { color: var(--signal-soft); }
+
+.vt-inspector__actions {
+  display: flex;
+  gap: var(--s2);
+  flex-wrap: wrap;
+  margin-top: auto;
+}
+
+.vt-inspector__status {
+  margin: 0;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: var(--t-meta);
+}
+
+/* Retrace a version --------------------------------------------------------
+   The graph picks the point. This surface preserves the two useful paths out
+   of it: the actual set delta, and the producer's concrete moves in order. */
+
+.vt-depth {
+  /* Retracing is the reading surface, so it can run larger than the compact
+     version graph above without making the rest of the app feel oversized. */
+  --t-h2: clamp(18px, 1.15vw, 22px);
+  --t-body: clamp(16px, 0.9vw, 18px);
+  --t-meta: clamp(14px, 0.78vw, 16px);
+  --t-micro: clamp(12px, 0.66vw, 13px);
+  padding: clamp(16px, 1.4vw, 28px);
+  border-top: var(--stroke-hair) solid var(--line-soft);
+  background: rgb(1 3 10 / 0.09);
+}
+
+.vt-depth__head {
+  width: 100%;
+  max-width: 1680px;
+  margin-right: auto;
+  margin-left: auto;
+  padding-left: var(--s3);
+  border-left: 3px solid var(--signal-soft);
+}
+
+.vt-depth__head h2 {
+  margin: 0;
+  color: var(--paper-strong);
+  font-size: var(--t-h2);
+  font-weight: 600;
+}
+
+.vt-depth__head > p {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--s2);
+  max-width: 74ch;
+  margin: var(--s2) 0 0;
+  color: var(--muted);
+  font-size: var(--t-meta);
+  line-height: 1.5;
+}
+
+.vt-depth__head > .vt__eyebrow { margin: 0 0 var(--s1); }
+
+.vt-depth__origin {
+  flex: none;
+  padding: 1px var(--s2);
+  border: var(--stroke-hair) solid var(--line-soft);
+  border-radius: 999px;
+  color: var(--paper);
+  font-family: var(--font-mono);
+  font-size: var(--t-micro);
+  line-height: 1.6;
+  text-transform: uppercase;
+}
+
+.vt-depth__grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--s4);
+  align-items: start;
+  width: 100%;
+  max-width: 1680px;
+  margin: var(--s4) auto 0;
+}
+
+.vt-depth__grid > section { min-width: 0; }
+.vt-depth__empty {
+  margin: var(--s2) 0 0;
+  color: var(--muted);
+  font-size: var(--t-meta);
+  line-height: 1.5;
+}
+
+.vt-depth__headline,
+.vt-depth__more {
+  margin: 0 0 var(--s2);
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: var(--t-meta);
+}
+
+.vt-depth__more { margin: var(--s2) 0 0; }
+
+/* The diff. A sign column, fixed width, so + and − line up down the list the
+   way they do in a real diff — the shape is half of what makes it readable. */
+.vt-diff {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.vt-diff li {
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--s2);
+  padding: 2px var(--s2);
+  border-radius: var(--radius-sm);
+  background: var(--glass-fill);
+}
+
+.vt-diff__sign {
+  color: var(--faint-aa);
+  font-family: var(--font-mono);
+  font-size: var(--t-meta);
+}
+
+.vt-diff li.is-added .vt-diff__sign { color: var(--paper-strong); }
+
+.vt-diff__label {
+  overflow: hidden;
+  color: var(--paper);
+  font-size: var(--t-meta);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* A removed thing is still a fact, not a lesser one — it reads quieter because
+   a history is read forwards, never because it mattered less. */
+.vt-diff li.is-removed .vt-diff__label { color: var(--muted); }
+
+.vt-diff__context {
+  flex: none;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: var(--t-meta);
+}
+
+/* The sittings. Each one opens on its own trail; the newest starts open,
+   because the last thing you did is the thing you are resuming. */
+.vt-sittings {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.vt-depth__sittings { width: 100%; }
+
+.vt-sittings > li {
+  border: var(--stroke-hair) solid var(--glass-edge);
+  border-radius: var(--radius-sm);
+  background: rgb(255 255 255 / 0.025);
+}
+
+.vt-sittings > li:has(details[open]) {
+  border-color: var(--line);
+  background: rgb(19 25 38 / 0.72);
+}
+
+.vt-sittings summary {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s3);
+  padding: var(--s3) var(--s4);
+  cursor: pointer;
+  list-style: none;
+}
+
+.vt-sittings summary::-webkit-details-marker { display: none; }
+
+.vt-sittings details[open] > summary {
+  border-bottom: var(--stroke-hair) solid var(--line-soft);
+  background: rgb(255 255 255 / 0.025);
+}
+
+.vt-sittings summary:focus-visible {
+  outline: 2px solid var(--signal);
+  outline-offset: -2px;
+}
+
+.vt-sittings details > .vt-depth__empty {
+  padding: 0 var(--s4) var(--s4);
+}
+
+.vt-sittings__body { padding-top: var(--s3); }
+
+.vt-sittings__identity,
+.vt-sittings__meta {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.vt-sittings__identity { gap: var(--s4); }
+.vt-sittings__meta { gap: var(--s3); }
+
+.vt-sittings__ordinal {
+  flex: 0 0 112px;
+  color: var(--paper-strong);
+  font-size: var(--t-meta);
+  font-weight: 600;
+}
+
+.vt-sittings__count {
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: var(--t-meta);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.vt-sittings__chevron {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: var(--faint-aa);
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.5;
+  transition: transform 160ms ease;
+}
+
+.vt-sittings details[open] .vt-sittings__chevron { transform: rotate(180deg); }
+
+.vt-movements {
+  display: grid;
+  gap: var(--s3);
+  margin: 0;
+  padding: 0 var(--s4) var(--s4);
+  list-style: none;
+}
+
+.vt-movement-card {
+  --vt-card-accent: 177 188 210;
+  width: 100%;
+  overflow: hidden;
+  border: var(--stroke-hair) solid rgb(var(--vt-card-accent) / 0.32);
+  border-left: 4px solid rgb(var(--vt-card-accent) / 0.82);
+  border-radius: var(--radius-sm);
+  background: rgb(19 25 38 / 0.94);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.035);
+}
+
+.vt-movement-card[data-work-kind="writing"] { --vt-card-accent: 183 170 242; }
+.vt-movement-card[data-work-kind="recording"] { --vt-card-accent: 231 149 143; }
+.vt-movement-card[data-work-kind="sound"] { --vt-card-accent: 126 205 218; }
+.vt-movement-card[data-work-kind="arrangement"] { --vt-card-accent: 129 169 235; }
+.vt-movement-card[data-work-kind="mixing"] { --vt-card-accent: 224 190 122; }
+.vt-movement-card[data-work-kind="project"] { --vt-card-accent: 183 192 209; }
+.vt-movement-card[data-work-kind="moment"] { --vt-card-accent: 225 158 197; }
+
+/* The silhouette reinforces the category even when color is unavailable. */
+.vt-movement-card.is-midi { border-left-width: 6px; }
+.vt-movement-card.is-clip { border-left-style: double; border-left-width: 6px; }
+.vt-movement-card.is-structure { border-left-style: dashed; }
+.vt-movement-card.is-moment {
+  border-top: 3px solid rgb(var(--vt-card-accent) / 0.82);
+  border-left-width: var(--stroke-hair);
+}
+
+.vt-movement-card article {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) clamp(164px, 11vw, 196px);
+}
+
+.vt-movement-card__content {
+  display: grid;
+  grid-template-columns: minmax(250px, 0.36fr) minmax(420px, 0.64fr);
+  align-items: start;
+  gap: 0 clamp(20px, 1.5vw, 32px);
+  min-width: 0;
+  padding: clamp(16px, 1.25vw, 24px);
+}
+
+.vt-movement-card__head {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--s2) var(--s4);
+  padding-bottom: var(--s2);
+  border-bottom: var(--stroke-hair) solid rgb(var(--vt-card-accent) / 0.22);
+}
+
+.vt-movement-card__identity {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  min-width: 0;
+}
+
+.vt-movement-card__identity > div { min-width: 0; }
+
+.vt-movement-card__icon {
+  display: grid;
+  flex: 0 0 44px;
+  width: 44px;
+  height: 44px;
+  place-items: center;
+  border: var(--stroke-hair) solid rgb(var(--vt-card-accent) / 0.42);
+  border-radius: var(--radius-sm);
+  background: rgb(var(--vt-card-accent) / 0.1);
+  color: rgb(var(--vt-card-accent));
+}
+
+.vt-movement-card__icon.is-sound { border-radius: 50%; }
+.vt-movement-card__icon.is-mixing { border-radius: 4px 4px 12px 12px; }
+.vt-movement-card__icon.is-midi { box-shadow: inset 0 -3px 0 rgb(var(--vt-card-accent) / 0.2); }
+.vt-movement-card__icon.is-clip { border-style: double; border-width: 3px; }
+.vt-movement-card__icon.is-structure { border-style: dashed; }
+.vt-movement-card__icon.is-moment { border-radius: 50% 50% var(--radius-sm) var(--radius-sm); }
+
+.vt-movement-card__icon svg {
+  width: 24px;
+  height: 24px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.7;
+}
+
+.vt-movement-card__kind,
+.vt-movement-card__facts dt,
+.vt-movement-card__positions > span {
+  color: var(--muted);
+  font-family: var(--font-sans);
+  font-size: var(--t-micro);
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.vt-movement-card__kind { color: rgb(var(--vt-card-accent)); }
+
+.vt-movement-card__head h4 {
+  margin: var(--s1) 0 0;
+  color: var(--paper-strong);
+  font-size: var(--t-body);
+  font-weight: 600;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.vt-movement-card__facts {
+  display: grid;
+  grid-column: 1;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: var(--s2) var(--s4);
+  margin: var(--s3) 0 0;
+  padding-top: var(--s2);
+}
+
+.vt-movement-card__facts > div { min-width: 0; }
+
+.vt-movement-card__facts dd {
+  margin: 0;
+  margin-top: 2px;
+  color: var(--paper-strong);
+  font-family: var(--font-mono);
+  font-size: var(--t-meta);
+  font-variant-numeric: tabular-nums;
+  font-weight: 500;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
+.vt-movement-card__content > .vt-shape,
+.vt-movement-card__content > .vt-midi-pattern,
+.vt-movement-card__content > .vt-midi-scale,
+.vt-movement-card__content > .vt-midi-scale__empty {
+  grid-column: 2;
+  min-width: 0;
+}
+
+.vt-movement-time {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  padding: clamp(16px, 1.25vw, 24px);
+  border-left: var(--stroke-hair) solid rgb(var(--vt-card-accent) / 0.25);
+  background: rgb(var(--vt-card-accent) / 0.045);
+}
+
+.vt-movement-time.is-point { justify-content: center; }
+
+.vt-movement-time__title,
+.vt-movement-time__point > span {
+  color: rgb(var(--vt-card-accent));
+  font-family: var(--font-sans);
+  font-size: var(--t-micro);
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.vt-movement-time__point {
+  display: grid;
+  gap: 3px;
+  margin-top: var(--s3);
+}
+
+.vt-movement-time__point > span { color: var(--muted); }
+
+.vt-movement-time time {
+  color: var(--paper-strong);
+  font-family: var(--font-mono);
+  font-size: clamp(16px, 0.95vw, 19px);
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.vt-movement-time__rail {
+  position: relative;
+  width: 2px;
+  height: clamp(22px, 2vw, 36px);
+  margin: var(--s1) 0 calc(var(--s1) * -1) 4px;
+  background: rgb(var(--vt-card-accent) / 0.32);
+}
+
+.vt-movement-time__rail::before,
+.vt-movement-time__rail::after {
+  position: absolute;
+  left: -3px;
+  width: 8px;
+  height: 8px;
+  border: 2px solid rgb(var(--vt-card-accent) / 0.7);
+  border-radius: 50%;
+  background: var(--panel-2);
+  content: "";
+}
+
+.vt-movement-time__rail::before { top: -2px; }
+.vt-movement-time__rail::after { bottom: -2px; }
+
+.vt-movement-time > strong {
+  margin-top: auto;
+  padding-top: var(--s4);
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: var(--t-meta);
+  font-weight: 500;
+}
+
+.vt-midi-pattern {
+  margin-top: var(--s3);
+  padding-top: var(--s2);
+  border-top: var(--stroke-hair) solid var(--line-soft);
+}
+
+.vt-midi-pattern > header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--s1) var(--s3);
+}
+
+.vt-midi-pattern > header > span,
+.vt-midi-pattern__row > span {
+  color: var(--muted);
+  font-family: var(--font-sans);
+  font-size: var(--t-micro);
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.vt-midi-pattern > header > strong,
+.vt-midi-pattern__row > strong {
+  color: var(--paper-strong);
+  font-family: var(--font-mono);
+  font-size: var(--t-meta);
+  font-weight: 500;
+}
+
+.vt-midi-pattern__rows {
+  display: grid;
+  gap: var(--s2);
+  margin-top: var(--s2);
+}
+
+.vt-midi-pattern__row {
+  display: grid;
+  grid-template-columns: 64px minmax(0, 1fr) 72px;
+  align-items: center;
+  gap: var(--s2);
+}
+
+.vt-midi-pattern__row svg {
+  display: block;
+  width: 100%;
+  height: clamp(96px, 7vw, 124px);
+  overflow: hidden;
+  border: var(--stroke-hair) solid var(--glass-edge);
+  border-radius: 4px;
+  background: rgb(0 0 0 / 0.16);
+}
+
+.vt-midi-pattern__beat,
+.vt-midi-pattern__octave {
+  stroke: var(--line-soft);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+
+.vt-midi-pattern__octave { stroke: var(--line); }
+
+.vt-midi-pattern rect {
+  vector-effect: non-scaling-stroke;
+}
+
+.vt-midi-pattern rect.is-before {
+  fill: rgb(255 255 255 / 0.035);
+  stroke: var(--muted);
+  stroke-width: 1;
+}
+
+.vt-midi-pattern rect.is-after { fill: var(--paper-strong); }
+.vt-midi-pattern rect.is-muted { opacity: 0.3; }
+
+.vt-midi-pattern__axis {
+  display: flex;
+  justify-content: space-between;
+  margin: var(--s1) 80px 0 72px;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: var(--t-micro);
+}
+
+.vt-midi-pattern__limit {
+  margin: var(--s2) 0 0;
+  color: var(--muted);
+  font-size: var(--t-meta);
+  line-height: 1.5;
+}
+
+.vt-midi-note-list {
+  margin-top: var(--s2);
+  padding-top: var(--s2);
+  border-top: var(--stroke-hair) solid var(--line-soft);
+}
+
+.vt-midi-note-list > summary {
+  color: var(--paper);
+  cursor: pointer;
+  font-size: var(--t-meta);
+  font-weight: 600;
+}
+
+.vt-midi-note-list > ol {
+  display: grid;
+  gap: var(--s1);
+  margin: var(--s2) 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.vt-midi-note-list li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--s1) var(--s3);
+  padding: var(--s1) 0;
+  border-bottom: var(--stroke-hair) solid var(--line-soft);
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: var(--t-meta);
+}
+
+.vt-midi-note-list li > span:first-child {
+  min-width: 52px;
+  color: var(--muted);
+  font-family: var(--font-sans);
+  font-size: var(--t-micro);
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.vt-midi-note-list li > strong {
+  min-width: 42px;
+  color: var(--paper-strong);
+}
+
+.vt-midi-scale {
+  margin-top: var(--s3);
+  padding-top: var(--s2);
+  border-top: var(--stroke-hair) solid var(--line-soft);
+}
+
+.vt-midi-scale__title,
+.vt-midi-scale__row > span {
+  color: var(--muted);
+  font-family: var(--font-sans);
+  font-size: var(--t-micro);
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.vt-midi-scale__axis,
+.vt-midi-scale__row {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr) 112px;
+  gap: var(--s2);
+  align-items: center;
+}
+
+.vt-midi-scale__axis { margin-top: var(--s2); }
+
+.vt-midi-scale__axis > div {
+  position: relative;
+  height: 18px;
+  border-bottom: var(--stroke-hair) solid var(--line-soft);
+}
+
+.vt-midi-scale__axis i {
+  position: absolute;
+  bottom: 3px;
+  color: var(--faint-aa);
+  font-family: var(--font-mono);
+  font-size: var(--t-micro);
+  font-style: normal;
+  line-height: 1;
+  transform: translateX(-50%);
+}
+
+.vt-midi-scale__rows {
+  display: grid;
+  gap: var(--s2);
+  margin-top: var(--s1);
+}
+
+.vt-midi-scale__lane {
+  position: relative;
+  height: 28px;
+  overflow: hidden;
+  border: var(--stroke-hair) solid var(--glass-edge);
+  border-radius: 4px;
+  background:
+    repeating-linear-gradient(
+      90deg,
+      transparent 0,
+      transparent calc((100% / var(--pitch-steps)) - 1px),
+      var(--line-soft) calc((100% / var(--pitch-steps)) - 1px),
+      var(--line-soft) calc(100% / var(--pitch-steps))
+    ),
+    rgb(0 0 0 / 0.16);
+}
+
+.vt-midi-scale__bar {
+  position: absolute;
+  top: 4px;
+  bottom: 4px;
+  min-width: 3px;
+  border-radius: 3px;
+}
+
+.vt-midi-scale__bar.is-before {
+  border: 1px solid var(--muted);
+  background: transparent;
+}
+
+.vt-midi-scale__bar.is-after {
+  background: var(--paper-strong);
+}
+
+.vt-midi-scale__row strong {
+  color: var(--paper-strong);
+  font-family: var(--font-mono);
+  font-size: var(--t-meta);
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+
+.vt-midi-scale.has-no-geometry .vt-midi-scale__row {
+  grid-template-columns: 72px minmax(0, 1fr);
+}
+
+.vt-midi-scale.has-no-geometry .vt-midi-scale__lane { display: none; }
+
+.vt-midi-scale__empty,
+.vt-midi-missing {
+  margin: var(--s2) 0 0;
+  color: var(--muted);
+  font-size: var(--t-meta);
+  line-height: 1.5;
+}
+
+.vt-movement-card__content > .vt-midi-missing { grid-column: 2; }
+
+.vt-movement-card__positions {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: 112px minmax(0, 1fr);
+  gap: var(--s2);
+  margin-top: var(--s3);
+  padding-top: var(--s2);
+  border-top: var(--stroke-hair) solid var(--line-soft);
+}
+
+.vt-movement-card__positions ul {
+  display: grid;
+  gap: var(--s1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.vt-movement-card__positions li {
+  color: var(--paper);
+  font-family: var(--font-mono);
+  font-size: var(--t-meta);
+  line-height: 1.5;
+}
+
+.vt-movement-card__evidence {
+  grid-column: 1 / -1;
+  margin-top: var(--s3);
+  padding-top: var(--s2);
+  border-top: var(--stroke-hair) solid var(--line-soft);
+}
+
+.vt-movement-card__evidence > summary {
+  color: var(--paper);
+  cursor: pointer;
+  font-size: var(--t-meta);
+  font-weight: 600;
+}
+
+.vt-movement-card__evidence > ol {
+  display: grid;
+  gap: var(--s2);
+  margin: var(--s2) 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.vt-movement-card__evidence li {
+  display: grid;
+  grid-template-columns: 76px minmax(0, 1fr);
+  gap: var(--s2);
+}
+
+.vt-movement-card__evidence time,
+.vt-movement-card__evidence-detail {
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: var(--t-meta);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.5;
+}
+
+.vt-movement-card__evidence strong,
+.vt-movement-card__evidence-detail { display: block; }
+
+.vt-movement-card__evidence strong {
+  color: var(--paper);
+  font-size: var(--t-meta);
+  font-weight: 600;
+}
+
+.vt-movement-card__missing {
+  margin: var(--s2) 0 0;
+  color: var(--muted);
+  font-size: var(--t-meta);
+  line-height: 1.5;
+}
+
+/* A root version has no set delta, so the chronology owns the full width. */
+.vt-depth__grid.is-rootless {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.vt-sittings__when {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s2);
+  min-width: 0;
+}
+
+.vt-sittings__clock,
+.vt-sittings__merged {
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: var(--t-meta);
+  font-variant-numeric: tabular-nums;
+  font-weight: 400;
+}
+
+.vt-sittings__merged {
+  font-size: var(--t-micro);
+  padding: 0 var(--s1);
+  border: var(--stroke-hair) solid var(--line-soft);
+  border-radius: var(--radius-sm);
+  text-transform: lowercase;
+}
+
+
+/* Movement shapes ----------------------------------------------------------
+   One block per shape of data. Monochrome throughout: the distinction between
+   a state, a mode, a value and a position is carried by FORM, never by hue —
+   colour is only --signal and --moment (DESIGN.md §2). */
+
+.vt-shape {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  margin-top: var(--s2);
+  min-width: 0;
+}
+
+.vt-shape__label {
+  flex: none;
+  color: var(--faint-aa);
+  font-family: var(--font-mono);
+  font-size: var(--t-micro);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.vt-shape__arrow {
+  flex: none;
+  color: var(--faint-aa);
+  font-size: var(--t-meta);
+}
+
+.vt-shape__from,
+.vt-shape__note {
+  margin: 0;
+  color: var(--faint-aa);
+  font-family: var(--font-mono);
+  font-size: var(--t-micro);
+}
+
+.vt-shape--text {
+  display: block;
+  color: var(--muted);
+  font-size: var(--t-meta);
+  line-height: 1.5;
+}
+
+/* A switch. Both states are always present so the one it landed in reads as a
+   position on a track, not as a word you have to hold in your head. */
+.vt-binary {
+  display: inline-flex;
+  flex: none;
+  overflow: hidden;
+  border: var(--stroke-hair) solid var(--line-soft);
+  border-radius: var(--radius-sm);
+}
+
+.vt-binary__state {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px var(--s2);
+  color: var(--faint-aa);
+  font-family: var(--font-mono);
+  font-size: var(--t-micro);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.vt-binary__state.is-set {
+  background: var(--panel-3);
+  color: var(--paper-strong);
+  font-weight: 600;
+}
+
+.vt-state-icon {
+  display: inline-grid;
+  width: 20px;
+  height: 20px;
+  place-items: center;
+  border: var(--stroke-hair) solid currentColor;
+  border-radius: 50%;
+}
+
+.vt-state-icon svg {
+  width: 13px;
+  height: 13px;
+  overflow: visible;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2;
+}
+
+.vt-state-icon.is-off { opacity: 0.72; }
+.vt-binary__state.is-set .vt-state-icon { background: var(--glass-fill); }
+.vt-state-icon__slash { stroke-width: 2.5; }
+
+/* A mode. Two names, no magnitude. */
+.vt-shape--enum {
+  flex-wrap: wrap;
+}
+
+.vt-enum__was {
+  color: var(--muted);
+  font-size: var(--t-meta);
+  text-decoration: line-through;
+  text-decoration-color: var(--line-soft);
+}
+
+.vt-enum__is {
+  padding: 1px var(--s2);
+  border: var(--stroke-hair) solid var(--line-soft);
+  border-radius: var(--radius-sm);
+  background: var(--panel-3);
+  color: var(--paper-strong);
+  font-size: var(--t-meta);
+  font-weight: 600;
+}
+
+/* A value. The bar carries the distance travelled, which two numbers alone do
+   not — 10%→12% and 10%→90% read identically as text. */
+.vt-shape--scalar {
+  display: block;
+}
+
+.vt-scalar__values {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s2);
+  font-family: var(--font-mono);
+  font-size: var(--t-meta);
+  font-variant-numeric: tabular-nums;
+}
+
+.vt-scalar__from { color: var(--muted); }
+.vt-scalar__to { color: var(--paper-strong); font-weight: 600; }
+
+.vt-scalar__track {
+  position: relative;
+  height: 6px;
+  margin-top: var(--s2);
+  border-radius: 3px;
+  background: var(--line-soft);
+}
+
+.vt-scalar__travel {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  border-radius: 3px;
+  background: var(--paper);
+}
+
+.vt-scalar__mark {
+  position: absolute;
+  top: -3px;
+  width: 2px;
+  height: 12px;
+  margin-left: -1px;
+  border-radius: 1px;
+}
+
+.vt-scalar__mark.is-from { background: var(--faint-aa); }
+.vt-scalar__mark.is-to { background: var(--paper-strong); }
+
+/* A position in the song. Same left-to-right beat reading as the piano roll,
+   so "where in the arrangement" looks the same wherever it appears. */
+.vt-shape--span {
+  display: block;
+}
+
+.vt-span__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--s2);
+}
+
+.vt-span__where {
+  color: var(--faint-aa);
+  font-family: var(--font-mono);
+  font-size: var(--t-micro);
+  font-variant-numeric: tabular-nums;
+}
+
+.vt-span__grid {
+  position: relative;
+  height: 28px;
+  margin-top: var(--s2);
+  border: var(--stroke-hair) solid var(--line-soft);
+  border-radius: var(--radius-sm);
+  background: var(--panel-2);
+  overflow: hidden;
+}
+
+.vt-span__grid-line {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--line-soft);
+}
+
+.vt-span__block {
+  position: absolute;
+  top: 4px;
+  bottom: 4px;
+  border-radius: 2px;
+  background: var(--paper);
+}
+
+/* A structural change, in the same signed-line vocabulary the version diff
+   already uses — one language for "this arrived, that left". */
+.vt-shape--tree {
+  display: block;
+  margin-top: var(--s2);
+}
+
+.vt-shape--tree li {
+  grid-template-columns: 30px minmax(0, 1fr);
+  align-items: center;
+}
+
+.vt-change-icon {
+  display: grid;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  border: var(--stroke-hair) solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--panel-3);
+  color: var(--paper);
+}
+
+.vt-change-icon svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.8;
+}
+
+.vt-shape--tree .is-removed .vt-change-icon {
+  color: var(--muted);
+  border-radius: 50%;
+}
+
+.vt-shape--tree .is-altered .vt-change-icon {
+  color: var(--faint-aa);
+  border-style: dashed;
+}
+
+.vt-diff li.is-altered .vt-diff__label { color: var(--paper); }
+.vt-diff li.is-altered .vt-diff__sign { color: var(--faint-aa); }
+
+/* A set-wide value. Laid out unlike a track's control on purpose: tempo is not
+   something that happened to one lane. */
+.vt-shape--global {
+  justify-content: space-between;
+  padding: var(--s2) var(--s3);
+  border: var(--stroke-hair) solid var(--line-soft);
+  border-radius: var(--radius-sm);
+  background: var(--glass-fill);
+}
+
+.vt-global__value {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--s2);
+  font-family: var(--font-mono);
+  font-size: var(--t-meta);
+  font-variant-numeric: tabular-nums;
+}
+
+.vt-global__was { color: var(--muted); }
+.vt-global__value strong { color: var(--paper-strong); }
+
+/* A route. */
+.vt-shape--endpoints {
+  font-family: var(--font-mono);
+  font-size: var(--t-meta);
+}
+
+.vt-endpoints__from { color: var(--muted); }
+.vt-endpoints__to { color: var(--paper-strong); font-weight: 600; }
+
+@media (max-width: 1180px) {
+  .vt-depth__grid,
+  .vt-depth__grid.is-rootless { grid-template-columns: 1fr; }
+
+  .vt-movement-card article { grid-template-columns: minmax(0, 1fr); }
+  .vt-movement-card__content { grid-template-columns: minmax(0, 1fr); }
+  .vt-movement-card__content > .vt-shape,
+  .vt-movement-card__content > .vt-midi-pattern,
+  .vt-movement-card__content > .vt-midi-scale,
+  .vt-movement-card__content > .vt-midi-scale__empty,
+  .vt-movement-card__content > .vt-midi-missing { grid-column: 1; }
+
+  .vt-movement-time {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    align-items: center;
+    gap: var(--s3);
+    border-top: var(--stroke-hair) solid rgb(var(--vt-card-accent) / 0.25);
+    border-left: 0;
+  }
+
+  .vt-movement-time__point {
+    display: flex;
+    align-items: baseline;
+    gap: var(--s2);
+    margin-top: 0;
+  }
+
+  .vt-movement-time__rail { display: none; }
+  .vt-movement-time > strong { margin: 0; padding: 0; text-align: right; }
+  .vt-movement-time.is-range { grid-template-columns: auto 1fr auto auto; }
+  .vt-movement-time.is-point { display: flex; align-items: flex-end; }
+}
+
+@media (max-width: 760px) {
+  .vt-depth__grid,
+  .vt-depth__grid.is-rootless { grid-template-columns: 1fr; }
+
+  .vt-sittings summary { align-items: start; }
+  .vt-sittings__identity { align-items: flex-start; flex-direction: column; gap: var(--s1); }
+  .vt-sittings__ordinal { flex-basis: auto; }
+  .vt-sittings__meta { gap: var(--s2); }
+}
+
+.vt-empty,
+.vt-graph-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--s3);
+  padding: var(--s7);
+}
+
+.vt-empty { max-width: 46ch; }
+.vt-graph-empty { min-height: 260px; }
+
+.vt-empty strong,
+.vt-graph-empty strong { color: var(--paper-strong); font-size: var(--t-h2); }
+.vt-empty p,
+.vt-graph-empty p { max-width: 52ch; margin: 0; color: var(--muted); font-size: var(--t-meta); line-height: 1.55; }
+
+@media (max-width: 940px) {
+  .vt__body { grid-template-columns: 1fr; }
+  .vt-inspector { border-top: var(--stroke-hair) solid var(--line-soft); border-left: 0; }
+}
+
+@media (max-width: 620px) {
+  .vt__bar,
+  .vt__surface-head { align-items: flex-start; flex-direction: column; }
+  .vt__surface-head > p { max-width: none; text-align: left; }
+  .vt__picker { width: 100%; }
+  .vt__picker select { flex: 1; min-width: 0; }
+  .vt-inspector__facts > div { grid-template-columns: 1fr; gap: var(--s1); }
+  .vt-work__trail li { grid-template-columns: 1fr; gap: var(--s1); }
+  .vt-movement-card__facts { grid-template-columns: 1fr; }
+  .vt-midi-scale__axis { grid-template-columns: 56px minmax(0, 1fr); }
+  .vt-midi-scale__axis > span:last-child { display: none; }
+  .vt-midi-scale__row { grid-template-columns: 56px minmax(0, 1fr); align-items: start; }
+  .vt-midi-scale__row strong { grid-column: 2; }
+  .vt-midi-scale.has-no-geometry .vt-midi-scale__row { grid-template-columns: 56px minmax(0, 1fr); }
+  .vt-midi-pattern__row { grid-template-columns: 52px minmax(0, 1fr); align-items: start; }
+  .vt-midi-pattern__row > strong { grid-column: 2; }
+  .vt-midi-pattern__axis { margin-right: 0; margin-left: 60px; }
+  .vt-span__head { align-items: flex-start; flex-direction: column; }
+  .vt-shape--endpoints { flex-wrap: wrap; }
+  .vt-movement-card__positions,
+  .vt-movement-card__evidence li { grid-template-columns: 1fr; gap: var(--s1); }
+}
+
+/* The trail's own furniture --------------------------------------------------
+   Two readings of one sitting, plus the two facts a flat list of cards
+   destroys: where the silences were, and where the work was written to disk. */
+
+.vt-trail-controls {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  margin: 0 var(--s4) var(--s2);
+}
+
+.vt-trail-controls__label {
+  color: var(--faint-aa);
+  font-family: var(--font-mono);
+  font-size: var(--t-micro);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.vt-trail-toggle {
+  display: inline-flex;
+  overflow: hidden;
+  border: var(--stroke-hair) solid var(--line-soft);
+  border-radius: var(--radius-sm);
+}
+
+.vt-trail-toggle button {
+  padding: 2px var(--s2);
+  border: 0;
+  background: transparent;
+  color: var(--faint-aa);
+  font-family: var(--font-mono);
+  font-size: var(--t-micro);
+  cursor: pointer;
+}
+
+.vt-trail-toggle button.is-active {
+  background: var(--panel-3);
+  color: var(--paper-strong);
+  font-weight: 600;
+}
+
+.vt-trail-toggle button:focus-visible {
+  outline: 2px solid var(--signal);
+  outline-offset: -2px;
+}
+
+/* A compact bottom dock for long sittings. It stays available without putting
+   a full-width toolbar between the producer and the work they are reading. */
+.vt-jumpbar {
+  position: sticky;
+  z-index: 4;
+  top: calc(100dvh - 58px);
+  display: grid;
+  grid-template-columns: auto auto minmax(260px, 520px);
+  align-items: center;
+  justify-content: center;
+  gap: var(--s2);
+  width: min(960px, calc(100% - 32px));
+  margin: 0 auto var(--s3);
+  padding: 5px 6px;
+  border: var(--stroke-hair) solid var(--line);
+  border-radius: var(--radius-pill);
+  background: rgb(15 21 33 / 0.96);
+  box-shadow: 0 10px 28px rgb(0 0 0 / 0.3);
+  backdrop-filter: blur(12px);
+}
+
+.vt-jumpbar.is-moving-down { animation: vt-jumpbar-down 360ms ease-out; }
+.vt-jumpbar.is-moving-up { animation: vt-jumpbar-up 360ms ease-out; }
+
+@keyframes vt-jumpbar-down {
+  0% { transform: translateY(0); }
+  38% { transform: translateY(5px); }
+  100% { transform: translateY(0); }
+}
+
+@keyframes vt-jumpbar-up {
+  0% { transform: translateY(0); }
+  38% { transform: translateY(-5px); }
+  100% { transform: translateY(0); }
+}
+
+.vt-jumpbar__position {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  min-width: max-content;
+  margin: 0;
+  color: var(--faint-aa);
+  font-family: var(--font-mono);
+  font-size: var(--t-micro);
+  font-variant-numeric: tabular-nums;
+  text-transform: uppercase;
+}
+
+.vt-jumpbar__position strong {
+  color: var(--paper-strong);
+  font-size: var(--t-meta);
+}
+
+.vt-jumpbar__motion {
+  display: inline-flex;
+  align-items: center;
+  width: 14px;
+  color: var(--paper);
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.vt-jumpbar__motion.is-visible { opacity: 1; }
+
+.vt-jumpbar__motion svg {
+  width: 12px;
+  height: 12px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2;
+}
+
+.vt-jumpbar__motion svg.is-down { transform: rotate(180deg); }
+
+.vt-jumpbar__buttons {
+  display: inline-flex;
+  overflow: hidden;
+  border: var(--stroke-hair) solid var(--line-soft);
+  border-radius: var(--radius-pill);
+}
+
+.vt-jumpbar__buttons button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 8px;
+  border: 0;
+  border-right: var(--stroke-hair) solid var(--line-soft);
+  background: transparent;
+  color: var(--paper);
+  font-family: var(--font-sans);
+  font-size: var(--t-micro);
+  cursor: pointer;
+}
+
+.vt-jumpbar__buttons button.is-edge { padding-right: 6px; padding-left: 6px; }
+
+.vt-jumpbar__buttons button:last-child { border-right: 0; }
+.vt-jumpbar__buttons button:hover:not(:disabled) { background: var(--glass-fill); }
+.vt-jumpbar__buttons button:disabled { color: var(--faint-aa); cursor: default; opacity: 0.45; }
+
+.vt-jumpbar__buttons button:focus-visible,
+.vt-jumpbar__select select:focus-visible {
+  outline: 2px solid var(--signal);
+  outline-offset: -2px;
+}
+
+.vt-jumpbar__icon {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.8;
+}
+
+.vt-jumpbar__select {
+  display: block;
+  min-width: 0;
+  color: var(--faint-aa);
+  font-family: var(--font-mono);
+  font-size: var(--t-micro);
+  text-transform: uppercase;
+}
+
+.vt-jumpbar__select select {
+  min-width: 0;
+  width: 100%;
+  padding: 4px 28px 4px 10px;
+  border: var(--stroke-hair) solid var(--line-soft);
+  border-radius: var(--radius-pill);
+  background: var(--panel-3);
+  color: var(--paper);
+  font-family: var(--font-sans);
+  font-size: var(--t-micro);
+  text-transform: none;
+}
+
+.vt-movement-card { scroll-margin-top: var(--s3); }
+
+/* A save. Punctuation across the whole column, never a card — everything above
+   it is in the state that was written here. */
+.vt-trail-save {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: var(--s2);
+  padding: var(--s2) 0;
+  list-style: none;
+}
+
+.vt-trail-save__rule {
+  height: 1px;
+  background: var(--line-soft);
+}
+
+.vt-trail-save__label {
+  color: var(--paper);
+  font-family: var(--font-mono);
+  font-size: var(--t-micro);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+/* A drawn silence, naming what it removed. */
+.vt-trail-gap {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: var(--s2);
+  padding: var(--s1) 0;
+  color: var(--faint-aa);
+  font-family: var(--font-mono);
+  font-size: var(--t-micro);
+  list-style: none;
+}
+
+.vt-trail-gap > span[aria-hidden] {
+  height: 1px;
+  background: var(--line-soft);
+  opacity: 0.6;
+}
+
+/* The by-track reading. */
+.vt-track-groups {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.vt-track-groups__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--s2);
+  margin: 0 0 var(--s2);
+  padding-bottom: var(--s1);
+  border-bottom: var(--stroke-hair) solid var(--line-soft);
+  color: var(--paper);
+  font-size: var(--t-meta);
+  font-weight: 600;
+}
+
+.vt-track-groups__head span:last-child {
+  color: var(--faint-aa);
+  font-family: var(--font-mono);
+  font-size: var(--t-micro);
+  font-variant-numeric: tabular-nums;
+  font-weight: 400;
+}
+
+.vt-type-groups > li {
+  padding-top: var(--s2);
+  border-top: 2px solid var(--line-soft);
+}
+
+.vt-type-groups__head { text-transform: uppercase; }
+
+@media (prefers-reduced-motion: reduce) {
+  .vt-jumpbar.is-moving-down,
+  .vt-jumpbar.is-moving-up { animation: none; }
+  .vt-jumpbar__motion { transition: none; }
+}
+
+@media (max-width: 860px) {
+  .vt-jumpbar {
+    top: calc(100dvh - 92px);
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+  .vt-jumpbar__select { grid-column: 1 / -1; }
+}
+
+@media (max-width: 620px) {
+  .vt-jumpbar {
+    top: calc(100dvh - 142px);
+    grid-template-columns: 1fr;
+  }
+
+  .vt-jumpbar__buttons {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+  }
+
+  .vt-jumpbar__buttons button {
+    justify-content: center;
+    padding: 7px 4px;
+  }
+
+  .vt-jumpbar__select { grid-column: auto; }
+}

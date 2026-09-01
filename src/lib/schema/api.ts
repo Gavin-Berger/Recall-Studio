@@ -43,6 +43,24 @@ export function getTimelineClipEvents(sessionId: string): Promise<TimelineClipEv
   return invoke<TimelineClipEvent[]>("get_timeline_clip_events", { sessionId });
 }
 
+/**
+ * Saves the control surface watched, across a set of captures. Oldest first.
+ *
+ * The only evidence in the version graph that is observed rather than inferred:
+ * Live exposes no save callback, so the remote script watches the open `.als`'s
+ * modification stamp and emits `project_saved` when it moves.
+ */
+export function getObservedSaves(sessionIds: string[]): Promise<StoredObservedSave[]> {
+  return invoke<StoredObservedSave[]>("get_observed_saves", { sessionIds });
+}
+
+export type StoredObservedSave = {
+  id: string;
+  session_id: string;
+  als_path: string | null;
+  saved_at_ms: number;
+};
+
 /** Complete immutable event record for producer-facing timeline context. */
 export function loadSessionEvents(sessionId: string): Promise<SavedSession> {
   return invoke<SavedSession>("load_session_events", { sessionId });

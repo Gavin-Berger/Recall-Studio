@@ -40,6 +40,44 @@ def test_legacy_note_tuple_remains_supported():
     }
 
 
+def test_note_edit_emits_the_before_and_after_pattern_snapshots():
+    recall = Recall.__new__(Recall)
+    clip = SimpleNamespace(name=0, _live_ptr=22, length=4.0, is_session_clip=True)
+    track = SimpleNamespace(name="14-MIDI", _live_ptr=14)
+    before_notes = [
+        {"note_id": 1, "pitch": 64, "start_time": 0.0, "duration": 1.0, "velocity": 96.0, "mute": False},
+    ]
+    after_notes = [
+        *before_notes,
+        {"note_id": 2, "pitch": 67, "start_time": 1.0, "duration": 0.5, "velocity": 108.0, "mute": False},
+    ]
+    before = recall._fingerprint(clip, before_notes)
+    recall._clip_prints = {id(clip): before}
+    recall._clip_note_snapshots = {
+        id(clip): {"notes": before_notes, "truncated": False},
+    }
+    recall._read_notes = lambda _clip: after_notes
+    emitted = []
+    recall._emit = lambda event_type, payload: emitted.append((event_type, payload))
+
+    recall._emit_note_edit(id(clip), {
+        "track": track,
+        "clip": clip,
+        "slot_index": 0,
+        "before": before,
+        "before_notes": recall._clip_note_snapshots[id(clip)],
+        "observed_position": {},
+    })
+
+    event_type, payload = emitted[0]
+    assert event_type == "clip_notes_changed"
+    assert payload["note_snapshot_version"] == 2
+    assert payload["previous_midi_notes"] == before_notes
+    assert payload["midi_notes"] == after_notes
+    assert payload["previous_midi_notes_truncated"] is False
+    assert payload["midi_notes_truncated"] is False
+
+
 def test_warp_markers_are_normalized_and_sorted_by_beat():
     markers = _normalize_warp_markers(
         {

@@ -711,6 +711,40 @@ fn rotate_session_if_project_changed(
         }
     };
 
+    // ADOPT BEFORE ROTATE (issue #25).
+    //
+    // `session_als_path` is an in-memory marker, and memory is exactly what a
+    // launch or a bridge reconnect does not have. A take resumed at boot is
+    // anchored in the database but unmarked here, so the first heartbeat naming
+    // the open set read as "the project changed" and split the take — on the
+    // same file, milliseconds after it started. Thirteen of thirty-one capture
+    // boundaries inside one set in the real library are that split.
+    //
+    // The database holds the durable answer. When the active take is already
+    // anchored to the file Ableton has open, this is not a project change at
+    // all: re-adopt the take by writing the marker, and let the producer's
+    // sitting stay one sitting.
+    let active_session_id = {
+        let session = session.lock().expect("Session state lock failed");
+        let status = session.status();
+        if status.active { status.session_id } else { None }
+    };
+    if let Some(active_session_id) = active_session_id {
+        let already_anchored_here = {
+            let storage = storage.lock().expect("Storage state lock failed");
+            storage
+                .session_als_path(&active_session_id)
+                .unwrap_or(None)
+                .as_deref()
+                == Some(open_als.as_str())
+        };
+        if already_anchored_here {
+            let mut connection = state.lock().expect("Connection state lock failed");
+            connection.session_als_path = Some(open_als);
+            return;
+        }
+    }
+
     // Stop + persist whatever take was active, so its data is preserved rather
     // than bled into the next one.
     let previous_status = {
@@ -2136,6 +2170,143 @@ mod tests {
             open_als_path: None,
             session_als_path: None,
         }))
+    }
+
+    // ── Adopting instead of splitting (issue #25) ─────────────────────────
+    //
+    // A capture that starts and ends inside the same second is never something
+    // the producer did. Thirteen of thirty-one within-set capture boundaries in
+    // the real library were 10-28 ms apart, all of them made here: the take was
+    // resumed at boot (so `session_als_path` was still empty in memory), the
+    // first heartbeat named the set Ableton had open, and an unchanged file read
+    // as a project change.
+
+    fn temp_storage_state() -> (Arc<Mutex<StorageState>>, std::path::PathBuf) {
+        let path = std::env::temp_dir().join(format!(
+            "recall-rotate-test-{}-{}.sqlite",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_file(&path);
+        crate::storage::initialize_database(&path).expect("initialize test database");
+        let mut storage = StorageState::new();
+        storage.configure(path.clone());
+        (Arc::new(Mutex::new(storage)), path)
+    }
+
+    #[test]
+    fn an_active_take_already_anchored_to_the_open_set_is_adopted_not_split() {
+        const SET: &str = "M:/Ableton/Breaking Point v2 mixdown.als";
+        let (storage, db_path) = temp_storage_state();
+
+        // A take that exists and is anchored — exactly what resume-at-boot hands
+        // back after the app is reopened mid-sitting.
+        let started = {
+            let storage = storage.lock().unwrap();
+            let status = storage
+                .activate_take_for_open_file(None, Some(SET))
+                .expect("activate a take for the open set");
+            storage
+                .save_session_started(&status)
+                .expect("persist the take");
+            status
+        };
+        let original_session_id = started
+            .session_id
+            .clone()
+            .expect("an activated take has an id");
+
+        let session = Arc::new(Mutex::new(SessionState::new()));
+        {
+            let mut live = session.lock().unwrap();
+            let started_at_ms = started.started_at_ms.expect("a take has a start");
+            live.restore_active(original_session_id.clone(), started_at_ms, started_at_ms);
+        }
+
+        // The in-memory marker is empty, because a launch has no memory. This is
+        // the state that used to split the take.
+        let state = fresh_connection_state();
+        {
+            let mut connection = state.lock().unwrap();
+            connection.open_als_path = Some(SET.into());
+            connection.session_als_path = None;
+        }
+
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let metrics = Arc::new(BridgeMetrics::default());
+
+        rotate_session_if_project_changed(&state, &session, &storage, &events, &metrics);
+
+        assert_eq!(
+            session.lock().unwrap().status().session_id.as_deref(),
+            Some(original_session_id.as_str()),
+            "the same set must keep the same take — a sub-second split is not a sitting"
+        );
+        assert_eq!(
+            state.lock().unwrap().session_als_path.as_deref(),
+            Some(SET),
+            "adoption must record the anchor, or the next packet tries to rotate again"
+        );
+
+        let _ = std::fs::remove_file(&db_path);
+        let _ = std::fs::remove_file(db_path.with_extension("sqlite-wal"));
+        let _ = std::fs::remove_file(db_path.with_extension("sqlite-shm"));
+    }
+
+    #[test]
+    fn opening_a_genuinely_different_set_still_rotates() {
+        const FIRST: &str = "M:/Ableton/Night EP v3.als";
+        const SECOND: &str = "M:/Ableton/KOAN Sound v1.als";
+        let (storage, db_path) = temp_storage_state();
+
+        let started = {
+            let storage = storage.lock().unwrap();
+            let status = storage
+                .activate_take_for_open_file(None, Some(FIRST))
+                .expect("activate a take for the first set");
+            storage
+                .save_session_started(&status)
+                .expect("persist the take");
+            status
+        };
+        let first_session_id = started.session_id.clone().expect("an id");
+
+        let session = Arc::new(Mutex::new(SessionState::new()));
+        {
+            let mut live = session.lock().unwrap();
+            let started_at_ms = started.started_at_ms.expect("a start");
+            live.restore_active(first_session_id.clone(), started_at_ms, started_at_ms);
+        }
+
+        let state = fresh_connection_state();
+        {
+            let mut connection = state.lock().unwrap();
+            connection.open_als_path = Some(SECOND.into());
+            connection.session_als_path = None;
+        }
+
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let metrics = Arc::new(BridgeMetrics::default());
+
+        rotate_session_if_project_changed(&state, &session, &storage, &events, &metrics);
+
+        assert_ne!(
+            session.lock().unwrap().status().session_id.as_deref(),
+            Some(first_session_id.as_str()),
+            "a different set is a different take — the adopt guard must not swallow #11"
+        );
+        assert_eq!(
+            state.lock().unwrap().session_als_path.as_deref(),
+            Some(SECOND),
+            "the new take is anchored to the set that is actually open"
+        );
+
+        let _ = std::fs::remove_file(&db_path);
+        let _ = std::fs::remove_file(db_path.with_extension("sqlite-wal"));
+        let _ = std::fs::remove_file(db_path.with_extension("sqlite-shm"));
     }
 
     #[test]

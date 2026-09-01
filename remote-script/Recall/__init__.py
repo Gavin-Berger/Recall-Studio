@@ -17,11 +17,10 @@
 # from, and clip-note capture.
 #
 # WHAT IS CAPTURED, and the rule behind it: this reports DECISIONS, not data. A
-# knob ride becomes one settled move; a written phrase becomes one note edit
-# describing what changed about the part. The authoritative content — every note
-# of every clip — lives in the .als for the take and is read from there. Sending
-# it through this socket would cost a note scan on Live's thread and bury the
-# timeline in rows nobody reads.
+# knob ride becomes one settled move; a written phrase becomes one settled note
+# edit with a bounded before/after pattern snapshot. The authoritative content
+# still lives in the .als; the snapshot lets Recall show the musical decision
+# instead of reducing a chord or rhythm to only its lowest and highest pitch.
 #
 # Runtime: Python 3.11 (Live 12's embedded interpreter).
 
@@ -84,7 +83,18 @@ HEARTBEAT_INTERVAL_SEC = 2.0
 # watched device indistinguishable from a fully watched one. `focus_changed` now
 # carries `parameter_count_total` and `parameters_truncated` so the app can say
 # what it is and is not watching instead of implying full coverage.
-MAX_PARAMS_PER_DEVICE = 128
+#
+# RAISED 128 -> 1024. The old value was costing real capture in real libraries:
+# Serum 2 is all over this one, and every knob past the 128th was unobserved.
+#
+# What it costs to raise is listener COUNT, not listener firing — registering a
+# value listener is cheap and a parameter is only work when it moves. The
+# scenario the low cap defended against was hundreds of parameters moving at
+# once, and the one thing that did that was automation playback, which is now
+# filtered before it reaches a gesture (issue #9). 1024 covers Serum and the
+# large VSTs while still bounding a pathological device, and the truncation
+# flag still tells the app when it was hit.
+MAX_PARAMS_PER_DEVICE = 1024
 PARAMETER_ROSTER_CHECK_SEC = 1.0
 ARRANGEMENT_ROSTER_CHECK_SEC = 1.0
 
@@ -106,10 +116,28 @@ MAX_DRUM_PADS = 128
 # events, and the read happens on Live's thread. Both caps are about that read,
 # not about listener count — registering a notes listener is free, reading the
 # roll is not.
+#
+# THE TWO CAPS ARE NOT THE SAME KIND OF LIMIT, and conflating them cost data.
+# MAX_NOTES_READ bounds work on LIVE'S THREAD and is the only one here that can
+# make Live stutter. MAX_MIDI_NOTES_CAPTURED bounds the PAYLOAD, and was set to
+# half the read: the script paid Live's thread to read 4096 notes and then threw
+# 2048 of them away, so a dense clip's piano roll lied by omission about notes
+# already in hand for free.
+#
+# The payload cap was sized when MAX_TCP_LINE_BYTES was 32 KB. That ceiling is
+# now 4 MB (issue #15), and measured across this library every clip_notes_changed
+# payload TOGETHER comes to about 3 MB — 142 MB of the 181 MB database is
+# live_set_snapshot, not notes. So the payload cap now matches the read, and
+# nothing that survives the read is discarded.
+#
+# MAX_NOTES_READ is deliberately NOT raised here. It is the one number that can
+# hurt Live, and it should be set from a measurement rather than a guess —
+# _read_notes now logs how long the read actually took (NOTE_READ_SLOW_MS) so
+# there is data to set it from.
 MAX_CLIPS_PER_TRACK = 64
 MAX_ARRANGEMENT_CLIP_IDENTITIES = 512
 MAX_NOTES_READ = 4096
-MAX_MIDI_NOTES_CAPTURED = 2048
+MAX_MIDI_NOTES_CAPTURED = 4096
 MAX_AUTOMATION_POINTS = 512
 MAX_WARP_MARKERS = 512
 
@@ -451,6 +479,11 @@ def _heartbeat_due(now, last_sent_at, interval=None):
 # inside one continuous move, short enough that a move appears while the
 # producer still remembers making it.
 GESTURE_SETTLE_SEC = 0.35
+# How long to wait after a track thaws before deciding what kind of thaw it was.
+# Live rebuilds the track's chain asynchronously, so reading it in the callback
+# reports a half-state; one tick of Live's ~100ms display loop is enough for the
+# devices and clips to settle into their final form.
+THAW_SETTLE_SEC = 0.5
 
 # How long after a mixer-listener rebuild the channel strip is still ARRIVING
 # rather than being played.
@@ -489,6 +522,10 @@ CASCADE_THRESHOLD = 6
 # act. 1.2s waits out the gaps inside a phrase without making the edit feel like
 # it went missing.
 NOTE_SETTLE_SEC = 1.2
+# A note read slower than this gets logged with its size, so MAX_NOTES_READ
+# can be raised against evidence. Live's display loop runs about every 100ms,
+# so 25ms is a quarter of a tick — worth knowing about long before it hurts.
+NOTE_READ_SLOW_MS = 25.0
 
 # Distinct from the bridge's "max_for_live" so events from the two capture tiers
 # are told apart in the database. The listener defaults source to max_for_live
@@ -575,7 +612,13 @@ ROUTING_PROPERTIES = (
 # 0.7.2 ignores transient Python identities for routing-channel objects. A
 # listener refresh must not turn an unchanged set-wide routing snapshot into
 # dozens of claimed producer actions.
-SCRIPT_VERSION = "0.8.0"
+# 0.10.0 finishes the freeze story (unfreeze and flatten were silent, and a
+# thaw's verdict now settles a tick later so Live's half-rebuilt chain is not
+# mistaken for a flatten), lifts the parameter cap 128 -> 1024 because Serum's
+# knobs past the 128th were never observed, stops discarding half of every note
+# read, and reports the slowest note read on the heartbeat so MAX_NOTES_READ can
+# be sized from evidence.
+SCRIPT_VERSION = "0.10.0"
 
 
 class Recall(ControlSurface):
@@ -595,6 +638,10 @@ class Recall(ControlSurface):
         self._routing_values = {}
         self._track_state_listeners = []
         self._track_state_values = {}
+        # What a track looked like while frozen, so a thaw can be read as an
+        # unfreeze or a flatten rather than guessed at.
+        self._frozen_shapes = {}
+        self._pending_thaws = {}
         self._track_structure = {}
         self._return_tracks_listener_attached = False
         # Parameter automation-state listeners mirror the value listener scope.
@@ -643,6 +690,9 @@ class Recall(ControlSurface):
         self._song_context = {}
         self._recording_active = False
         self._clip_prints = {}
+        # clipId -> bounded note snapshot matching _clip_prints. Scoped to the
+        # clips currently watched and discarded with their listeners.
+        self._clip_note_snapshots = {}
         self._dirty_clips = {}
         self._audio_clip_listeners = []
         self._audio_clip_prints = {}
@@ -653,6 +703,11 @@ class Recall(ControlSurface):
         # slotId -> the name of the clip it last held, so a deletion can still
         # say WHICH clip went away after Live has discarded the object.
         self._slot_names = {}
+        # Worst note read observed this session. Reported, never acted on: it
+        # exists so MAX_NOTES_READ can be raised against evidence instead of a
+        # guess. See _record_note_read.
+        self._slowest_note_read_ms = 0.0
+        self._slowest_note_read_count = 0
         self._watched_clips = (0, 0)
         # selected-track Arrangement clip identity -> captured metadata. The
         # initial roster is a baseline; only identities appearing afterward are
@@ -1504,6 +1559,39 @@ class Recall(ControlSurface):
 
         return _on_routing
 
+    def _track_shape(self, track):
+        """What a track is made of, coarsely: how many devices, and are its
+        clips MIDI.
+
+        Used only to tell UNFREEZE from FLATTEN. Both are the same LOM
+        transition -- `is_frozen` goes True -> False -- and nothing in Live says
+        which one happened. What separates them is what is LEFT afterwards:
+        unfreezing restores the instrument and the MIDI, flattening throws both
+        away and leaves audio.
+        """
+        devices = len(self._safe_list(track, "devices"))
+        midi_clips = 0
+        audio_clips = 0
+        for slot in self._safe_list(track, "clip_slots")[:MAX_CLIPS_PER_TRACK]:
+            try:
+                if not slot.has_clip:
+                    continue
+                if getattr(slot.clip, "is_midi_clip", False):
+                    midi_clips += 1
+                else:
+                    audio_clips += 1
+            except Exception:  # noqa: BLE001 - slot vanished mid-read
+                continue
+        for clip in self._safe_list(track, "arrangement_clips")[:MAX_CLIPS_PER_TRACK]:
+            try:
+                if getattr(clip, "is_midi_clip", False):
+                    midi_clips += 1
+                else:
+                    audio_clips += 1
+            except Exception:  # noqa: BLE001
+                continue
+        return {"devices": devices, "midi_clips": midi_clips, "audio_clips": audio_clips}
+
     def _attach_track_state_listeners(self, track):
         key = self._track_listener_key(track)
         try:
@@ -1515,6 +1603,26 @@ class Recall(ControlSurface):
             self._track_state_values.pop(key, None)
 
     def _make_track_state_listener(self, track, key):
+        """Freezing, unfreezing and flattening, from one `is_frozen` listener.
+
+        Only freezing was reported before. Unfreezing was silent, so the record
+        could show a producer freezing a track and never show them undoing it --
+        and `track_flattened` sat in the app's event catalog with nothing on this
+        side emitting it, which is the shape of gap the catalog header warns
+        about.
+
+        Flatten matters most of the three. It is where an instrument stops being
+        an instrument and becomes a waveform: irreversible, and exactly the
+        decision a producer goes looking for months later.
+
+        WHY THE VERDICT IS DEFERRED. Both unfreeze and flatten arrive as
+        `is_frozen` True -> False, and at the instant this callback runs Live has
+        not finished rebuilding the track -- reading the device chain here
+        reports whatever half-state the operation is passing through. So the
+        transition is recorded and resolved on the next `update_display` tick,
+        once the chain has settled. Same reason gestures settle there rather
+        than in the value callback.
+        """
         def _on_frozen():
             try:
                 frozen = bool(track.is_frozen)
@@ -1522,7 +1630,11 @@ class Recall(ControlSurface):
                 return
             previous = self._track_state_values.get(key)
             self._track_state_values[key] = frozen
+
             if frozen and previous is not True:
+                # The shape while frozen is the baseline the thaw is judged
+                # against. Captured now because after a flatten it is gone.
+                self._frozen_shapes[key] = self._track_shape(track)
                 self._emit(
                     "track_frozen",
                     {
@@ -1531,8 +1643,68 @@ class Recall(ControlSurface):
                     },
                 )
                 self._send_snapshot()
+                return
+
+            if not frozen and previous is True:
+                self._pending_thaws[key] = {
+                    "track": track,
+                    "before": self._frozen_shapes.pop(key, None),
+                    "at": time.time(),
+                }
 
         return _on_frozen
+
+    def _flush_settled_thaws(self):
+        """Decide, one tick later, whether a thaw was an unfreeze or a flatten.
+
+        Unfreeze restores what freezing hid: the instrument comes back and the
+        MIDI clips are MIDI again. Flatten keeps neither -- the devices are gone
+        and the clips are audio. Comparing against the shape captured at freeze
+        is what separates them; with no baseline (the track was already frozen
+        when Recall attached) the honest answer is that the track thawed, not a
+        guess at which one it was.
+        """
+        if not self._pending_thaws:
+            return
+
+        now = time.time()
+        for key in list(self._pending_thaws.keys()):
+            pending = self._pending_thaws[key]
+            if (now - pending["at"]) < THAW_SETTLE_SEC:
+                continue
+            del self._pending_thaws[key]
+
+            track = pending["track"]
+            try:
+                after = self._track_shape(track)
+            except Exception:  # noqa: BLE001 - the track was deleted
+                continue
+
+            before = pending["before"]
+            payload = {
+                "track_name": self._safe_name(track),
+                "track_id": self._safe_id(track),
+                "devices_after": after["devices"],
+                "midi_clips_after": after["midi_clips"],
+                "audio_clips_after": after["audio_clips"],
+            }
+            if before is not None:
+                payload["devices_before"] = before["devices"]
+                payload["midi_clips_before"] = before["midi_clips"]
+
+            if before is None:
+                # No baseline: say what is observable and claim nothing more.
+                event_type = "track_unfrozen"
+                payload["thaw_evidence"] = "no_frozen_baseline"
+            elif after["devices"] < before["devices"] and after["midi_clips"] < before["midi_clips"]:
+                event_type = "track_flattened"
+                payload["thaw_evidence"] = "devices_and_midi_gone"
+            else:
+                event_type = "track_unfrozen"
+                payload["thaw_evidence"] = "chain_restored"
+
+            self._emit(event_type, payload)
+            self._send_snapshot()
 
     def _clear_track_structure_listeners(self):
         for track, listener in self._track_structure_listeners:
@@ -1560,6 +1732,10 @@ class Recall(ControlSurface):
                 pass
         self._track_state_listeners = []
         self._track_state_values = {}
+        # What a track looked like while frozen, so a thaw can be read as an
+        # unfreeze or a flatten rather than guessed at.
+        self._frozen_shapes = {}
+        self._pending_thaws = {}
 
     def _make_track_name_listener(self, track):
         key = self._track_listener_key(track)
@@ -2583,7 +2759,12 @@ class Recall(ControlSurface):
         # Seed the before-side now, so the first edit reports a real starting
         # state instead of "changed from nothing" — the same seeding _last_values
         # does for parameters.
-        self._clip_prints[id(clip)] = self._fingerprint(clip)
+        notes = self._read_notes(clip)
+        self._clip_prints[id(clip)] = None if notes is None else self._fingerprint(clip, notes)
+        self._clip_note_snapshots[id(clip)] = None if notes is None else {
+            "notes": notes[:MAX_MIDI_NOTES_CAPTURED],
+            "truncated": len(notes) > MAX_MIDI_NOTES_CAPTURED,
+        }
         return 1
 
     @staticmethod
@@ -2837,6 +3018,7 @@ class Recall(ControlSurface):
                     # samples would make a whole recorded phrase read as a
                     # one-note change.
                     "before": self._clip_prints.get(key),
+                    "before_notes": self._clip_note_snapshots.get(key),
                 }
                 self._dirty_clips[key] = edit
 
@@ -3193,6 +3375,12 @@ class Recall(ControlSurface):
         if span <= 0.0:
             return []
 
+        # Timed because this is the one read in the script that runs on Live's
+        # thread and scales with the producer's work. MAX_NOTES_READ should be
+        # set from what this reports on a real dense clip, not from a guess —
+        # see the note on the constants above.
+        started_at = time.time()
+
         for read in (
             lambda: clip.get_all_notes_extended(),
             lambda: clip.get_notes_extended(0, 128, 0.0, span),
@@ -3206,6 +3394,7 @@ class Recall(ControlSurface):
                     normalized = _normalize_midi_note(note)
                     if normalized is not None:
                         notes.append(normalized)
+                self._record_note_read(started_at, len(notes))
                 return notes
             except Exception:  # noqa: BLE001 - try the next API generation
                 pass
@@ -3217,17 +3406,41 @@ class Recall(ControlSurface):
                 normalized = _normalize_midi_note(note)
                 if normalized is not None:
                     notes.append(normalized)
+            self._record_note_read(started_at, len(notes))
             return notes
         except Exception:  # noqa: BLE001
             return None
 
-    def _fingerprint(self, clip, notes=None):
-        """A small summary of a clip's notes — never the notes themselves.
+    def _record_note_read(self, started_at, note_count):
+        """Keep the worst note read seen, and say so when one is slow.
 
-        Recall records decisions, not data. The authoritative note content is in
-        the .als for the take; what the timeline needs is what CHANGED, which is
-        this. Shipping the roll through the event stream would bury a session in
-        rows nobody reads and bloat every session's storage for no added recall.
+        Reported rather than acted on. The point is to replace a guessed
+        MAX_NOTES_READ with a measured one, and a ceiling that quietly drops a
+        producer's notes is worse than one read that took 40ms.
+
+        Guarded like every other per-tick path: measuring must never be able to
+        take Live down (see the 0.20.1 rollback, commit 886856c).
+        """
+        try:
+            elapsed_ms = (time.time() - started_at) * 1000.0
+            if elapsed_ms > self._slowest_note_read_ms:
+                self._slowest_note_read_ms = elapsed_ms
+                self._slowest_note_read_count = note_count
+            if elapsed_ms >= NOTE_READ_SLOW_MS:
+                logger.info(
+                    "Recall Studio: note read took {:.1f}ms for {} notes "
+                    "(cap {}) — slowest so far {:.1f}ms".format(
+                        elapsed_ms, note_count, MAX_NOTES_READ, self._slowest_note_read_ms
+                    )
+                )
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _fingerprint(self, clip, notes=None):
+        """A comparison summary; bounded note snapshots travel separately.
+
+        The digest decides whether a settled edit really changed anything. The
+        note arrays stay out of this object so equality checks remain cheap.
         """
         if notes is None:
             notes = self._read_notes(clip)
@@ -3295,14 +3508,20 @@ class Recall(ControlSurface):
         clip = edit["clip"]
         before = edit["before"]
         notes = self._read_notes(clip)
-        after = self._fingerprint(clip, notes)
+        after = None if notes is None else self._fingerprint(clip, notes)
 
         if after is None:
             # Clip deleted mid-edit; the slot listener reports that instead.
             self._clip_prints.pop(key, None)
+            self._clip_note_snapshots.pop(key, None)
             return
 
         self._clip_prints[key] = after
+        after_notes = {
+            "notes": notes[:MAX_MIDI_NOTES_CAPTURED],
+            "truncated": len(notes) > MAX_MIDI_NOTES_CAPTURED,
+        }
+        self._clip_note_snapshots[key] = after_notes
 
         # Nothing actually changed. Selecting notes, or drawing one and undoing
         # it, both fire the listener and both leave the part exactly as it was —
@@ -3348,13 +3567,17 @@ class Recall(ControlSurface):
             "length_beats": round(getattr(clip, "length", 0.0) or 0.0, 4),
             # One bounded phrase snapshot per settled edit. The frontend keeps
             # this inside progressive recreation detail, never one row per note.
-            "midi_notes": notes[:MAX_MIDI_NOTES_CAPTURED],
-            "midi_notes_truncated": len(notes) > MAX_MIDI_NOTES_CAPTURED,
-            "note_snapshot_version": 1,
+            "midi_notes": after_notes["notes"],
+            "midi_notes_truncated": after_notes["truncated"],
+            "note_snapshot_version": 2,
             # Pre-rendered because the app should not have to know Live's C3 =
             # 60 octave convention to describe what happened.
             "summary": self._note_summary(kind, before_count, after, before),
         }
+        before_notes = edit.get("before_notes")
+        if before_notes is not None:
+            payload["previous_midi_notes"] = before_notes["notes"]
+            payload["previous_midi_notes_truncated"] = before_notes["truncated"]
         payload.update(edit.get("observed_position", {}))
         payload.update(self._clip_arrangement_range(clip))
         self._emit("clip_notes_changed", payload)
@@ -3441,6 +3664,7 @@ class Recall(ControlSurface):
         # Dropped with the listeners so a stale fingerprint cannot attach to a
         # different clip that reuses the same object id.
         self._clip_prints = {}
+        self._clip_note_snapshots = {}
         self._slot_names = {}
         self._arrangement_clip_roster = {}
 
@@ -3819,6 +4043,7 @@ class Recall(ControlSurface):
         self._flush_settled_gestures()
         self._flush_settled_note_edits()
         self._flush_settled_audio_clip_edits()
+        self._flush_settled_thaws()
         # Guarded because this runs on Live's thread on every tick. An unhandled
         # exception in a per-tick callback is the failure class behind the 0.20.1
         # bridge rollback (commit 886856c) -- a heartbeat is health reporting and
@@ -3856,7 +4081,16 @@ class Recall(ControlSurface):
         # arrive (which, on a set the producer is only listening to, is never).
         self._emit(
             "heartbeat",
-            {"bridge_version": SCRIPT_VERSION, "project_path": self._open_set_path()},
+            {
+                "bridge_version": SCRIPT_VERSION,
+                "project_path": self._open_set_path(),
+                # Rides the heartbeat so the measurement reaches the app rather
+                # than living only in Live's log file. It is what MAX_NOTES_READ
+                # should be sized from, and a number nobody can read is a number
+                # nobody will use.
+                "slowest_note_read_ms": round(self._slowest_note_read_ms, 1),
+                "slowest_note_read_count": self._slowest_note_read_count,
+            },
         )
 
     def _observe_project_file_save(self):

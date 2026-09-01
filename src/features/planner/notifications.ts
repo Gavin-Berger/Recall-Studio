@@ -90,12 +90,34 @@ export async function requestDailyPlanPermission(): Promise<boolean> {
 }
 
 export async function sendDailyPlanNotification(content: DailyPlanContent): Promise<boolean> {
+  return sendDesktopNotification(content, "the daily studio plan");
+}
+
+/**
+ * One desktop notification path for the whole app.
+ *
+ * `what` names the caller for the console when it fails, so a silent
+ * notification failure can be told apart from a notification nobody sent.
+ */
+export async function sendDesktopNotification(
+  content: { title: string; body: string },
+  what: string,
+): Promise<boolean> {
   if (!isTauri()) return false;
   try {
-    await invoke("send_daily_plan_notification", content);
+    await invoke("send_desktop_notification", content);
     return true;
   } catch (error) {
-    console.error("Failed to send the daily studio plan notification:", error);
+    console.error(`Failed to send ${what} notification:`, error);
     return false;
   }
+}
+
+/**
+ * Notifications are opt-in, and the permission prompt is the opt-in. Shared
+ * with the daily plan because the OS grants Recall one permission, not one per
+ * feature — asking twice would look like the first answer was not heard.
+ */
+export async function requestNotificationPermission(): Promise<boolean> {
+  return requestDailyPlanPermission();
 }

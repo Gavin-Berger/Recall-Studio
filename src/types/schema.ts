@@ -171,6 +171,19 @@ export const NOTE_KIND_LABEL: Record<NoteChangeKind, string> = {
   edited: "edited",
 };
 
+/** One exact note from the control script's bounded piano-roll snapshot. */
+export type MidiClipNote = {
+  note_id: number | null;
+  pitch: number;
+  start_time: number;
+  duration: number;
+  velocity: number | null;
+  mute: boolean;
+  probability: number | null;
+  velocity_deviation: number | null;
+  release_velocity: number | null;
+};
+
 export type NoteEdit = {
   id: string;
   track_name: string | null;
@@ -193,6 +206,12 @@ export type NoteEdit = {
   previous_pitch_range: string | null;
   velocity_mean: number | null;
   length_beats: number | null;
+  /** Exact current pattern (snapshot v1+) and previous pattern (v2+). */
+  midi_notes?: MidiClipNote[];
+  previous_midi_notes?: MidiClipNote[] | null;
+  midi_notes_truncated?: boolean;
+  previous_midi_notes_truncated?: boolean;
+  note_snapshot_version?: number | null;
   summary: string | null;
   observed_arrangement_position?: string | null;
   observed_arrangement_beats?: number | null;

@@ -271,6 +271,21 @@ pub struct ParameterChange {
     pub changed_at_ms: u64,
 }
 
+/// One captured note inside a bounded before/after MIDI pattern snapshot.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct MidiNoteSnapshot {
+    pub note_id: Option<i64>,
+    pub pitch: i64,
+    pub start_time: f64,
+    pub duration: f64,
+    pub velocity: Option<f64>,
+    #[serde(default)]
+    pub mute: bool,
+    pub probability: Option<f64>,
+    pub velocity_deviation: Option<f64>,
+    pub release_velocity: Option<f64>,
+}
+
 /// One settled note edit in a MIDI clip, as the timeline renders it.
 ///
 /// Unlike [`ParameterChange`] this is NOT materialized into its own table. The
@@ -307,6 +322,13 @@ pub struct NoteEdit {
     pub previous_pitch_range: Option<String>,
     pub velocity_mean: Option<f64>,
     pub length_beats: Option<f64>,
+    /// Exact bounded note patterns. Current notes exist in snapshot v1+;
+    /// previous notes exist in v2+ and make added/removed/moved notes visible.
+    pub midi_notes: Vec<MidiNoteSnapshot>,
+    pub previous_midi_notes: Option<Vec<MidiNoteSnapshot>>,
+    pub midi_notes_truncated: bool,
+    pub previous_midi_notes_truncated: bool,
+    pub note_snapshot_version: Option<i64>,
     /// Ready-to-show phrase: "16 notes (+4), C1-G1 -> C1-G2".
     pub summary: Option<String>,
     pub observed_arrangement_position: Option<String>,
@@ -314,6 +336,31 @@ pub struct NoteEdit {
     pub arrangement_start_beats: Option<f64>,
     pub arrangement_end_beats: Option<f64>,
     pub changed_at_ms: u64,
+}
+
+fn parse_midi_notes(value: Option<&Value>) -> Vec<MidiNoteSnapshot> {
+    value
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|note| serde_json::from_value(note.clone()).ok())
+        .collect()
+}
+
+/// A save the control surface actually WATCHED happen.
+///
+/// Live exposes no save callback, so the remote script watches the open `.als`
+/// file's modification stamp and emits `project_saved` when it moves. That makes
+/// this the only fact in the whole version graph that is observed rather than
+/// inferred: a save is the producer deciding a state is worth keeping, stamped
+/// with when and which file.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ObservedSave {
+    pub id: String,
+    pub session_id: String,
+    /// The `.als` that was written. Absent on a set that has never been saved.
+    pub als_path: Option<String>,
+    pub saved_at_ms: u64,
 }
 
 /// A discrete clip or sample addition that belongs in the arrangement activity
@@ -356,6 +403,10 @@ pub fn parse_note_edit(
     };
     let int = |key: &str| parsed.get(key).and_then(Value::as_i64);
     let float = |key: &str| parsed.get(key).and_then(Value::as_f64);
+    let midi_notes = parse_midi_notes(parsed.get("midi_notes"));
+    let previous_midi_notes = parsed
+        .get("previous_midi_notes")
+        .map(|value| parse_midi_notes(Some(value)));
 
     Some(NoteEdit {
         id: format!("note-edit-{}", event_id),
@@ -377,6 +428,17 @@ pub fn parse_note_edit(
         previous_pitch_range: text("previous_pitch_range"),
         velocity_mean: parsed.get("velocity_mean").and_then(Value::as_f64),
         length_beats: parsed.get("length_beats").and_then(Value::as_f64),
+        midi_notes,
+        previous_midi_notes,
+        midi_notes_truncated: parsed
+            .get("midi_notes_truncated")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        previous_midi_notes_truncated: parsed
+            .get("previous_midi_notes_truncated")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        note_snapshot_version: int("note_snapshot_version"),
         summary: text("summary"),
         observed_arrangement_position: text("observed_arrangement_position"),
         observed_arrangement_beats: float("observed_arrangement_beats"),
@@ -1609,6 +1671,13 @@ mod tests {
             "previous_pitch_range": "C1-G1",
             "velocity_mean": 96.7,
             "length_beats": 8.0,
+            "midi_notes": [
+                { "note_id": 1, "pitch": 36, "start_time": 0.0, "duration": 1.0, "velocity": 96.0, "mute": false }
+            ],
+            "previous_midi_notes": [],
+            "midi_notes_truncated": false,
+            "previous_midi_notes_truncated": false,
+            "note_snapshot_version": 2,
             "summary": "16 notes (+4), C1-G1 -> C1-G2"
         })
         .to_string();
@@ -1622,6 +1691,10 @@ mod tests {
         assert_eq!(edit.change_kind.as_deref(), Some("notes_added"));
         assert_eq!(edit.note_count, Some(16));
         assert_eq!(edit.previous_note_count, Some(12));
+        assert_eq!(edit.midi_notes.len(), 1);
+        assert_eq!(edit.midi_notes[0].pitch, 36);
+        assert_eq!(edit.previous_midi_notes, Some(vec![]));
+        assert_eq!(edit.note_snapshot_version, Some(2));
         assert_eq!(
             edit.summary.as_deref(),
             Some("16 notes (+4), C1-G1 -> C1-G2")
@@ -1662,5 +1735,10 @@ mod tests {
         assert_eq!(edit.note_count, Some(3));
         assert!(edit.summary.is_none());
         assert!(edit.pitch_range.is_none());
+        assert!(edit.midi_notes.is_empty());
+        assert!(edit.previous_midi_notes.is_none());
+        assert!(!edit.midi_notes_truncated);
+        assert!(!edit.previous_midi_notes_truncated);
+        assert!(edit.note_snapshot_version.is_none());
     }
 }

@@ -303,6 +303,12 @@ pub static CATALOG: &[EventDef] = &[
         "A frozen track was flattened to audio in Ableton.",
     ),
     def(
+        "track_unfrozen",
+        Important,
+        "Track Unfrozen",
+        "A frozen track was thawed back to its instrument in Ableton.",
+    ),
+    def(
         "track_color_changed",
         Coalescible,
         "Track Color Changed",
@@ -1008,6 +1014,8 @@ mod tests {
         "track_created",
         "track_deleted",
         "track_frozen",
+        "track_flattened",
+        "track_unfrozen",
         "track_list_changed",
         "track_name_changed",
         "track_routing_changed",

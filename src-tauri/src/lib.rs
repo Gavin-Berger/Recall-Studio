@@ -13,7 +13,8 @@ use metrics::{BridgeMetrics, BridgeMetricsSnapshot};
 use planner::PlannerTask;
 use protocol::RecallEvent;
 use schema_projection::{
-    CreativeMoment, CreativeMomentTarget, NoteEdit, ParameterChange, ProjectSchema, TimelineClipEvent,
+    CreativeMoment, CreativeMomentTarget, NoteEdit, ObservedSave, ParameterChange, ProjectSchema,
+    TimelineClipEvent,
 };
 use session::{
     ProjectFolderMetadata, SavedProject, SavedSession, SavedSessionMetadata, SessionState,
@@ -61,7 +62,10 @@ fn show_main_window(app: &tauri::AppHandle) {
 // planner reminder needs to respond to a click, so retain notify-rust's handle
 // until Windows reports that the toast body was activated.
 #[tauri::command]
-fn send_daily_plan_notification(
+// Renamed from `send_daily_plan_notification`: nothing in it was ever about
+// the daily plan, and the save reminder needed the same Windows AppUserModelID
+// handling. One desktop notification path, two callers.
+fn send_desktop_notification(
     app: tauri::AppHandle,
     title: String,
     body: String,
@@ -2057,6 +2061,15 @@ fn get_note_edits(state: State<'_, AppState>, session_id: String) -> Result<Vec<
 }
 
 #[tauri::command]
+fn get_observed_saves(
+    state: State<'_, AppState>,
+    session_ids: Vec<String>,
+) -> Result<Vec<ObservedSave>, String> {
+    let storage = state.storage.lock().expect("Storage state lock failed");
+    storage.get_observed_saves(&session_ids)
+}
+
+#[tauri::command]
 fn get_timeline_clip_events(
     state: State<'_, AppState>,
     session_id: String,
@@ -2353,7 +2366,7 @@ pub fn run() {
             create_planner_task,
             update_planner_task,
             delete_planner_task,
-            send_daily_plan_notification,
+            send_desktop_notification,
             get_connection_status,
             get_recent_events,
             start_session,
@@ -2390,6 +2403,7 @@ pub fn run() {
             get_parameter_changes,
             get_note_edits,
             get_timeline_clip_events,
+            get_observed_saves,
             list_creative_moments,
             create_creative_moment,
             update_creative_moment,

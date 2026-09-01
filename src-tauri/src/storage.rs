@@ -3,7 +3,8 @@ use crate::protocol::RecallEvent;
 use crate::schema_projection::{
     apply_first_observed_states, build_parameter_changes, parse_note_edit, parse_session_tree,
     ChangeEvent, CreativeMoment, CreativeMomentTarget, DeviceObj, DeviceRole, NoteEdit,
-    ParameterChange, ParameterObj, ParsedParam, ParsedTrack, ProjectSchema, TimelineClipEvent,
+    ObservedSave, ParameterChange, ParameterObj, ParsedParam, ParsedTrack, ProjectSchema,
+    TimelineClipEvent,
     TrackObj, TrackType,
 };
 use crate::session::{
@@ -1009,6 +1010,30 @@ impl StorageState {
             .map_err(|error| format!("Failed to count session events: {}", error))?;
 
         Ok(event_count == 0)
+    }
+
+    /// The `.als` a session is anchored to, if any.
+    ///
+    /// Exists for the rotation guard in `udp_listener.rs`: the in-memory
+    /// `session_als_path` marker starts empty on every launch and after every
+    /// bridge reconnect, so a take resumed at boot looks unanchored to the
+    /// receive thread even when the database knows exactly which set it covers.
+    /// Rotating on that emptiness closed and reopened a take on the SAME file,
+    /// which is how 13 of 31 capture boundaries in the real library ended up
+    /// 10-28 milliseconds apart (issue #25). The durable anchor is the answer to
+    /// "is this really a different set", so the guard reads it from here.
+    pub fn session_als_path(&self, session_id: &str) -> Result<Option<String>, String> {
+        let connection = self.open_connection()?;
+
+        connection
+            .query_row(
+                "SELECT als_path FROM sessions WHERE id = ?1",
+                params![session_id],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .optional()
+            .map(|found| found.flatten())
+            .map_err(|error| format!("Failed to read session anchor: {}", error))
     }
 
     pub fn save_session_started(&self, status: &SessionStatus) -> Result<(), String> {
@@ -2677,6 +2702,69 @@ impl StorageState {
         }
 
         Ok(edits)
+    }
+
+    /// Every save the control surface watched, across a set of captures.
+    ///
+    /// Ordered oldest first, because the only question asked of it is "what was
+    /// saved before this" — the observed-parentage rule in `versionGraph`.
+    ///
+    /// The path is read from the payload rather than the session's anchor: a
+    /// Save As writes a file the capture is not anchored to yet, and that
+    /// mismatch is exactly the evidence the graph wants.
+    pub fn get_observed_saves(&self, session_ids: &[String]) -> Result<Vec<ObservedSave>, String> {
+        if session_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let connection = self.open_connection()?;
+
+        // Built rather than bound as one parameter: rusqlite has no array type,
+        // and the ids are internally generated, never user text.
+        let placeholders = session_ids
+            .iter()
+            .enumerate()
+            .map(|(index, _)| format!("?{}", index + 1))
+            .collect::<Vec<_>>()
+            .join(", ");
+
+        let sql = format!(
+            "SELECT id, session_id, timestamp_ms, payload
+             FROM events
+             WHERE event_type = 'project_saved'
+               AND session_id IN ({})
+             ORDER BY timestamp_ms ASC, id ASC",
+            placeholders
+        );
+
+        let mut statement = connection
+            .prepare(&sql)
+            .map_err(|error| format!("Failed to prepare observed saves query: {}", error))?;
+
+        let bound: Vec<&dyn rusqlite::ToSql> = session_ids
+            .iter()
+            .map(|id| id as &dyn rusqlite::ToSql)
+            .collect();
+
+        let rows = statement
+            .query_map(bound.as_slice(), |row| {
+                let payload: Option<String> = row.get(3)?;
+                let parsed = payload
+                    .as_deref()
+                    .and_then(|raw| serde_json::from_str::<Value>(raw).ok());
+                let als_path = parsed.as_ref().and_then(|json| {
+                    read_payload_string(Some(json), &["project_path", "file_path", "projectPath"])
+                });
+                Ok(ObservedSave {
+                    id: format!("save-{}", row.get::<_, i64>(0)?),
+                    session_id: row.get(1)?,
+                    als_path,
+                    saved_at_ms: row.get::<_, i64>(2)? as u64,
+                })
+            })
+            .map_err(|error| format!("Failed to read observed saves: {}", error))?;
+
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|error| format!("Failed to collect observed saves: {}", error))
     }
 
     pub fn get_timeline_clip_events(
@@ -5461,6 +5549,78 @@ mod tests {
         let mut event = event(session_id, "live_set_snapshot");
         event.payload = Some(payload.to_string());
         event
+    }
+
+    // ── Observed saves ─────────────────────────────────────────────────────
+    //
+    // A save is the only fact in the version graph that is WATCHED rather than
+    // inferred. Live exposes no save callback, so the control surface watches
+    // the open .als file's modification stamp; these pin that the resulting
+    // rows survive the round trip into the read model the graph uses.
+
+    fn project_saved_event(session_id: &str, timestamp_ms: u64, path: &str) -> RecallEvent {
+        let mut event = event(session_id, "project_saved");
+        event.timestamp_ms = timestamp_ms;
+        event.payload = Some(
+            serde_json::json!({
+                "project_path": path,
+                "save_detection": "als_file_modified",
+            })
+            .to_string(),
+        );
+        event
+    }
+
+    #[test]
+    fn observed_saves_come_back_oldest_first_with_the_file_that_was_written() {
+        let (storage, path) = temp_storage();
+        let session_id = "take-saves";
+        storage
+            .save_session_started(&SessionStatus {
+                active: true,
+                session_id: Some(session_id.into()),
+                started_at_ms: Some(1_000),
+                ended_at_ms: None,
+            })
+            .unwrap();
+
+        storage
+            .save_events_batch(&[
+                project_saved_event(session_id, 3_000, "M:/Ableton/Night v2.als"),
+                project_saved_event(session_id, 2_000, "M:/Ableton/Night v1.als"),
+                event(session_id, "parameter_changed"),
+            ])
+            .unwrap();
+
+        let saves = storage
+            .get_observed_saves(&[session_id.to_string()])
+            .expect("read observed saves");
+
+        assert_eq!(saves.len(), 2, "only project_saved rows are saves");
+        assert_eq!(
+            saves
+                .iter()
+                .map(|save| save.als_path.as_deref())
+                .collect::<Vec<_>>(),
+            vec![
+                Some("M:/Ableton/Night v1.als"),
+                Some("M:/Ableton/Night v2.als")
+            ],
+            "oldest first: the only question asked is what was saved BEFORE this"
+        );
+        assert_eq!(saves[0].saved_at_ms, 2_000);
+
+        cleanup(&path);
+    }
+
+    #[test]
+    fn asking_for_no_sessions_reads_nothing_rather_than_everything() {
+        // An empty id list must not become an unfiltered `IN ()` scan of every
+        // save in the library — the caller asked about no captures.
+        let (storage, path) = temp_storage();
+        let saves = storage.get_observed_saves(&[]).expect("read observed saves");
+        assert!(saves.is_empty());
+        cleanup(&path);
     }
 
     /// A parameter_changed event with the canonical fields the materializer reads.

@@ -122,13 +122,15 @@ def test_automation_write_keeps_real_callback_points_for_recreation():
     emitted = []
     recall._emit = lambda event_type, payload: emitted.append((event_type, payload))
 
+    # The device pointer rides with every write. Two Auto Filters on one track
+    # are a routine chain, and without the id their lanes merge into one.
     recall._start_automation_write(
-        track_obj, parameter, "Auto Filter", "Frequency", AUTOMATION_STATE_PLAYING
+        track_obj, parameter, "Auto Filter", "dev-7", "Frequency", AUTOMATION_STATE_PLAYING
     )
-    recall._record_automation_value(track_obj, parameter, "Auto Filter", "Frequency")
+    recall._record_automation_value(track_obj, parameter, "Auto Filter", "dev-7", "Frequency")
     recall.song.current_song_time = 164.0
     parameter.value = 0.8
-    recall._record_automation_value(track_obj, parameter, "Auto Filter", "Frequency")
+    recall._record_automation_value(track_obj, parameter, "Auto Filter", "dev-7", "Frequency")
     recall._finish_automation_write(parameter, AUTOMATION_STATE_PLAYING)
 
     event_type, payload = emitted[0]
@@ -136,3 +138,4 @@ def test_automation_write_keeps_real_callback_points_for_recreation():
     assert [point["beat"] for point in payload["automation_points"]] == [160.0, 164.0]
     assert [point["value"] for point in payload["automation_points"]] == [0.25, 0.8]
     assert payload["automation_capture_method"] == "write_callbacks"
+    assert payload["device_id"] == "dev-7"

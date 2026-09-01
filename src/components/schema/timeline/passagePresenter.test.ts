@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import type { SessionPassage } from "./sessionAnalysis";
-import { describePathCleanup, presentPassage, presentedControl } from "./passagePresenter";
+import {
+  describePathCleanup,
+  presentPassage,
+  presentPassageStory,
+  presentedControl,
+} from "./passagePresenter";
 import { emptyProducerWorkCounts, type ProducerWorkCounts } from "./producerWork";
 
 function workCounts(overrides: Partial<ProducerWorkCounts> = {}): ProducerWorkCounts {
@@ -84,6 +89,85 @@ describe("presented control", () => {
 });
 
 describe("presented passage", () => {
+  it("leads a chronological trail with the actual control and net result, not its category count", () => {
+    const story = presentPassageStory(passage({
+      primaryTrackNames: ["Bass Main"],
+      controls: [{
+        deviceName: "EQ Eight",
+        parameterName: "1 Frequency A",
+        trackName: "Bass Main",
+        count: 21,
+        beforeDisplay: "400 Hz",
+        afterDisplay: "2.1 kHz",
+      }],
+      observedArrangementPositions: ["Bar 33 · Beat 2", "Bar 41 · Beat 1"],
+      workCounts: workCounts({ sound: 21, arrangement: 2 }),
+    }));
+
+    expect(story).toEqual({
+      title: "EQ Eight — 1 Frequency A",
+      lead: {
+        deviceName: "EQ Eight",
+        parameterName: "1 Frequency A",
+        trackName: "Bass Main",
+        outcome: "400 Hz → 2.1 kHz",
+      },
+      note: null,
+      groups: [],
+      position: "Bar 33, beat 2 → bar 41, beat 1",
+      markers: [],
+    });
+  });
+
+  it("groups supporting controls by device and track instead of making a delimiter sentence", () => {
+    const story = presentPassageStory(passage({
+      controls: [
+        {
+          deviceName: "Serum 2",
+          parameterName: "Filter 1 Freq",
+          trackName: "14-Serum 2",
+          count: 1,
+          beforeDisplay: "8 Hz",
+          afterDisplay: "4400 Hz",
+        },
+        {
+          deviceName: "EQ Eight",
+          parameterName: "1 Frequency A",
+          trackName: "14-Serum 2",
+          count: 1,
+          beforeDisplay: "30.0 Hz",
+          afterDisplay: "104 Hz",
+        },
+        {
+          deviceName: "EQ Eight",
+          parameterName: "1 Gain A",
+          trackName: "14-Serum 2",
+          count: 1,
+          beforeDisplay: "0.00 dB",
+          afterDisplay: "0.87 dB",
+        },
+      ],
+    }));
+
+    expect(story.groups).toEqual([{
+      deviceName: "EQ Eight",
+      trackName: "14-Serum 2",
+      changes: [
+        { parameterName: "1 Frequency A", outcome: "30.0 Hz → 104 Hz" },
+        { parameterName: "1 Gain A", outcome: "0.00 dB → 0.87 dB" },
+      ],
+    }]);
+  });
+
+  it("uses the actual MIDI or clip cue when a passage has no named control", () => {
+    expect(presentPassageStory(passage({
+      kind: "writing",
+      firstAction: "MIDI edit · Verse hook",
+      lastAction: "MIDI edit · Verse hook",
+      controls: [],
+    }))).toMatchObject({ title: "MIDI edit — Verse hook" });
+  });
+
   it("counts only touched tracks in a mixing headline", () => {
     const presented = presentPassage(
       passage({

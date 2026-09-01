@@ -11,10 +11,9 @@
 // eye lands on; the detail is evidence, not the story.
 //
 // WHAT IT REFUSES TO DO: guess. Every statement below is derivable from the
-// before/after fields the bridge already captures. Rhythm is deliberately absent
-// — the fingerprint has no note onsets, so "you retimed this" is not something
-// this file can honestly say, and inventing it would make the one surface a
-// producer trusts for recall start telling small lies.
+// before/after fields the bridge captures. Exact note snapshots are rendered by
+// VersionTimelineScreen; this summary stays conservative instead of inventing a
+// musical intention from a visual difference in the piano roll.
 
 import type { NoteEdit } from "../../../types/schema";
 
@@ -68,7 +67,37 @@ function describeShift(shift: number): string {
     const octaves = distance / SEMITONES_PER_OCTAVE;
     return `Moved ${direction} ${plural(octaves, "octave")}`;
   }
+  if (distance > SEMITONES_PER_OCTAVE) {
+    const octaves = Math.floor(distance / SEMITONES_PER_OCTAVE);
+    const semitones = distance % SEMITONES_PER_OCTAVE;
+    return `Transposed ${direction} ${plural(octaves, "octave")} and ${plural(semitones, "semitone")}`;
+  }
   return `Transposed ${direction} ${plural(distance, "semitone")}`;
+}
+
+/** A bridge summary without Live's placeholder clip name or log punctuation. */
+function readableBridgeSummary(edit: NoteEdit): string | null {
+  let summary = edit.summary?.trim();
+  if (!summary) return null;
+
+  const clip = namedMidiClip(edit);
+  if (clip && summary.toLocaleLowerCase().startsWith(`${clip.toLocaleLowerCase()} `)) {
+    summary = summary.slice(clip.length).trim();
+  }
+  summary = summary
+    .replace(/^untitled clip(?:\s*[:—-]\s*|\s+)/i, "")
+    .replace(/\s*(?:->|→)\s*/g, " → ")
+    .replace(/\b([A-G](?:#|b)?-?\d+)\s+to\s+([A-G](?:#|b)?-?\d+)\b/gi, "$1 → $2")
+    .trim();
+  if (!summary) return null;
+  return summary.charAt(0).toLocaleUpperCase() + summary.slice(1);
+}
+
+function isFingerprintSummary(summary: string): boolean {
+  // The bridge's compact "3 notes (+3), E3-A3" line is evidence, not a
+  // producer-facing description. The structured card shows every one of these
+  // fields more clearly, so let the derived musical headline lead instead.
+  return /^\d+\s+notes?(?:\s+\([+-]\d+\))?\s*(?:,|·|$)/i.test(summary);
 }
 
 /** The pitch range, shown as a move only when it actually moved. */
@@ -99,9 +128,16 @@ export function describeMidiChange(edit: NoteEdit): MidiChangeSummary {
   const after = edit.note_count ?? 0;
   const before = edit.previous_note_count;
 
-  // The bridge sometimes sends its own summary. It knows things this doesn't.
-  if (edit.summary?.trim()) {
-    return { headline: edit.summary.trim(), detail: rangeDetail(edit) };
+  // The bridge sometimes sends its own summary. It knows things this doesn't,
+  // but it also used to prefix nearly every row with the nonexistent proper
+  // noun "Untitled clip". Keep the musical fact and remove the placeholder.
+  const bridgeSummary = readableBridgeSummary(edit);
+  if (bridgeSummary && !isFingerprintSummary(bridgeSummary)) {
+    const range = rangeDetail(edit);
+    const repeatsRange = Boolean(
+      range && bridgeSummary.toLocaleLowerCase().includes(range.toLocaleLowerCase()),
+    );
+    return { headline: bridgeSummary, detail: repeatsRange ? null : range };
   }
 
   if (edit.change_kind === "cleared" || (after === 0 && (before ?? 0) > 0)) {
@@ -156,9 +192,15 @@ export function describeMidiChange(edit: NoteEdit): MidiChangeSummary {
  * one. The track is the thing they actually recognise, so when there is no real
  * clip name, name the track and say plainly that these were MIDI changes.
  */
-export function midiChangeSubject(edit: NoteEdit): string {
+export function namedMidiClip(edit: NoteEdit): string | null {
   const clip = edit.clip_name?.trim();
-  // "0" is Live's absent-text sentinel; it survives as a truthy string.
-  if (clip && clip !== "0") return clip;
-  return edit.track_name?.trim() || "MIDI changes";
+  // "0" and "Untitled clip" are Live/bridge absence sentinels, not names the
+  // producer can find in the set.
+  if (!clip || clip === "0" || /^untitled clip$/i.test(clip)) return null;
+  return clip;
+}
+
+export function midiChangeSubject(edit: NoteEdit, fallbackTrack?: string | null): string {
+  const track = edit.track_name?.trim();
+  return namedMidiClip(edit) ?? (track || fallbackTrack?.trim() || "MIDI changes");
 }

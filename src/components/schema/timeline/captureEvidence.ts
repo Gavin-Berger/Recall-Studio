@@ -160,7 +160,7 @@ export function captureEvidence(event: SavedSessionEvent | null | undefined): Ca
   const facts: EvidenceFact[] = [];
   const sourcePath = event.file_path ?? text(valueAt(payload, "file_path", "path"));
   addFact(facts, "Source", sourcePath);
-  addFact(facts, "Clip length", formattedNumber(valueAt(payload, "length_beats", "span_beats"), " beats"));
+  addFact(facts, "Clip length", formattedNumber(valueAt(payload, "length_beats", "span_beats"), " quarter-note beats"));
   addFact(facts, "Notes", formattedNumber(valueAt(payload, "note_count", "count")));
   addFact(facts, "Pitch range", text(payload.pitch_range));
   addFact(facts, "Pitches used", formattedNumber(payload.distinct_pitches));

@@ -239,6 +239,68 @@ describe("session report", () => {
     ]));
   });
 
+  it("keeps every captured control and its exact song position", () => {
+    const changes = Array.from({ length: 5 }, (_, index) => ({
+      ...change(`complete-${index}`, start + 60_000 + index * 1_000, index / 10, (index + 1) / 10),
+      parameter_id: `parameter-${index}`,
+      parameter_name: `Parameter ${index + 1}`,
+      observed_arrangement_position: `Bar ${index + 1} · Beat 1`,
+    }));
+    const report = buildSessionReport(input({
+      changes,
+      noteEdits: [],
+      clipEvents: [],
+      moments: [],
+    }));
+
+    expect(report.decisions.filter((decision) => decision.kind === "control")).toHaveLength(5);
+    expect(report.chapters[0]?.controls).toHaveLength(5);
+    expect(Object.keys(report.evidence)).toHaveLength(5);
+    expect(Object.values(report.evidence).map((row) => row.position)).toEqual([
+      "Bar 1 · Beat 1",
+      "Bar 2 · Beat 1",
+      "Bar 3 · Beat 1",
+      "Bar 4 · Beat 1",
+      "Bar 5 · Beat 1",
+    ]);
+  });
+
+  it("keeps the complete MIDI edit and removes the fake Untitled clip name", () => {
+    const moved = noteEdit();
+    moved.clip_name = "Untitled clip";
+    moved.note_count = 1;
+    moved.previous_note_count = 1;
+    moved.distinct_pitches = 1;
+    moved.pitch_min = 90;
+    moved.pitch_max = 90;
+    moved.previous_pitch_min = 77;
+    moved.previous_pitch_max = 77;
+    moved.pitch_range = "F#5";
+    moved.previous_pitch_range = "F4";
+    moved.velocity_mean = 100;
+    moved.length_beats = 20;
+    moved.summary = "Untitled clip moved F4 to F#5";
+    moved.observed_arrangement_position = "Bar 17 · Beat 2";
+    const report = buildSessionReport(input({
+      changes: [],
+      noteEdits: [moved],
+      clipEvents: [],
+      moments: [],
+    }));
+
+    expect(report.decisions).toContainEqual(expect.objectContaining({
+      kind: "midi",
+      subject: "Bass",
+      outcome: "Moved F4 → F#5",
+    }));
+    expect(report.evidence["midi:midi-1"]).toMatchObject({
+      subject: "Bass",
+      detail: "Moved F4 → F#5",
+      position: "Bar 17 · Beat 2",
+      midi: moved,
+    });
+  });
+
   it("surfaces partial capture instead of treating unwatched controls as inactivity", () => {
     const partial = rawEvent({
       payload: JSON.stringify({

@@ -458,12 +458,14 @@ describe("describeNoteEdit", () => {
     );
   });
 
-  it("names an unnamed clip rather than leaving a hole", () => {
+  it("describes an unnamed clip rather than inventing a name for it", () => {
     // Live reports no name as "" — and as a literal "0" for absent text props.
-    expect(clipLabel(null)).toBe("Untitled clip");
-    expect(clipLabel("")).toBe("Untitled clip");
-    expect(clipLabel("   ")).toBe("Untitled clip");
-    expect(clipLabel("0")).toBe("Untitled clip");
+    // The fallback must not read as a title the producer could go and find:
+    // "Untitled clip" sent people hunting in Live for a clip that isn't there.
+    expect(clipLabel(null)).toBe("MIDI clip");
+    expect(clipLabel("")).toBe("MIDI clip");
+    expect(clipLabel("   ")).toBe("MIDI clip");
+    expect(clipLabel("0")).toBe("MIDI clip");
     expect(clipLabel("Verse")).toBe("Verse");
   });
 

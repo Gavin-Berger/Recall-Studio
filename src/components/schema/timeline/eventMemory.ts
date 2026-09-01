@@ -48,6 +48,7 @@ export const PRODUCER_MEMORY_EVENT_TYPES = new Set([
   "track_ungrouped",
   "track_frozen",
   "track_flattened",
+  "track_unfrozen",
   "track_routing_changed",
   "device_added",
   "device_removed",
@@ -350,6 +351,8 @@ export function producerMemoryEvent(event: SavedSessionEvent): ProducerMemoryEve
       return memory(event, payload, "structure", "Track frozen", `Froze ${track}`);
     case "track_flattened":
       return memory(event, payload, "structure", "Track flattened", `Committed ${track} to audio`);
+    case "track_unfrozen":
+      return memory(event, payload, "structure", "Track unfrozen", `Unfroze ${track}`);
     case "track_routing_changed": {
       const change = routingChange(payload);
       // A routing listener has no useful meaning unless it captured both ends

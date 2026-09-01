@@ -11,7 +11,7 @@ import type { SavedSession, SavedSessionEvent, SavedSessionMetadata } from "../.
 import { buildSessionReport, type SessionReport, type SessionReportInput } from "./sessionReport";
 
 export const REPORT_PREVIEW_SESSION_ID = "report-preview-current";
-const BASELINE_PREVIEW_SESSION_ID = "report-preview-baseline";
+export const BASELINE_PREVIEW_SESSION_ID = "report-preview-baseline";
 const previewStart = new Date(2026, 7, 18, 21, 42).getTime();
 
 function rawEvent(overrides: Partial<SavedSessionEvent> = {}): SavedSessionEvent {
@@ -115,6 +115,18 @@ function change(
 }
 
 function note(id: string, minute: number, trackId: string, trackName: string, clipName: string, before: number, after: number): NoteEdit {
+  const pitchPool = [36, 40, 43, 45, 48, 52, 55];
+  const pattern = (count: number) => Array.from({ length: count }, (_, index) => ({
+    note_id: index + 1,
+    pitch: pitchPool[index % pitchPool.length]!,
+    start_time: (index % 8) * 0.5,
+    duration: index % 3 === 0 ? 0.75 : 0.4,
+    velocity: 82 + (index % 5) * 5,
+    mute: false,
+    probability: index % 6 === 0 ? 0.85 : 1,
+    velocity_deviation: 0,
+    release_velocity: 64,
+  }));
   return {
     id,
     track_name: trackName,
@@ -133,13 +145,26 @@ function note(id: string, minute: number, trackId: string, trackName: string, cl
     previous_pitch_range: "C1-C2",
     velocity_mean: 94,
     length_beats: 8,
+    previous_midi_notes: pattern(before),
+    midi_notes: pattern(after),
+    previous_midi_notes_truncated: false,
+    midi_notes_truncated: false,
+    note_snapshot_version: 2,
     summary: `${after} notes (${after - before > 0 ? "+" : ""}${after - before}) · C1-G2`,
     observed_arrangement_position: "Bar 17 · Beat 1",
     changed_at_ms: previewStart + minute * 60_000,
   };
 }
 
-function clip(id: string, minute: number, trackId: string, trackName: string, name: string): TimelineClipEvent {
+function clip(
+  id: string,
+  minute: number,
+  trackId: string,
+  trackName: string,
+  name: string,
+  arrangementStartBeats: number,
+  observedPosition: string,
+): TimelineClipEvent {
   return {
     id,
     event_type: "sample_added",
@@ -147,7 +172,9 @@ function clip(id: string, minute: number, trackId: string, trackName: string, na
     track_id: trackId,
     clip_name: name,
     sample_name: name,
-    observed_arrangement_position: "Bar 1 · Beat 1",
+    observed_arrangement_position: observedPosition,
+    arrangement_start_beats: arrangementStartBeats,
+    arrangement_end_beats: arrangementStartBeats + 4,
     changed_at_ms: previewStart + minute * 60_000,
   };
 }
@@ -200,8 +227,8 @@ const currentNoteEdits = [
 ];
 
 const currentClipEvents = [
-  clip("clip-1", 2, "drums", "Drum Group", "kick_07.wav"),
-  clip("clip-2", 49, "texture", "Texture", "warehouse_air.wav"),
+  clip("clip-1", 2, "drums", "Drum Group", "kick_07.wav", 0, "Bar 1 · Beat 1"),
+  clip("clip-2", 49, "texture", "Texture", "warehouse_air.wav", 192, "Bar 49 · Beat 1"),
 ];
 
 const currentMoments = [
@@ -349,6 +376,11 @@ export function isReportPreviewSession(sessionId: string): boolean {
   return sessionId === REPORT_PREVIEW_SESSION_ID || sessionId === BASELINE_PREVIEW_SESSION_ID;
 }
 
+/** The same typed capture input used by the report and Timeline previews. */
+export function reportPreviewInput(sessionId: string): SessionReportInput {
+  return sessionId === BASELINE_PREVIEW_SESSION_ID ? baselineInput : currentInput;
+}
+
 export function buildReportPreview(sessionId: string): SessionReport {
-  return buildSessionReport(sessionId === BASELINE_PREVIEW_SESSION_ID ? baselineInput : currentInput);
+  return buildSessionReport(reportPreviewInput(sessionId));
 }

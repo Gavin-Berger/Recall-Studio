@@ -203,9 +203,16 @@ export function describeAutomationWriteObservation(
 // string (or a literal "0" — its sentinel for an absent text property). Either
 // one rendered raw leaves a row labelled " · notes" with a hole where the clip
 // should be.
+//
+// The fallback is a DESCRIPTION, never a name (issue #12). "Untitled clip" reads
+// as a proper noun: the producer goes looking in Live for the clip called
+// "Untitled" and there isn't one, and every unnamed clip wore the same one, so a
+// dozen note edits produced a dozen identical labels. Note edits are always MIDI,
+// so "MIDI clip" is both true and obviously generic. Two unnamed clips stay
+// distinct rows regardless — they are grouped on `clip_id`, not on this text.
 export function clipLabel(name: string | null | undefined): string {
   const trimmed = name?.trim();
-  if (!trimmed || trimmed === "0") return "Untitled clip";
+  if (!trimmed || trimmed === "0") return "MIDI clip";
   return trimmed;
 }
 

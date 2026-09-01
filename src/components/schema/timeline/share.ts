@@ -232,7 +232,12 @@ function eventTrackKey(change: ParameterChange): string {
 }
 
 function describeClipEvent(event: TimelineClipEvent): string {
-  const name = cleanName(event.sample_name ?? event.clip_name, "Untitled clip");
+  // The fallback describes, it does not name (issue #12). Most clips in Live are
+  // never titled, so a shared timeline read as a list of identical "Untitled
+  // clip" lines — and a producer cannot go and find a clip by that name. The
+  // event type already says whether this was MIDI or audio, so say that instead.
+  const midi = event.event_type === "midi_clip_created" || event.event_type === "midi_clip_recorded";
+  const name = cleanName(event.sample_name ?? event.clip_name, midi ? "MIDI clip" : "audio clip");
   if (event.event_type === "sample_added" || event.event_type === "audio_clip_added") return `Sample inserted: ${name}`;
   if (event.event_type === "audio_clip_recorded") return `Recorded audio: ${name}`;
   if (event.event_type === "midi_clip_recorded") return `Recorded MIDI: ${name}`;
@@ -281,7 +286,9 @@ function buildChronologicalTimeline(sources: ShareTimelineSource[]): TimelineEnt
         atMs: item.atMs,
         endMs: item.atMs,
         track: cleanName(item.edit.track_name, "Unassigned track"),
-        clip: cleanName(item.edit.clip_name, "Untitled clip"),
+        // Note edits are always MIDI, and an unnamed clip gets a description
+        // rather than a title it does not have (issue #12).
+        clip: cleanName(item.edit.clip_name, "MIDI clip"),
         detail: describeNoteEdit(item.edit),
       });
       continue;

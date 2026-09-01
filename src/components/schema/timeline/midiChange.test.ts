@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { NoteEdit } from "../../../types/schema";
-import { describeMidiChange, midiChangeSubject } from "./midiChange";
+import { describeMidiChange, midiChangeSubject, namedMidiClip } from "./midiChange";
 
 // A clip with four notes sitting between C1 and G2. Each test bends exactly one
 // thing away from this, so the assertion is always about the single difference.
@@ -111,6 +111,54 @@ describe("describeMidiChange", () => {
     expect(headline).toBe("Doubled the hook");
   });
 
+  it("turns the bridge's untitled-clip log line into a readable pitch move", () => {
+    const summary = describeMidiChange(edit({
+      clip_name: "Untitled clip",
+      summary: "Untitled clip moved F4 to F#5",
+      pitch_range: "F#5",
+      previous_pitch_range: "F4",
+    }));
+
+    expect(summary).toEqual({ headline: "Moved F4 → F#5", detail: null });
+  });
+
+  it("does not use the bridge's min-max fingerprint as the headline", () => {
+    const summary = describeMidiChange(edit({
+      previous_note_count: 0,
+      note_count: 3,
+      distinct_pitches: 3,
+      pitch_range: "E3-A3",
+      previous_pitch_range: null,
+      summary: "3 notes (+3), E3-A3",
+      change_kind: "notes_added",
+    }));
+
+    expect(summary.headline).toBe("Wrote a new part");
+    expect(summary.detail).toContain("3 notes");
+  });
+
+  it("also rejects the older dot-separated min-max fingerprint", () => {
+    const summary = describeMidiChange(edit({
+      previous_note_count: 8,
+      note_count: 14,
+      pitch_range: "C1-G2",
+      previous_pitch_range: "C1-C2",
+      summary: "14 notes (+6) · C1-G2",
+      change_kind: "notes_added",
+    }));
+
+    expect(summary.headline).toBe("Added 6 notes");
+  });
+
+  it("phrases a compound octave shift in musical units", () => {
+    const { headline } = describeMidiChange(edit({
+      pitch_min: 49,
+      pitch_max: 68,
+      pitch_range: "C#2-G#3",
+    }));
+    expect(headline).toBe("Transposed up 1 octave and 1 semitone");
+  });
+
   // The exact row that prompted this: one note replaced by one note. The old
   // display read "1 → 1 notes · 1 pitches · F#4 · vel 100 · 20 beats".
   it("makes the real one-note-for-one-note edit readable", () => {
@@ -137,6 +185,12 @@ describe("midiChangeSubject", () => {
   it("never says Untitled clip, naming the track instead", () => {
     expect(midiChangeSubject(edit({ clip_name: null }))).toBe("14-MIDI");
     expect(midiChangeSubject(edit({ clip_name: "   " }))).toBe("14-MIDI");
+  });
+
+  it("treats the bridge's literal Untitled clip placeholder as no clip name", () => {
+    const untitled = edit({ clip_name: "Untitled clip" });
+    expect(namedMidiClip(untitled)).toBeNull();
+    expect(midiChangeSubject(untitled)).toBe("14-MIDI");
   });
 
   it("treats Live's 0 sentinel as no name", () => {

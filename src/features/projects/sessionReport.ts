@@ -5,12 +5,20 @@ import {
   trackWasWatched,
   type CaptureCoverage,
 } from "../../components/schema/timeline/captureCoverage";
-import { producerMemoryEvents } from "../../components/schema/timeline/eventMemory";
+import {
+  producerMemoryEvents,
+  type ProducerMemoryEvent,
+} from "../../components/schema/timeline/eventMemory";
+import {
+  describeMidiChange,
+  midiChangeSubject,
+} from "../../components/schema/timeline/midiChange";
 import {
   analyzeSession,
   analyzeSessionSources,
   normalizedActivitiesAcrossSources,
   normalizedSessionActivities,
+  observedArrangementPosition,
   passageKind,
   producerWorkKindForActivity,
   type NormalizedSessionActivity,
@@ -98,9 +106,40 @@ export type ReportEvidence = {
   track: string | null;
   subject: string;
   detail: string;
+  /** Transport context observed when this exact movement occurred. */
+  position: string | null;
+  /** The complete note edit behind a MIDI card; null for every other kind. */
+  midi: NoteEdit | null;
 };
 
 export type ReportDecisionKind = "control" | "midi" | "clip" | "structure" | "moment";
+
+/**
+ * The STRUCTURED facts behind a decision, carried alongside the prose.
+ *
+ * `outcome` is a sentence, and a sentence is the wrong form for most of this
+ * data. A device toggle reads "changed" when the fact is that it landed OFF; a
+ * filter type reads like a percentage when it is a categorical switch; a cutoff
+ * sweep loses its unit and its direction. Every one of those was already known
+ * at capture and thrown away at the point the sentence was built.
+ *
+ * So the source objects ride along, and the surface decides how to READ them —
+ * see movementShape.ts, which classifies by the shape of the data rather than by
+ * the category of work. `outcome` stays for the places that genuinely want one
+ * line of prose (exports, share text, the compact report).
+ */
+export type DecisionFacts =
+  | {
+      of: "control";
+      /** The first movement in the gesture, for where it started. */
+      first: ParameterChange;
+      /** The last, for where it landed. Same row when it moved once. */
+      last: ParameterChange;
+    }
+  | { of: "midi"; edit: NoteEdit }
+  | { of: "clip"; event: TimelineClipEvent }
+  | { of: "structure"; eventType: string; event: ProducerMemoryEvent }
+  | { of: "moment" };
 
 export type ReportDecision = {
   id: string;
@@ -114,6 +153,8 @@ export type ReportDecision = {
   outcome: string;
   count: number;
   evidenceIds: string[];
+  /** The typed data behind the sentence. See DecisionFacts. */
+  facts: DecisionFacts;
 };
 
 export type ReportTrack = {
@@ -298,15 +339,8 @@ function transition(before: string, after: string): string {
 }
 
 function noteOutcome(edit: NoteEdit): string {
-  if (edit.summary?.trim()) return edit.summary.trim();
-  const before = edit.previous_note_count;
-  const after = edit.note_count;
-  const count = before !== null && after !== null ? `${before} → ${after} notes` : `${after ?? "—"} notes`;
-  const range =
-    edit.previous_pitch_range && edit.pitch_range && edit.previous_pitch_range !== edit.pitch_range
-      ? `${edit.previous_pitch_range} → ${edit.pitch_range}`
-      : edit.pitch_range;
-  return [count, range].filter(Boolean).join(" · ");
+  const summary = describeMidiChange(edit);
+  return [summary.headline, summary.detail].filter(Boolean).join(" · ");
 }
 
 function clipOutcome(event: TimelineClipEvent): string {
@@ -321,6 +355,20 @@ function clipOutcome(event: TimelineClipEvent): string {
       return `Recorded MIDI · ${name}`;
     default:
       return `Added ${name}`;
+  }
+}
+
+/** A clip can be unnamed without its action being unknown. */
+function clipSubject(event: TimelineClipEvent): string {
+  const named = event.sample_name?.trim() || event.clip_name?.trim();
+  if (named) return named;
+  switch (event.event_type) {
+    case "sample_added": return "Sample added";
+    case "audio_clip_added": return "Audio clip added";
+    case "audio_clip_recorded": return "Audio recorded";
+    case "midi_clip_recorded": return "MIDI recorded";
+    case "midi_clip_created": return "MIDI clip created";
+    default: return "Clip created";
   }
 }
 
@@ -359,6 +407,8 @@ function evidenceOf(activity: NormalizedSessionActivity, trackNameOf: TrackNameR
     sourceId: activity.id,
     atMs: activity.atMs,
     track: whereOf(activity, trackNameOf),
+    position: observedArrangementPosition(activity),
+    midi: null,
   };
   if (activity.kind === "move") {
     const subject = controlLabel(activity.deviceName, activity.parameterName);
@@ -370,18 +420,21 @@ function evidenceOf(activity: NormalizedSessionActivity, trackNameOf: TrackNameR
     };
   }
   if (activity.kind === "midi") {
+    const track = whereOf(activity, trackNameOf);
     return {
       ...base,
       kind: "midi",
-      subject: activity.clipName ? `MIDI · ${activity.clipName}` : "MIDI edit",
+      track,
+      subject: midiChangeSubject(activity.edit, track),
       detail: noteOutcome(activity.edit),
+      midi: activity.edit,
     };
   }
   if (activity.kind === "clip") {
     return {
       ...base,
       kind: "clip",
-      subject: activity.sampleName ?? activity.clipName ?? "Clip action",
+      subject: clipSubject(activity.event),
       detail: clipOutcome(activity.event),
     };
   }
@@ -431,6 +484,10 @@ function decisionsOf(
         current.lastAfter = after;
         current.outcome = transition(current.firstBefore, current.lastAfter);
         current.evidenceIds.push(evidence);
+        // The gesture's landing place moves with it; where it STARTED does not.
+        if (current.facts.of === "control") {
+          current.facts = { ...current.facts, last: activity.change };
+        }
       } else {
         controlByKey.set(key, {
           id: `decision:${key}`,
@@ -444,6 +501,7 @@ function decisionsOf(
           outcome: transition(before, after),
           count: 1,
           evidenceIds: [evidence],
+          facts: { of: "control", first: activity.change, last: activity.change },
           firstBefore: before,
           lastAfter: after,
         });
@@ -460,7 +518,7 @@ function decisionsOf(
       evidenceIds: [evidence],
     };
     if (activity.kind === "midi") {
-      const subject = activity.clipName ? `MIDI · ${activity.clipName}` : "MIDI edit";
+      const subject = midiChangeSubject(activity.edit, where);
       decisions.push({
         ...decisionBase,
         id: `decision:midi:${activity.id}`,
@@ -468,6 +526,7 @@ function decisionsOf(
         kind: "midi",
         subject,
         outcome: noteOutcome(activity.edit),
+        facts: { of: "midi", edit: activity.edit },
       });
     } else if (activity.kind === "clip") {
       decisions.push({
@@ -475,8 +534,9 @@ function decisionsOf(
         id: `decision:clip:${activity.id}`,
         key: `clip:${identity}:${activity.event.event_type}:${activity.clipName ?? activity.sampleName ?? activity.id}`,
         kind: "clip",
-        subject: activity.sampleName ?? activity.clipName ?? "Clip action",
+        subject: clipSubject(activity.event),
         outcome: clipOutcome(activity.event),
+        facts: { of: "clip", event: activity.event },
       });
     } else if (activity.kind === "moment") {
       decisions.push({
@@ -486,6 +546,7 @@ function decisionsOf(
         kind: "moment",
         subject: activity.title,
         outcome: activity.note ?? `${activity.moment.confidence} moment`,
+        facts: { of: "moment" },
       });
     } else {
       decisions.push({
@@ -495,6 +556,7 @@ function decisionsOf(
         kind: "structure",
         subject: activity.event.title,
         outcome: activity.event.summary,
+        facts: { of: "structure", eventType: activity.eventType, event: activity.event },
       });
     }
   }
@@ -975,9 +1037,9 @@ function joinPassages(previous: SessionPassage, next: SessionPassage): SessionPa
     primaryTrackName: primaryTrackCounts[0]?.name ?? null,
     observedArrangementPositions: [
       ...new Set([...previous.observedArrangementPositions, ...next.observedArrangementPositions]),
-    ].slice(0, 4),
+    ],
     lastAction: next.lastAction ?? previous.lastAction,
-    controls: mergeControls(previous.controls, next.controls).slice(0, 3),
+    controls: mergeControls(previous.controls, next.controls),
   };
 }
 

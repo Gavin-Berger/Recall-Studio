@@ -42,6 +42,44 @@ export type PresentedPassage = {
   structureEventCount: number;
 };
 
+/**
+ * The producer-readable lead for a passage in a chronological trail.
+ *
+ * A category is useful for an aggregate, but a sentence such as "21 sound
+ * changes" does not help someone remember what they did at 10:19 PM. Trails
+ * therefore lead with the most concrete captured fact: a named control and
+ * its net result, or a MIDI/clip action when there was no control. The broader
+ * category remains available through `presentPassage` for surfaces that need
+ * a breakdown; it no longer substitutes for the move itself.
+ */
+export type PresentedStoryControl = {
+  deviceName: string | null;
+  parameterName: string;
+  trackName: string | null;
+  outcome: string | null;
+};
+
+export type PresentedStoryControlGroup = {
+  /** Shared address, printed once instead of repeated after every delimiter. */
+  deviceName: string | null;
+  trackName: string | null;
+  changes: { parameterName: string; outcome: string | null }[];
+};
+
+export type PresentedPassageStory = {
+  /** Compact human-readable action for summaries outside the full trail. */
+  title: string;
+  /** The primary move, structured so the UI can label track and result. */
+  lead: PresentedStoryControl | null;
+  /** A second chronological cue for non-control work. */
+  note: string | null;
+  /** Other controls, grouped by shared device and track. */
+  groups: PresentedStoryControlGroup[];
+  /** Song context, deliberately separate from device parameters. */
+  position: string | null;
+  markers: string[];
+};
+
 function plural(count: number, one: string, many = `${one}s`): string {
   return `${count} ${count === 1 ? one : many}`;
 }
@@ -160,6 +198,100 @@ export function presentPassage(passage: SessionPassage, controlLimit = 3): Prese
     markerTitles: passage.markers.map((marker) => marker.title),
     structureEventCount: passage.structureEventCount,
   };
+}
+
+/**
+ * Read one chronological passage as a producer's move rather than as a bucket
+ * of recorder counters. Nothing here tries to invent an intent from a count:
+ * if the capture has no named control, MIDI/clip cue, marker, or location, it
+ * falls back to the carefully qualified passage headline.
+ */
+export function presentPassageStory(passage: SessionPassage): PresentedPassageStory {
+  // The compact title only leads with one control, but the structured groups
+  // remain complete. Passing the presenter's old default of three here made a
+  // fourth captured control disappear before any caller could decide how to
+  // display it.
+  const presented = presentPassage(passage, passage.controls.length);
+  const lead = presented.controls[0];
+  const rawLead = passage.controls[0];
+
+  if (lead) {
+    const groups: PresentedStoryControlGroup[] = [];
+    presented.controls.slice(1).forEach((control, index) => {
+      const raw = passage.controls[index + 1]!;
+      const deviceName = raw.deviceName;
+      const trackName = raw.trackName ?? control.trackName;
+      const previous = groups.at(-1);
+      const group = previous?.deviceName === deviceName && previous.trackName === trackName
+        ? previous
+        : { deviceName, trackName, changes: [] };
+      if (group !== previous) groups.push(group);
+      group.changes.push({ parameterName: raw.parameterName, outcome: control.outcome });
+    });
+
+    return {
+      title: [rawLead?.deviceName, rawLead?.parameterName].filter(Boolean).join(" — ") || lead.name,
+      lead: {
+        deviceName: rawLead?.deviceName ?? null,
+        parameterName: rawLead?.parameterName ?? lead.name,
+        trackName: rawLead?.trackName ?? lead.trackName,
+        outcome: lead.outcome,
+      },
+      note: null,
+      groups,
+      position: storyPosition(presented.where),
+      markers: presented.markerTitles,
+    };
+  }
+
+  if (passage.firstAction) {
+    const note = passage.lastAction && passage.lastAction !== passage.firstAction
+      ? `Then ${passage.lastAction}`
+      : null;
+    return {
+      title: passage.firstAction.replace(/ · /g, " — "),
+      lead: null,
+      note,
+      groups: [],
+      position: storyPosition(presented.where),
+      markers: presented.markerTitles,
+    };
+  }
+
+  if (presented.markerTitles[0]) {
+    const [first, ...rest] = presented.markerTitles;
+    return {
+      title: first!.replace(/ · /g, " — "),
+      lead: null,
+      note: null,
+      groups: [],
+      position: storyPosition(presented.where),
+      markers: rest,
+    };
+  }
+
+  return {
+    title: presented.title,
+    lead: null,
+    note: null,
+    groups: [],
+    position: storyPosition(presented.where),
+    markers: [],
+  };
+}
+
+/** Turn Capture's compact transport token into text someone would say. */
+function storyPosition(where: string | null): string | null {
+  if (!where) return null;
+  let first = true;
+  return where.replace(
+    /Bar\s+([^·→]+?)\s*·\s*Beat\s+([^→]+?)(?=\s*→|$)/gi,
+    (_whole, bar: string, beat: string) => {
+      const label = first ? "Bar" : "bar";
+      first = false;
+      return `${label} ${bar.trim()}, beat ${beat.trim()}`;
+    },
+  );
 }
 
 /**

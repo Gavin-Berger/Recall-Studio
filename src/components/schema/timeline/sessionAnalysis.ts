@@ -580,11 +580,21 @@ function actionCue(activity: NormalizedSessionActivity | undefined): string | nu
   if (activity.kind === "midi") {
     return activity.clipName ? `MIDI edit · ${activity.clipName}` : "MIDI edit";
   }
-  if (activity.sampleName) return `Sample / clip action · ${activity.sampleName}`;
-  return activity.clipName ? `Clip action · ${activity.clipName}` : "Clip action";
+  const clipName = activity.sampleName ?? activity.clipName;
+  const action = (() => {
+    switch (activity.event.event_type) {
+      case "sample_added": return "Sample added";
+      case "audio_clip_added": return "Audio clip added";
+      case "audio_clip_recorded": return "Audio recorded";
+      case "midi_clip_recorded": return "MIDI recorded";
+      case "midi_clip_created": return "MIDI clip created";
+      default: return "Clip created";
+    }
+  })();
+  return clipName ? `${action} · ${clipName}` : action;
 }
 
-function observedArrangementPosition(activity: NormalizedSessionActivity): string | null {
+export function observedArrangementPosition(activity: NormalizedSessionActivity): string | null {
   if (activity.kind === "move") {
     return cleanName(activity.change.observed_arrangement_position ?? activity.change.automation_start_position);
   }
@@ -714,13 +724,17 @@ function summarizePassage(
       .map((entry) => entry.name),
     primaryTrackNames: rankedPrimaryTracks.map((entry) => entry.name),
     primaryTrackCounts: rankedPrimaryTracks,
-    observedArrangementPositions: [...arrangementPositions].slice(0, 4),
+    // The Timeline owns the complete producer-facing record. Presentation may
+    // summarize a long run, but the analysis layer must never discard observed
+    // positions before a surface has the chance to show them.
+    observedArrangementPositions: [...arrangementPositions],
     primaryTrackName,
     firstAction: actionCue(primaryItems[0]),
     lastAction: actionCue(primaryItems.at(-1)),
+    // Ranking is useful for a summary, but truncating here made the fourth
+    // control disappear from every downstream surface—including Timeline.
     controls: [...controls.values()]
-      .sort((a, b) => b.count - a.count || a.parameterName.localeCompare(b.parameterName))
-      .slice(0, 3),
+      .sort((a, b) => b.count - a.count || a.parameterName.localeCompare(b.parameterName)),
   };
 }
 

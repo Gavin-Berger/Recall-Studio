@@ -466,7 +466,7 @@ describe("session analysis", () => {
     expect(data.timeline[0]).toMatchObject({ kind: "clip", track: "Lead" });
     expect(data.sessionPath).toMatchObject({
       openingStateEventCount: 1,
-      steps: [{ order: 1, position: "only", label: "Arrangement", firstAction: "Clip action · Hook" }],
+      steps: [{ order: 1, position: "only", label: "Arrangement", firstAction: "MIDI clip created · Hook" }],
     });
     expect(buildShareDocument(data, "md")).toContain("## Session path");
   });
@@ -560,6 +560,39 @@ describe("control outcomes", () => {
       beforeDisplay: "400 Hz",
       afterDisplay: "2.1 kHz",
     });
+  });
+
+  it("keeps every control and observed song position in the passage", () => {
+    const changes = Array.from({ length: 5 }, (_, index) => change({
+      id: `complete-${index}`,
+      parameter_id: `parameter-${index}`,
+      parameter_name: `Parameter ${index + 1}`,
+      observed_arrangement_position: `Bar ${index + 1} · Beat 1`,
+      changed_at_ms: start + 10_000 + index * 1_000,
+    }));
+    const result = analyzeSession({
+      changes,
+      noteEdits: [],
+      clipEvents: [],
+      memoryEvents: [],
+      sessionStartedAtMs: start,
+    });
+
+    expect(result.passages).toHaveLength(1);
+    expect(result.passages[0].controls.map((control) => control.parameterName)).toEqual([
+      "Parameter 1",
+      "Parameter 2",
+      "Parameter 3",
+      "Parameter 4",
+      "Parameter 5",
+    ]);
+    expect(result.passages[0].observedArrangementPositions).toEqual([
+      "Bar 1 · Beat 1",
+      "Bar 2 · Beat 1",
+      "Bar 3 · Beat 1",
+      "Bar 4 · Beat 1",
+      "Bar 5 · Beat 1",
+    ]);
   });
 });
 

@@ -49,7 +49,7 @@ describe("captureEvidence", () => {
       { label: "Notes", value: "12" },
       { label: "Pitch range", value: "C1-G2" },
       { label: "Average velocity", value: "96.7" },
-      { label: "Clip length", value: "8 beats" },
+      { label: "Clip length", value: "8 quarter-note beats" },
     ]));
   });
 

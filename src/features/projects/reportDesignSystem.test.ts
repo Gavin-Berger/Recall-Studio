@@ -221,7 +221,9 @@ describe("version timeline · producer-readable work trail", () => {
 
   it("draws exact MIDI notes across pitch and beat when the snapshot exists", () => {
     expect(rule(".vt-midi-pattern__row")).toMatch(/display:\s*grid/);
-    expect(rule(".vt-midi-pattern__row svg")).toMatch(/height:\s*88px/);
+    expect(rule(".vt-midi-pattern__row svg")).toMatch(
+      /height:\s*clamp\(96px,\s*7vw,\s*124px\)/,
+    );
     expect(rule(".vt-midi-pattern rect.is-before")).toMatch(/stroke:\s*var\(--muted\)/);
     expect(rule(".vt-midi-pattern rect.is-after")).toMatch(/fill:\s*var\(--paper-strong\)/);
     expect(rule(".vt-midi-note-list li")).toMatch(/flex-wrap:\s*wrap/);

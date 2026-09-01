@@ -13,7 +13,20 @@ export function formatSessionDate(ms: number): string {
 
 export function formatSessionDuration(session: SavedSessionMetadata): string {
   if (session.ended_at_ms === null) return "In progress";
-  const ms = Math.max(0, session.ended_at_ms - session.started_at_ms);
+  return formatSpan(session.started_at_ms, session.ended_at_ms);
+}
+
+/**
+ * How long a stretch ran, in the unit a producer would say.
+ *
+ * Takes two moments rather than a capture, because a capture's `ended_at_ms` is
+ * written when Recall stopped watching and a sitting ends when the PRODUCER
+ * stopped. Those are the same instant only by luck — one real capture reported
+ * "1h 45m" for three seconds of work because a rotation fired an hour and three
+ * quarters after the last thing it saw.
+ */
+export function formatSpan(startMs: number, endMs: number): string {
+  const ms = Math.max(0, endMs - startMs);
   const totalMinutes = Math.floor(ms / 60000);
   const hours = Math.floor(totalMinutes / 60);
   const minutes = totalMinutes % 60;

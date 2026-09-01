@@ -446,3 +446,64 @@ describe("versionGraph", () => {
     expect(nodes[0]!.parentId).toBeNull();
   });
 });
+
+describe("observed parentage (a save Recall actually watched)", () => {
+  // Live exposes no save callback, so the control surface watches the open
+  // .als's modification stamp. That makes a save the only fact in this graph
+  // that is not a guess, and it must outrank every guess.
+  const path = (name: string) => `C:\\Music\\nightfall\\${name}.als`;
+
+  it("beats the filename convention when the two disagree", () => {
+    // Names say v3 follows v2. The saves say v3 was written moments after v1 —
+    // the producer went back. Behaviour wins, and the edge stops being a guess.
+    const versions = versionsFromNames(["nightfall v1", "nightfall v2", "nightfall v3"]);
+    const graph = versionGraph(versions, [
+      { alsPath: path("nightfall v1"), savedAtMs: start + 10 },
+      { alsPath: path("nightfall v2"), savedAtMs: start + day + 10 },
+      { alsPath: path("nightfall v1"), savedAtMs: start + 2 * day - 500 },
+      { alsPath: path("nightfall v3"), savedAtMs: start + 2 * day },
+    ]);
+
+    const v3 = graph.find((node) => node.version.name === "nightfall v3")!;
+    expect(v3.basis).toBe("observed");
+    expect(v3.inferred).toBe(false);
+    expect(graph.find((node) => node.id === v3.parentId)!.version.name).toBe("nightfall v1");
+    expect(v3.reason).toBe("Saved from nightfall v1 while Recall was capturing.");
+  });
+
+  it("falls back to inference when a version's save was never watched", () => {
+    // A project captured before saves were observed has none. The graph must
+    // still draw, and must still say the edge is a guess.
+    const versions = versionsFromNames(["nightfall v1", "nightfall v2"]);
+    const graph = versionGraph(versions, []);
+
+    const v2 = graph.find((node) => node.version.name === "nightfall v2")!;
+    expect(v2.basis).not.toBe("observed");
+    expect(v2.inferred).toBe(true);
+  });
+
+  it("never makes a file its own parent, however often it is saved", () => {
+    const versions = versionsFromNames(["nightfall v1", "nightfall v2"]);
+    const graph = versionGraph(versions, [
+      { alsPath: path("nightfall v2"), savedAtMs: start + day },
+      { alsPath: path("nightfall v2"), savedAtMs: start + day + 60_000 },
+    ]);
+
+    const v2 = graph.find((node) => node.version.name === "nightfall v2")!;
+    expect(v2.parentId).not.toBe(v2.id);
+  });
+
+  it("ignores a save of a file the project has no version for", () => {
+    // The producer saved something outside this project between the two. It is
+    // a real save and it is not a parent, so the edge stays inferred rather
+    // than pointing at nothing.
+    const versions = versionsFromNames(["nightfall v1", "nightfall v2"]);
+    const graph = versionGraph(versions, [
+      { alsPath: "C:\\Music\\other\\unrelated.als", savedAtMs: start + day - 500 },
+      { alsPath: path("nightfall v2"), savedAtMs: start + day },
+    ]);
+
+    const v2 = graph.find((node) => node.version.name === "nightfall v2")!;
+    expect(v2.basis).not.toBe("observed");
+  });
+});

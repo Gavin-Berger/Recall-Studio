@@ -393,11 +393,19 @@ export function fitLabel(name: string, maxPx: number, charPx = MONO_CHAR_PX): st
 
 /** Rounded to the unit a producer would actually say out loud. */
 export function describeBreak(durationMs: number): string {
+  const hours = Math.max(1, Math.round(durationMs / 3_600_000));
+  if (hours < 24) return `${hours} ${hours === 1 ? "hour" : "hours"}`;
   const days = Math.round(durationMs / 86_400_000);
-  if (days >= 60) return `${Math.round(days / 30)} months`;
-  if (days >= 14) return `${Math.round(days / 7)} weeks`;
+  if (days >= 60) {
+    const months = Math.round(days / 30);
+    return `${months} ${months === 1 ? "month" : "months"}`;
+  }
+  if (days >= 14) {
+    const weeks = Math.round(days / 7);
+    return `${weeks} ${weeks === 1 ? "week" : "weeks"}`;
+  }
   if (days >= 7) return "1 week";
-  return `${days} days`;
+  return `${days} ${days === 1 ? "day" : "days"}`;
 }
 
 /** The horizontal ink a left-anchored mono label occupies, plus its air. */

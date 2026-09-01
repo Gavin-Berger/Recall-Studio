@@ -60,10 +60,13 @@ export type CommitContents = {
   tracks: ContentsEntry[];
   devices: ContentsEntry[];
   parameters: ContentsEntry[];
-  /** Note edits, newest first, already summarised by the bridge. */
-  notes: { key: string; label: string; context: string | null }[];
-  /** Clips and samples brought into the set. */
-  added: { key: string; label: string; context: string | null }[];
+  /**
+   * Note edits, newest first, already summarised by the bridge. Repeats of the
+   * same edit on the same clip collapse into one row carrying a count.
+   */
+  notes: ContentsEntry[];
+  /** Clips and samples brought into the set, repeats collapsed the same way. */
+  added: ContentsEntry[];
   /**
    * Every captured item in each group. The short lists above remain the
    * glance, while these let a producer deliberately open the counted tail.
@@ -72,8 +75,8 @@ export type CommitContents = {
     tracks: ContentsEntry[];
     devices: ContentsEntry[];
     parameters: ContentsEntry[];
-    notes: { key: string; label: string; context: string | null }[];
-    added: { key: string; label: string; context: string | null }[];
+    notes: ContentsEntry[];
+    added: ContentsEntry[];
   };
   totals: {
     tracks: number;
@@ -121,6 +124,61 @@ function bump(
 }
 
 /**
+ * What to call a clip Live never named (issue #12).
+ *
+ * Most MIDI clips are never titled — you draw a part, you don't name it — so
+ * "Clip added" appeared once per clip and said nothing beyond the heading the
+ * group already carries. The event type knows whether this was MIDI or audio,
+ * which is the one distinction available with no new capture, and a description
+ * cannot be mistaken for a title the producer could go and find in Live.
+ */
+function unnamedClipLabel(eventType: string | null | undefined): string {
+  if (eventType === "midi_clip_created" || eventType === "midi_clip_recorded") return "MIDI clip";
+  if (eventType === "audio_clip_recorded") return "Recorded audio";
+  return "Audio clip";
+}
+
+/**
+ * Collapse repeats of the same thing into one row that says how many.
+ *
+ * Fifteen consecutive rows reading `MIDI clip · 15-Serum 2` are fifteen real
+ * events, and printing fifteen identical lines is still wrong: the producer
+ * cannot tell them apart, cannot act on any one of them, and the list crowds
+ * out the things that ARE distinct. The same list showed five identical
+ * `2 notes, D2-C3 -> F2-C3` rows for the same clip.
+ *
+ * A count is the honest compression — nothing is hidden, and `×15` says more
+ * than the fifteen lines did. Ordering follows the most recent occurrence, so
+ * a thing touched again moves back to the top where a reader expects it.
+ */
+function collapseRepeats(
+  items: { key: string; label: string; context: string | null; atMs: number }[],
+): ContentsEntry[] {
+  const byIdentity = new Map<string, ContentsEntry & { atMs: number }>();
+
+  for (const item of items) {
+    const identity = `${item.label}\u0000${item.context ?? ""}`;
+    const seen = byIdentity.get(identity);
+    if (seen) {
+      seen.changes += 1;
+      seen.atMs = Math.max(seen.atMs, item.atMs);
+      continue;
+    }
+    byIdentity.set(identity, {
+      key: item.key,
+      label: item.label,
+      context: item.context,
+      changes: 1,
+      atMs: item.atMs,
+    });
+  }
+
+  return [...byIdentity.values()]
+    .sort((a, b) => b.atMs - a.atMs)
+    .map(({ atMs: _atMs, ...entry }) => entry);
+}
+
+/**
  * Summarise one commit's captured work.
  *
  * Counts are of CHANGES, not of distinct things: a track that saw forty moves
@@ -162,21 +220,23 @@ export function summarizeCommit(
     }
   }
 
-  const allNotes = [...notes]
-    .sort((a, b) => b.changed_at_ms - a.changed_at_ms)
-    .map((note) => ({
+  const allNotes = collapseRepeats(
+    notes.map((note) => ({
       key: note.id,
       label: note.summary?.trim() || "Notes edited",
       context: note.track_name?.trim() || note.clip_name?.trim() || null,
-    }));
+      atMs: note.changed_at_ms,
+    })),
+  );
 
-  const allAdded = [...clips]
-    .sort((a, b) => b.changed_at_ms - a.changed_at_ms)
-    .map((clip) => ({
+  const allAdded = collapseRepeats(
+    clips.map((clip) => ({
       key: clip.id,
-      label: clip.sample_name?.trim() || clip.clip_name?.trim() || "Clip added",
+      label: clip.sample_name?.trim() || clip.clip_name?.trim() || unnamedClipLabel(clip.event_type),
       context: clip.track_name?.trim() || null,
-    }));
+      atMs: clip.changed_at_ms,
+    })),
+  );
 
   const totals = {
     tracks: tracks.size,

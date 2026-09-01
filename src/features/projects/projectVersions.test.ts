@@ -102,12 +102,14 @@ describe("projectVersions", () => {
     expect(versions[0]!.startedAtMs).toBeLessThan(versions[1]!.startedAtMs);
   });
 
-  it("counts only sittings that recorded something", () => {
+  it("counts producer sittings, not Recall's non-empty captures", () => {
     const v4 = projectVersions(nightfallCaptures()).find((version) => version.name.endsWith("v4"))!;
 
-    // Five captures, but the two empty checkpoints are not sittings of work.
+    // Five captures: two empty checkpoints, two pieces Recall split only eight
+    // minutes apart, and one return the next day. That is two sittings—not the
+    // three non-empty capture rows the old implementation printed.
     expect(v4.sessions).toHaveLength(5);
-    expect(versionSittingCount(v4)).toBe(3);
+    expect(versionSittingCount(v4)).toBe(2);
   });
 
   it("reports the version live while any sitting is still open", () => {

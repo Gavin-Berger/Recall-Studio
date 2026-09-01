@@ -323,3 +323,92 @@ describe("commitHeadline", () => {
     expect(commitHeadline(summarizeCommit([], [], []))).toMatch(/no detail kept/i);
   });
 });
+
+describe("unnamed clips (issue #12)", () => {
+  // Most MIDI clips in Live are never titled. The ADDED list showed fifteen
+  // consecutive rows reading "Clip added", which repeats the group heading and
+  // tells the producer nothing about which part appeared.
+  it("describes an unnamed clip by what it is, not with a placeholder title", () => {
+    const contents = summarizeCommit(
+      [],
+      [],
+      [
+        clip({ id: "c1", event_type: "midi_clip_created", track_name: "15-Serum 2", sample_name: null }),
+        clip({ id: "c2", event_type: "audio_clip_added", track_name: "Drums", sample_name: null }),
+      ],
+    );
+
+    expect(contents.all.added.map((entry) => entry.label)).toEqual(
+      expect.arrayContaining(["MIDI clip", "Audio clip"]),
+    );
+    expect(contents.all.added.map((entry) => entry.label)).not.toContain("Clip added");
+  });
+
+  it("still prefers a real sample or clip name when Live has one", () => {
+    const contents = summarizeCommit(
+      [],
+      [],
+      [
+        clip({ id: "c3", event_type: "sample_added", sample_name: "TSP_KOAN_140_drums.wav" }),
+      ],
+    );
+
+    expect(contents.all.added[0]!.label).toBe("TSP_KOAN_140_drums.wav");
+  });
+});
+
+describe("repeats (issue #12, and what the version detail showed)", () => {
+  // The real screen showed five identical "2 notes, D2-C3 -> F2-C3 · 16-Serum 2"
+  // rows and five identical "MIDI clip · 9-Serum 2" rows. They are five real
+  // events, and five identical lines are still unreadable: nothing distinguishes
+  // them and they crowd out the things that ARE distinct.
+  it("collapses identical added clips into one row with a count", () => {
+    const contents = summarizeCommit(
+      [],
+      [],
+      [
+        clip({ id: "a", event_type: "midi_clip_created", track_name: "9-Serum 2", sample_name: null, changed_at_ms: start }),
+        clip({ id: "b", event_type: "midi_clip_created", track_name: "9-Serum 2", sample_name: null, changed_at_ms: start + 1 }),
+        clip({ id: "c", event_type: "midi_clip_created", track_name: "9-Serum 2", sample_name: null, changed_at_ms: start + 2 }),
+        clip({ id: "d", event_type: "midi_clip_created", track_name: "11-Serum 2", sample_name: null, changed_at_ms: start + 3 }),
+      ],
+    );
+
+    expect(contents.all.added).toHaveLength(2);
+    const nine = contents.all.added.find((entry) => entry.context === "9-Serum 2")!;
+    expect(nine.changes).toBe(3);
+    // The total still counts every event — nothing is hidden, only folded.
+    expect(contents.totals.added).toBe(4);
+  });
+
+  it("orders collapsed rows by the most recent occurrence", () => {
+    const contents = summarizeCommit(
+      [],
+      [],
+      [
+        clip({ id: "old", track_name: "Bass", sample_name: "kick.wav", changed_at_ms: start }),
+        clip({ id: "new", track_name: "Lead", sample_name: "snare.wav", changed_at_ms: start + 500 }),
+        clip({ id: "older-again", track_name: "Bass", sample_name: "kick.wav", changed_at_ms: start + 900 }),
+      ],
+    );
+
+    // Bass/kick was touched again after the Lead row, so it moves back to top.
+    expect(contents.all.added[0]!.label).toBe("kick.wav");
+    expect(contents.all.added[0]!.changes).toBe(2);
+  });
+
+  it("collapses repeated note edits the same way", () => {
+    const contents = summarizeCommit(
+      [],
+      [
+        note({ id: "n1", summary: "2 notes, D2-C3 -> F2-C3", track_name: "16-Serum 2", changed_at_ms: start }),
+        note({ id: "n2", summary: "2 notes, D2-C3 -> F2-C3", track_name: "16-Serum 2", changed_at_ms: start + 1 }),
+      ],
+      [],
+    );
+
+    expect(contents.all.notes).toHaveLength(1);
+    expect(contents.all.notes[0]!.changes).toBe(2);
+    expect(contents.totals.notes).toBe(2);
+  });
+});

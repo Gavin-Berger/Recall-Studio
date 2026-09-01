@@ -31,7 +31,7 @@
 // `basis: "observed"`, renders solid, and this inference becomes the fallback
 // for everything captured before that existed.
 
-import type { ProjectVersion } from "./projectVersions";
+import { normalizeAlsPath, type ProjectVersion } from "./projectVersions";
 
 /**
  * How confident the parent edge is, in the order we would prefer to have it.
@@ -265,6 +265,72 @@ function filenameParent(child: Candidate, earlier: Candidate[]): ProjectVersion 
 }
 
 /**
+ * A save the control surface watched happen.
+ *
+ * Live exposes no save callback, so the remote script watches the open `.als`'s
+ * modification stamp and emits `project_saved`. That makes this the only
+ * evidence in the graph that is not a guess.
+ */
+export type ObservedSave = {
+  alsPath: string | null;
+  savedAtMs: number;
+};
+
+/**
+ * Two paths are the same file.
+ *
+ * Through `normalizeAlsPath`, deliberately: a version's `alsPath` has already
+ * been through it (separators forward, lowercased), while a save's path comes
+ * raw off the event payload as Windows wrote it. Comparing those two directly
+ * never matches, which silently turned every observed edge back into a guess.
+ */
+function samePath(left: string | null, right: string | null): boolean {
+  const a = normalizeAlsPath(left);
+  const b = normalizeAlsPath(right);
+  return a !== null && b !== null && a === b;
+}
+
+/**
+ * The parent Recall actually watched.
+ *
+ * A Save As is two observed facts in sequence: the producer saves file A, and
+ * moments later file B is written for the first time. That is not a guess about
+ * naming or about which file happened to be open — it is the save itself, which
+ * is the act that creates a version.
+ *
+ * The rule: find this version's FIRST observed save, then the most recent
+ * observed save of a DIFFERENT file strictly before it. That file is the parent.
+ *
+ * Returns null rather than reaching when there is no such pair — an unobserved
+ * edge must fall through to inference and be labelled as inference, because a
+ * solid line that was really a guess is the one thing this graph must never
+ * draw (DESIGN.md §11, and §1: Recall never pretends).
+ */
+function observedParent(
+  child: Candidate,
+  earlier: Candidate[],
+  saves: ObservedSave[],
+): ProjectVersion | null {
+  const childPath = child.version.alsPath;
+  if (!childPath || saves.length === 0) return null;
+
+  const born = saves.find((save) => samePath(save.alsPath, childPath));
+  if (!born) return null;
+
+  // Strictly before: a save at the same instant cannot have caused this one,
+  // and the file's own first save is never its own parent.
+  const previous = [...saves]
+    .filter((save) => save.savedAtMs < born.savedAtMs && !samePath(save.alsPath, childPath))
+    .sort((left, right) => right.savedAtMs - left.savedAtMs)[0];
+  if (!previous) return null;
+
+  return (
+    earlier.find((candidate) => samePath(candidate.version.alsPath, previous.alsPath))?.version ??
+    null
+  );
+}
+
+/**
  * Pick the parent for one version out of everything that came before it.
  *
  * The names a producer chose and the file they actually had open usually agree,
@@ -281,8 +347,14 @@ function filenameParent(child: Candidate, earlier: Candidate[]): ProjectVersion 
 function pickParent(
   child: Candidate,
   earlier: Candidate[],
+  saves: ObservedSave[],
 ): { parent: ProjectVersion; basis: ParentageBasis } | null {
   if (earlier.length === 0) return null;
+
+  // Observed beats everything. A watched save is the act that made this
+  // version, so no amount of naming convention or activity overlap outranks it.
+  const observed = observedParent(child, earlier, saves);
+  if (observed) return { parent: observed, basis: "observed" };
 
   const worked = recentlyWorked(child, earlier);
   const named = filenameParent(child, earlier);
@@ -309,7 +381,11 @@ function pickParent(
  * time order means every candidate parent has been seen by the time we need it,
  * and a cycle is not representable.
  */
-export function versionGraph(versions: ProjectVersion[]): VersionNode[] {
+export function versionGraph(
+  versions: ProjectVersion[],
+  /** Every save Recall watched in this project, oldest first. */
+  saves: ObservedSave[] = [],
+): VersionNode[] {
   const ordered = [...versions].sort((a, b) => a.startedAtMs - b.startedAtMs);
   const candidates: Candidate[] = ordered.map((version) => ({
     version,
@@ -317,7 +393,7 @@ export function versionGraph(versions: ProjectVersion[]): VersionNode[] {
   }));
 
   return candidates.map((candidate, index) => {
-    const picked = pickParent(candidate, candidates.slice(0, index));
+    const picked = pickParent(candidate, candidates.slice(0, index), saves);
     if (!picked) {
       return {
         id: candidate.version.id,

@@ -22,6 +22,7 @@
 
 import type { SavedSessionMetadata } from "../../types/recall";
 import { alsSetName } from "../sessionFormat";
+import { sittings } from "./sittings";
 
 export type ProjectVersion = {
   /** Stable across reloads: the normalized `.als` path, or the session id. */
@@ -139,5 +140,9 @@ export function versionSessionsToRead(version: ProjectVersion): SavedSessionMeta
 
 /** How many sittings this version was worked across, for the picker line. */
 export function versionSittingCount(version: ProjectVersion): number {
-  return version.recordedSessions.length;
+  // Captures are Recall's bookkeeping, not returns to the desk. A bridge
+  // reconnect can split one continuous sitting into several captures only
+  // milliseconds apart, so counting `recordedSessions` here made the picker
+  // confidently overstate how many times the producer came back.
+  return sittings(version.sessions).sittings.length;
 }

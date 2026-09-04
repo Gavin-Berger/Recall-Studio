@@ -479,6 +479,111 @@
   font-size: var(--t-meta);
 }
 
+/* Serum state read from the selected `.als` --------------------------------
+   This is a snapshot at save, not another event stream. It sits between the
+   version identity and the retrace trail so it cannot imply that Recall saw
+   when a patch was loaded. */
+.vt-presets {
+  --t-h2: clamp(18px, 1.15vw, 22px);
+  --t-body: clamp(16px, 0.9vw, 18px);
+  --t-meta: clamp(14px, 0.78vw, 16px);
+  width: 100%;
+  max-width: var(--vt-reading-width);
+  margin-inline: auto;
+  padding: var(--s4);
+  border-top: var(--stroke-hair) solid var(--line-soft);
+  background: rgb(var(--signal-rgb) / 0.025);
+}
+
+.vt-presets__head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(240px, 44ch);
+  align-items: end;
+  gap: var(--s4);
+}
+
+.vt-presets__head h2 {
+  margin: 0;
+  color: var(--paper-strong);
+  font-size: var(--t-h2);
+  font-weight: 600;
+}
+
+.vt-presets__head .vt__eyebrow { margin: 0 0 var(--s1); }
+
+.vt-presets__head > p {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--t-meta);
+  line-height: 1.5;
+  text-align: right;
+}
+
+.vt-presets__list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: var(--s4) 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.vt-presets__list li {
+  display: grid;
+  grid-template-columns: minmax(140px, 0.75fr) minmax(220px, 1.4fr) minmax(190px, 1fr);
+  align-items: center;
+  gap: var(--s3);
+  min-height: 50px;
+  padding: var(--s2) var(--s3);
+  border-left: 2px solid var(--line-soft);
+  background: var(--glass-fill);
+}
+
+.vt-presets__list li.is-edited,
+.vt-presets__list li.is-renamed,
+.vt-presets__list li.is-changed,
+.vt-presets__list li.is-added {
+  border-left-color: var(--signal);
+}
+
+.vt-presets__track,
+.vt-presets__relation {
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: var(--t-meta);
+  line-height: 1.4;
+}
+
+.vt-presets__patch {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.vt-presets__patch strong {
+  overflow: hidden;
+  color: var(--paper-strong);
+  font-size: var(--t-body);
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.vt-presets__patch > span {
+  overflow: hidden;
+  color: var(--faint-aa);
+  font-size: var(--t-meta);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.vt-presets__list li.is-edited .vt-presets__relation,
+.vt-presets__list li.is-renamed .vt-presets__relation,
+.vt-presets__list li.is-changed .vt-presets__relation,
+.vt-presets__list li.is-added .vt-presets__relation {
+  color: var(--signal-soft);
+}
+
 /* Retrace a version --------------------------------------------------------
    The graph picks the point. This surface preserves the two useful paths out
    of it: the actual set delta, and the producer's concrete moves in order. */
@@ -2074,6 +2179,11 @@
 @media (max-width: 760px) {
   .vt-depth__grid { grid-template-columns: 1fr; }
 
+  .vt-presets__head { grid-template-columns: 1fr; gap: var(--s2); }
+  .vt-presets__head > p { text-align: left; }
+  .vt-presets__list li { grid-template-columns: minmax(110px, 0.7fr) minmax(0, 1.3fr); }
+  .vt-presets__relation { grid-column: 2; }
+
   .vt-sittings summary { align-items: start; }
   .vt-sittings__identity { align-items: flex-start; flex-direction: column; gap: var(--s1); }
   .vt-sittings__ordinal { flex-basis: auto; }
@@ -2109,6 +2219,8 @@
   .vt__picker { width: 100%; }
   .vt__picker select { flex: 1; min-width: 0; }
   .vt-inspector__facts > div { grid-template-columns: 1fr; gap: var(--s1); }
+  .vt-presets__list li { grid-template-columns: 1fr; gap: var(--s1); }
+  .vt-presets__relation { grid-column: 1; }
   .vt-work__trail li { grid-template-columns: 1fr; gap: var(--s1); }
   .vt-movement-card__facts { grid-template-columns: 1fr; }
   .vt-midi-scale__axis { grid-template-columns: 56px minmax(0, 1fr); }

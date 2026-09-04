@@ -2806,6 +2806,7 @@ name = "recall-studio"
 version = "0.1.0"
 dependencies = [
  "crc32fast",
+ "flate2",
  "log",
  "notify-rust",
  "rusqlite",
@@ -2818,6 +2819,7 @@ dependencies = [
  "tauri-plugin-log",
  "tauri-plugin-notification",
  "tauri-plugin-opener",
+ "windows",
 ]
 
 [[package]]

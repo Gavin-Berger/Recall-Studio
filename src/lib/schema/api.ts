@@ -62,6 +62,47 @@ export type StoredAlsFileTimes = {
 };
 
 /**
+ * The plugin presets a saved set was holding.
+ *
+ * Read from the file, not from the bridge, because Live never reports this
+ * live: a preset load emits no parameter changes at all, and the LOM's
+ * `presets` collection is a single dummy entry for every VST3. The name only
+ * survives inside the state blob the plugin hands Live to store, which means
+ * per-save is the finest granularity that exists. See als_presets.rs.
+ *
+ * Read live rather than stored, for the same reason as the file times above: a
+ * set the producer keeps working on will disagree with any cached copy.
+ */
+export function getAlsPresets(paths: string[]): Promise<StoredAlsPresets[]> {
+  return invoke<StoredAlsPresets[]>("get_als_presets", { paths });
+}
+
+export type StoredAlsPresets = {
+  path: string;
+  presets: StoredTrackPreset[];
+  /** False when the file was missing, corrupt, mid-save, or over the read cap. */
+  readable: boolean;
+};
+
+export type StoredTrackPreset = {
+  track_name: string | null;
+  plugin_name: string;
+  preset_name: string;
+  preset_author: string | null;
+  /** Serum reports the bank here. */
+  preset_bank: string | null;
+  /**
+   * The plugin's own hash of the patch.
+   *
+   * Distinguishes a patch the producer EDITED (same name, new hash) from one
+   * they RENAMED (new name, same hash) — opposite facts that the name alone
+   * cannot tell apart.
+   */
+  state_hash: string | null;
+  plugin_version: string | null;
+};
+
+/**
  * One version's captures in a single crossing.
  *
  * Opening a version used to be six calls per capture plus one for the saves —

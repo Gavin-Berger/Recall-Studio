@@ -29,6 +29,9 @@ screenshots/
 session-exports/
 logs/
 
+# Local visual probes used while calibrating Serum's preset-label observer.
+/artifacts/serum-*
+
 # Claude Code local runtime state (machine-local, not shared)
 .claude/
 .gstack/

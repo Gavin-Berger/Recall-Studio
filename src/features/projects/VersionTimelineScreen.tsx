@@ -41,11 +41,17 @@ import { gapLabel, sittingByTrack, sittingTrail } from "./sittingTrail";
 import type { SittingDepth, VersionDepth } from "./versionDepth";
 import {
   getAlsFileTimes,
+  getAlsPresets,
   getObservedSaves,
+  type StoredTrackPreset,
 } from "../../lib/schema/api";
 import { ReportLoading } from "./ReportLoading";
 import { loadVersionDepth } from "./versionReportLoader";
 import type { ReportDecision, ReportEvidence } from "./sessionReport";
+import {
+  compareSavedPresets,
+  type ComparedSavedPreset,
+} from "./savedPresetState";
 import "./VersionTimelineScreen.css";
 
 type VersionTimelineScreenProps = {
@@ -60,6 +66,7 @@ type VersionTimelineScreenProps = {
 type SelectedVersionParent = {
   name: string;
   sessionId: string | null;
+  alsPath: string | null;
 };
 
 /** Must match `.vt-graph__rows > li` in the stylesheet. */
@@ -491,6 +498,126 @@ function VersionInspector({
       </div>
       {revealStatus && <p className="vt-inspector__status" role="status">{revealStatus}</p>}
     </aside>
+  );
+}
+
+function presetRelationLabel(row: ComparedSavedPreset, parentName: string | null): string {
+  const parent = parentName ?? "the parent version";
+  switch (row.relation) {
+    case "same":
+      return `Unchanged from ${parent}`;
+    case "edited":
+      return `Edited since ${parent}`;
+    case "renamed":
+      return `Renamed from ${row.previous?.preset_name ?? "the parent patch"}`;
+    case "changed":
+      return `Changed from ${row.previous?.preset_name ?? "the parent patch"}`;
+    case "added":
+      return `Not present in ${parent}`;
+    case "uncompared":
+      return "Stored in this save";
+  }
+}
+
+function presetByline(preset: StoredTrackPreset): string | null {
+  const parts = [preset.preset_author, preset.preset_bank]
+    .map((value) => value?.trim() ?? "")
+    .filter((value, index, all) => value.length > 0 && all.indexOf(value) === index);
+  return parts.length > 0 ? parts.join(" · ") : null;
+}
+
+/**
+ * The sound state serialized into this `.als`, next to the version it belongs to.
+ *
+ * Deliberately separate from the movement trail: loading a Serum preset emits no
+ * Live event, so placing these rows among captured moves would invent a time and
+ * order that do not exist. The file proves only what was present at the save.
+ */
+function SavedPresetState({
+  selected,
+  parent,
+}: {
+  selected: ProjectVersion;
+  parent: SelectedVersionParent | null;
+}) {
+  const currentPath = versionSourcePath(selected);
+  const parentPath = parent?.alsPath ?? null;
+  const readKey = `${currentPath ?? ""}::${parentPath ?? ""}`;
+  const [rows, setRows] = useState<ComparedSavedPreset[] | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setRows(null);
+    if (!currentPath) return;
+
+    const paths = [...new Set([currentPath, parentPath].filter((path): path is string => Boolean(path)))];
+    void getAlsPresets(paths)
+      .then((snapshots) => {
+        if (cancelled) return;
+        const byPath = new Map(
+          snapshots.map((snapshot) => [normalizeAlsPath(snapshot.path), snapshot]),
+        );
+        const current = byPath.get(normalizeAlsPath(currentPath));
+        if (!current?.readable || current.presets.length === 0) {
+          setRows([]);
+          return;
+        }
+
+        const previousSnapshot = parentPath
+          ? byPath.get(normalizeAlsPath(parentPath))
+          : null;
+        // Null means "comparison unavailable", while [] means the readable
+        // parent genuinely contained no supported Serum state.
+        const previous = previousSnapshot?.readable ? previousSnapshot.presets : null;
+        setRows(compareSavedPresets(current.presets, previous));
+      })
+      // A moved or mid-save set must not take the version Timeline down. Its
+      // captured work remains useful even when this optional file evidence is not.
+      .catch(() => {
+        if (!cancelled) setRows([]);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+    // readKey covers both file inputs; the exact path values are intentionally
+    // excluded so a new array/object identity cannot restart a 40MB read.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [readKey]);
+
+  if (!rows || rows.length === 0) return null;
+
+  return (
+    <section className="vt-presets" aria-label="Serum 2 presets saved in this version">
+      <header className="vt-presets__head">
+        <div>
+          <p className="vt__eyebrow">Saved sound state</p>
+          <h2>
+            {rows.length} Serum 2 {rows.length === 1 ? "patch" : "patches"} at last save
+          </h2>
+        </div>
+        <p>
+          Read from {versionLabel(selected)}. Loads between saves are not available.
+        </p>
+      </header>
+      <ol className="vt-presets__list">
+        {rows.map((row) => {
+          const byline = presetByline(row.preset);
+          return (
+            <li key={row.key} className={`is-${row.relation}`}>
+              <span className="vt-presets__track">{row.preset.track_name ?? "Track unavailable"}</span>
+              <span className="vt-presets__patch">
+                <strong>{row.preset.preset_name}</strong>
+                {byline && <span>{byline}</span>}
+              </span>
+              <span className="vt-presets__relation">
+                {presetRelationLabel(row, parent?.name ?? null)}
+              </span>
+            </li>
+          );
+        })}
+      </ol>
+    </section>
   );
 }
 
@@ -2190,6 +2317,7 @@ export function VersionTimelineScreen({
     return {
       name: versionLabel(parent),
       sessionId: latestSitting(parent),
+      alsPath: versionSourcePath(parent),
     };
   }, [selectedNode?.parentId, versions]);
 
@@ -2250,6 +2378,7 @@ export function VersionTimelineScreen({
             />
           )}
         </div>
+        {selected && <SavedPresetState selected={selected} parent={selectedParent} />}
         {selected && <VersionDetail selected={selected} parent={selectedParent} />}
       </section>
     </div>

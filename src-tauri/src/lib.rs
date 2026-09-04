@@ -1,3 +1,4 @@
+mod als_presets;
 mod event_catalog;
 mod install;
 mod metrics;
@@ -5,6 +6,7 @@ mod organizer;
 mod planner;
 mod protocol;
 mod schema_projection;
+mod serum_preset_observer;
 mod session;
 mod storage;
 mod udp_listener;
@@ -2085,6 +2087,17 @@ pub struct AlsFileTimes {
     pub modified_ms: Option<u64>,
 }
 
+/// The presets found in one saved set.
+#[derive(Debug, Clone, serde::Serialize)]
+struct AlsPresets {
+    path: String,
+    presets: Vec<als_presets::TrackPreset>,
+    /// False when the file was missing, mid-save, corrupt, or too large.
+    /// An empty but readable set means "no supported presets"; an unreadable
+    /// parent means no comparison can honestly be made.
+    readable: bool,
+}
+
 #[tauri::command]
 fn get_als_file_times(
     state: State<'_, AppState>,
@@ -2120,6 +2133,41 @@ fn get_als_file_times(
             });
             let (created_ms, modified_ms) = stamps.unwrap_or((None, None));
             AlsFileTimes { path, created_ms, modified_ms }
+        })
+        .collect())
+}
+
+#[tauri::command]
+fn get_als_presets(
+    state: State<'_, AppState>,
+    paths: Vec<String>,
+) -> Result<Vec<AlsPresets>, String> {
+    // Same constraint as get_als_file_times, for the same reason: the webview
+    // only ever asks about paths that came out of `sessions.als_path`, and an
+    // unconstrained reader would be a general file-parsing oracle reachable from
+    // page script.
+    let known: std::collections::HashSet<String> = {
+        let storage = state.storage.lock().expect("Storage state lock failed");
+        storage
+            .list_saved_sessions()?
+            .into_iter()
+            .filter_map(|session| session.als_path)
+            .collect()
+    };
+
+    Ok(paths
+        .into_iter()
+        .filter(|path| known.contains(path))
+        .map(|path| {
+            // One unreadable set must not lose the others: a version whose file
+            // has been moved or is mid-save reports no presets, not an error.
+            match als_presets::read_presets_from_file(&path) {
+                Ok(presets) => AlsPresets { path, presets, readable: true },
+                Err(err) => {
+                    log::warn!("presets unreadable for {path}: {err}");
+                    AlsPresets { path, presets: Vec::new(), readable: false }
+                }
+            }
         })
         .collect())
 }
@@ -2419,6 +2467,12 @@ pub fn run() {
                 bridge_metrics_for_setup.clone(),
             );
 
+            // Serum's preset label is observed entirely outside Ableton's Live
+            // Object Model. Keeping it here, after the normal listener starts,
+            // ensures this experiment cannot disturb parameter registration or
+            // capture in the Remote Script.
+            serum_preset_observer::start_serum_preset_observer();
+
             Ok(())
         })
         .manage(AppState {
@@ -2479,6 +2533,7 @@ pub fn run() {
             get_observed_saves,
             load_version_bundle,
             get_als_file_times,
+            get_als_presets,
             list_creative_moments,
             create_creative_moment,
             update_creative_moment,

@@ -14,8 +14,6 @@ import type { ObservedSave, VersionNode } from "./versionGraph";
 
 /** Closed version record: its label plus its one-line work stretch. */
 export const TIMELINE_ROW_HEIGHT = 120;
-/** Reserved inside an expanded record, so subsequent graph points still align. */
-export const TIMELINE_EXPANDED_WORK_HEIGHT = 248;
 export const TIMELINE_NODE_OFFSET = 22;
 export const TIMELINE_PIXELS_PER_HOUR = 16;
 
@@ -60,7 +58,6 @@ export function layoutVersionTimeline(
   nodes: VersionNode[],
   graph: GraphLayout,
   saves: ObservedSave[],
-  expandedNodeId: string | null = null,
 ): VersionTimelineLayout {
   const byId = new Map(nodes.map((node) => [node.id, node]));
   const placements = graph.placements
@@ -91,13 +88,13 @@ export function layoutVersionTimeline(
   // pixels-per-hour measurement. The accumulated offset is applied to every
   // later tick, so the lane and its HTML record keep agreeing.
   const shifts: { atMs: number; before: number; after: number }[] = [];
-  const minimumHeight = (nodeId: string) =>
-    TIMELINE_ROW_HEIGHT + (nodeId === expandedNodeId ? TIMELINE_EXPANDED_WORK_HEIGHT : 0);
+  // Every row is the same height now that the graph carries versions only.
+  const minimumHeight = () => TIMELINE_ROW_HEIGHT;
   let offset = 0;
   const rows = placements.map(({ node }) => {
     const naturalY = rawY(node.version.startedAtMs);
     const y = naturalY + offset;
-    const height = minimumHeight(node.id);
+    const height = minimumHeight();
     shifts.push({ atMs: node.version.startedAtMs, before: offset, after: offset + height });
     offset += height;
     return { nodeId: node.id, y, height };
@@ -163,7 +160,12 @@ export function layoutVersionTimeline(
     sittingTicks,
     saveTicks,
     breaks: scale.gaps.map((gap) => ({
-      y: yOf(gap.startMs),
+      // A collapsed absence belongs between its two version records. Rendering
+      // it at the prior version's node puts its label in the same left gutter
+      // as that version's date, so "4 days" and "Aug 11" read as one broken
+      // timestamp. Reserve the centre of the fixed break below the closed row.
+      y: yOf(gap.startMs) + TIMELINE_ROW_HEIGHT +
+        (TIMELINE_BREAK_MS / HOUR_MS) * TIMELINE_PIXELS_PER_HOUR / 2,
       durationMs: gap.durationMs,
       text: describeBreak(gap.durationMs),
     })),

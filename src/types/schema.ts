@@ -107,6 +107,17 @@ export type ProjectSchema = {
   session_id: string;
   name: string;
   has_snapshot: boolean;
+  /**
+   * The set's time signature, from the whole-set snapshot.
+   *
+   * Live gives arrangement positions in beats — quarter notes from the start of
+   * the song. "Beat 128" is unreadable to a producer; bar 33 is the same fact in
+   * the unit they think in, and the conversion needs this. See songPosition.ts.
+   */
+  signature_numerator: number | null;
+  signature_denominator: number | null;
+  /** The set changed meter, so one signature cannot convert the whole song. */
+  meter_changed: boolean;
   tracks: TrackObj[];
 };
 

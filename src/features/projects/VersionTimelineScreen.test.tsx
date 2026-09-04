@@ -1,10 +1,10 @@
 // @vitest-environment jsdom
 
 import { describe, expect, it, vi } from "vitest";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { SavedProject, SavedSessionMetadata } from "../../types/recall";
-import type { NoteEdit, ProjectSchema, ParameterChange, TimelineClipEvent } from "../../types/schema";
+import type { NoteEdit, ProjectSchema, ParameterChange } from "../../types/schema";
 import type { SavedSession } from "../../types/recall";
 import type { SessionReportInput } from "./sessionReport";
 import { buildVersionDepth } from "./versionDepth";
@@ -102,6 +102,9 @@ function depthCapture(
     session_id: id,
     name: "Pers EP",
     has_snapshot: true,
+    signature_numerator: 4,
+    signature_denominator: 4,
+    meter_changed: false,
     tracks: tracks.map((track, index) => ({
       id: `track-${track.name}`,
       ableton_id: `track-${track.name}`,
@@ -205,7 +208,7 @@ describe("VersionTimelineScreen", () => {
     // different unit ("work events" vs "changes") and a different length
     // (captures vs sittings) — two answers to one question on one screen.
     expect(screen.queryByLabelText("Sittings in this version")).toBeNull();
-    expect(screen.getByLabelText("Versions in this project")).toHaveTextContent("One sitting");
+    expect(screen.getByLabelText("Versions in this project")).toHaveTextContent("1 return");
   });
 
   it("changes the selected version without turning sittings into graph nodes", async () => {
@@ -242,10 +245,9 @@ describe("VersionTimelineScreen", () => {
     expect(screen.queryByRole("button", { name: "Open workspace" })).toBeNull();
   });
 
-  it("shows what changed in the set and retraces each return", async () => {
-    // The point of the surface: the graph picks a version, and this is what the
-    // version IS. Four counts and three "nothing captured" lines was the state
-    // this replaced — the data existed and was simply not read.
+  it("retraces each return without a parent-version inventory", async () => {
+    // The graph resolves ancestry. Retrace is the captured work trail, not a
+    // second report of structural changes since the parent version.
     const depth = buildVersionDepth({
       captures: [
         depthCapture("v1-return", start, [
@@ -270,11 +272,8 @@ describe("VersionTimelineScreen", () => {
     expect(within(detail).queryByText("From the first move to the last")).toBeNull();
     expect(within(detail).queryByText("The work in order")).toBeNull();
 
-    // The diff, against the parent the graph resolved — not the row below.
-    expect(within(detail).getByText("Since Pers EP draft.als")).toBeInTheDocument();
-    expect(
-      within(within(detail).getByLabelText("Changed since the parent version")).getByText("Lead"),
-    ).toBeInTheDocument();
+    expect(within(detail).queryByText("Changed in the set")).toBeNull();
+    expect(within(detail).queryByText("Since Pers EP draft.als")).toBeNull();
 
     // No version-wide track/device/note rollup appears here. Capture identities
     // can be regenerated across reopens, so summing them would turn repeated
@@ -292,7 +291,7 @@ describe("VersionTimelineScreen", () => {
     // The sitting opens as a disclosure, and carries its own reading toggle:
     // "what happened at 10:34" and "what did I do to the bass" are different
     // questions and a producer should not have to pick one forever.
-    expect(sittings.querySelectorAll("details")).toHaveLength(1);
+    expect(sittings.querySelectorAll(".vt-sittings > li > details")).toHaveLength(1);
     expect(
       within(sittings).getByRole("group", { name: "How to read this sitting" }),
     ).toBeInTheDocument();
@@ -307,12 +306,16 @@ describe("VersionTimelineScreen", () => {
     expect(within(movements).getByText("Lead")).toBeInTheDocument();
     expect(within(movements).getAllByText("Track")).toHaveLength(2);
     // A continuous value renders as a value, not as a "Result" sentence: its
-    // own from and to, plus a bar carrying the distance travelled — 10%→12%
-    // and 10%→90% read identically as text and do not here.
+    // own before and now values, plus a knob that mirrors the physical gesture
+    // instead of presenting parameter movement as an unexplained progress bar.
     expect(within(movements).queryByText("Result")).toBeNull();
     expect(within(movements).getAllByText("10%")).toHaveLength(2);
     expect(within(movements).getAllByText("40%")).toHaveLength(2);
     expect(movements.querySelectorAll(".vt-shape--scalar")).toHaveLength(2);
+    expect(movements.querySelectorAll(".vt-scalar__knob")).toHaveLength(2);
+    expect(movements.querySelector(".vt-scalar__track")).toBeNull();
+    expect(movements.querySelector(".vt-device-badge")).toBeNull();
+    expect(movements.querySelectorAll("[data-movement-shape='scalar']")).toHaveLength(2);
     expect(movements).not.toHaveTextContent("Serum · Cutoff · Bass · 10% → 40%");
     expect(movements).not.toHaveTextContent("Also changed");
     // Time has its own stable region instead of floating at the far edge of
@@ -342,6 +345,17 @@ describe("VersionTimelineScreen", () => {
     });
   });
 
+  it("keeps the plugin name in the title without duplicating it as a badge", async () => {
+    const capture = depthCapture("serum-device", start, [{ name: "Lead", devices: ["Serum 2"] }]);
+    vi.mocked(loadVersionDepth).mockResolvedValue(buildVersionDepth({ captures: [capture], parent: null }));
+
+    renderTimeline();
+
+    const movements = await screen.findByLabelText("Every captured movement in this sitting");
+    expect(within(movements).getByRole("heading", { name: "Serum 2 — Cutoff" })).toBeInTheDocument();
+    expect(movements.querySelector(".vt-device-badge")).toBeNull();
+  });
+
   it("gives a repeated movement its own first-to-last time rail", async () => {
     const capture = depthCapture("timed-control", start, [{ name: "foley", devices: ["Mixer"] }]);
     capture.changes.push({
@@ -367,13 +381,7 @@ describe("VersionTimelineScreen", () => {
     expect(within(movement).getByText("5 min span")).toBeInTheDocument();
   });
 
-  it("jumps through a long sitting without hiding any movement", async () => {
-    const user = userEvent.setup();
-    const scrollIntoView = vi.fn();
-    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
-      configurable: true,
-      value: scrollIntoView,
-    });
+  it("keeps every movement available with a local Timeline location rail", async () => {
     const tracks = Array.from({ length: 5 }, (_, index) => ({
       name: `Track ${index + 1}`,
       devices: [`Device ${index + 1}`],
@@ -385,23 +393,14 @@ describe("VersionTimelineScreen", () => {
 
     renderTimeline();
 
-    const navigator = await screen.findByRole("navigation", { name: "Jump through this sitting" });
-    const movements = screen.getByLabelText("Every captured movement in this sitting");
+    const movements = await screen.findByLabelText("Every captured movement in this sitting");
     expect(movements.querySelectorAll(".vt-movement-card")).toHaveLength(5);
-    expect(within(navigator).getByLabelText("Movement 1 of 5")).toBeInTheDocument();
-
-    await user.click(within(navigator).getByRole("button", { name: "Next" }));
-    expect(within(navigator).getByLabelText("Movement 2 of 5")).toBeInTheDocument();
-    expect(navigator).toHaveClass("is-moving-down");
-    expect(scrollIntoView).toHaveBeenLastCalledWith({ behavior: "auto", block: "start" });
-
-    await user.click(within(navigator).getByRole("button", { name: "Previous" }));
-    expect(within(navigator).getByLabelText("Movement 1 of 5")).toBeInTheDocument();
-    expect(navigator).toHaveClass("is-moving-up");
-
-    await user.selectOptions(within(navigator).getByRole("combobox"), "movement:4");
-    expect(within(navigator).getByLabelText("Movement 5 of 5")).toBeInTheDocument();
-    expect(within(navigator).getByRole("button", { name: "End" })).toBeDisabled();
+    expect(movements.querySelector('[data-timeline-active="true"]')).toBeInTheDocument();
+    const location = screen.getByLabelText("Timeline location");
+    expect(within(location).getByText("Movement 1 / 5")).toBeInTheDocument();
+    expect(within(location).getByRole("button", { name: "Previous" })).toBeDisabled();
+    expect(within(location).getByRole("button", { name: "Next" })).toBeEnabled();
+    expect(within(location).queryByRole("combobox")).not.toBeInTheDocument();
   });
 
   it("keeps every repeated nudge available under its movement card", async () => {
@@ -493,14 +492,24 @@ describe("VersionTimelineScreen", () => {
     expect(within(movements).getByText("20 beats")).toBeInTheDocument();
     expect(within(movements).getByLabelText("Exact captured MIDI pattern")).toBeInTheDocument();
     expect(within(movements).getAllByText("Clip start").length).toBeGreaterThan(0);
-    expect(within(movements).getByText("1 beat after clip start")).toBeInTheDocument();
+    // The roll is captioned in bars now, not raw quarter-notes: Ableton's ruler
+    // reads 1.1 · 1.2 · 1.3, and "20 quarter-note beats" is Live's internal unit
+    // in the wrong language.
+    expect(within(movements).getByText(/5 bars/)).toBeInTheDocument();
+    expect(within(movements).queryByText(/quarter-note/)).toBeNull();
     expect(movements.querySelectorAll(".vt-midi-pattern__row svg")).toHaveLength(2);
-    expect(movements.querySelectorAll(".vt-midi-pattern rect")).toHaveLength(2);
+    expect(movements.querySelectorAll(".vt-midi-roll__note")).toHaveLength(2);
+    expect(movements.querySelectorAll(".vt-midi-roll__key").length).toBeGreaterThanOrEqual(24);
+    expect(movements.querySelectorAll(".vt-midi-roll__beat-label").length).toBeGreaterThan(0);
+    expect(within(movements).getByText("Piano roll")).toBeInTheDocument();
     expect(within(movements).getByText("Show all captured notes · 1 before · 1 after")).toBeInTheDocument();
     expect(movements).not.toHaveTextContent("Chance 100%");
     expect(movements).not.toHaveTextContent("Velocity variation 0");
     expect(movements).not.toHaveTextContent("Release velocity 64");
     expect(movements).toHaveTextContent("Bar 17, beat 2");
+    expect(movements).toHaveTextContent("At");
+    expect(movements).not.toHaveTextContent("Moved to");
+    expect(within(movements).queryByLabelText(/Position context: this is Ableton's playhead/)).not.toBeInTheDocument();
     expect(movements).not.toHaveTextContent("Untitled clip");
   });
 
@@ -554,7 +563,14 @@ describe("VersionTimelineScreen", () => {
     // same inventory in the facts grid only makes the card taller.
     expect(within(movements).queryByText("Pitches used (3)")).toBeNull();
     expect(within(movements).getByText("E3 · G3 · A3")).toBeInTheDocument();
-    expect(movements.querySelectorAll(".vt-midi-pattern rect.is-after")).toHaveLength(3);
+    expect(movements.querySelectorAll(".vt-midi-roll__note.is-after")).toHaveLength(3);
+    const midiFacts = movements.querySelector(".vt-midi-fact-stack");
+    expect(midiFacts).not.toBeNull();
+    expect(midiFacts?.querySelectorAll(":scope > div")[0]).toHaveTextContent("Clip length4 beats");
+    expect(midiFacts?.querySelectorAll(":scope > div")[1]).toHaveTextContent("Notes0 → 3 notes");
+    const factLabels = [...movements.querySelectorAll(".vt-movement-card__facts dt")]
+      .map((label) => label.textContent);
+    expect(factLabels).toEqual(["Track", "Edit", "Clip length", "Notes"]);
     expect(movements).not.toHaveTextContent("3 notes (+3), E3-A3");
   });
 
@@ -593,7 +609,7 @@ describe("VersionTimelineScreen", () => {
     expect(movements).not.toHaveTextContent("E3-A3");
   });
 
-  it("shows clip placement in the producer-facing position Recall captured", async () => {
+  it("shows clip creation as location and length facts without a movement bar", async () => {
     const capture = depthCapture("placed-clip", start, [{ name: "Bass", devices: ["Operator"] }]);
     capture.changes = [];
     capture.clipEvents = [{
@@ -613,9 +629,12 @@ describe("VersionTimelineScreen", () => {
     renderTimeline();
 
     const movements = await screen.findByLabelText("Every captured movement in this sitting");
-    expect(within(movements).getByText("Placed at")).toBeInTheDocument();
-    expect(within(movements).getByText("Bar 9, beat 1 · 16 beats long")).toBeInTheDocument();
-    expect(within(movements).getByLabelText("Clip placed at Bar 9, beat 1; 16 beats long")).toBeInTheDocument();
+    expect(within(movements).getByText("Created at")).toBeInTheDocument();
+    expect(within(movements).getByText("Bar 9, beat 1")).toBeInTheDocument();
+    expect(within(movements).getByText("Length")).toBeInTheDocument();
+    expect(within(movements).getByText("16 beats")).toBeInTheDocument();
+    expect(within(movements).getByLabelText("Clip created at Bar 9, beat 1; 16 beats long")).toBeInTheDocument();
+    expect(movements.querySelector(".vt-span__grid")).toBeNull();
     expect(movements).not.toHaveTextContent("quarter-note beats");
     expect(movements).not.toHaveTextContent("Bar 5");
   });
@@ -649,7 +668,7 @@ describe("VersionTimelineScreen", () => {
     renderTimeline();
 
     const rows = screen.getByLabelText("Versions in this project");
-    expect(within(rows).getAllByText(/^One sitting ·/)).toHaveLength(3);
+    expect(within(rows).getAllByText(/^1 return ·/)).toHaveLength(3);
     expect(within(rows).queryByText(/other tracks|devices|note edits/i)).toBeNull();
   });
 
@@ -674,28 +693,27 @@ describe("VersionTimelineScreen", () => {
       />,
     );
 
-    expect(screen.getByText(/^2 returns ·/)).toBeInTheDocument();
-    expect(screen.getByText("Retrace 2 sittings")).toBeInTheDocument();
+    expect(screen.getByText(/^2 returns$/)).toBeInTheDocument();
+    expect(screen.getByLabelText("Versions in this project")).not.toHaveTextContent("→");
   });
 
-  it("keeps each version's work on its lane as a compact, expandable stretch", async () => {
-    // The selected detail remains the fullest reading, but the graph itself
-    // must no longer be empty lane between file points. Its closed line says
-    // how many returns happened; opening it puts the sitting trail in place.
-    const user = userEvent.setup();
-    const depth = buildVersionDepth({
-      captures: [depthCapture("v3", start + 8 * hour, [{ name: "Bass", devices: ["Serum"] }])],
-      parent: null,
-    });
-    vi.mocked(loadVersionDepth).mockResolvedValue(depth);
-
+  it("keeps the graph to versions and nothing else", () => {
+    // A "Retrace N sittings" disclosure used to open inside the lane, pushing
+    // the version points apart and leaving a screen of empty rail behind
+    // whichever row was open — and reading a whole version bundle per row on
+    // top of the one the detail below was already reading.
+    //
+    // The graph is the navigator: which files exist, how they descend, when.
+    // What happened inside a version belongs to the detail below.
     const { container } = renderTimeline();
 
-    const control = screen.getAllByText(/Retrace 1 sitting/)[0]!;
-    await user.click(control);
+    const rows = screen.getByLabelText("Versions in this project");
+    expect(within(rows).queryByText(/Retrace/)).toBeNull();
+    expect(rows.querySelector("details")).toBeNull();
+    expect(container.querySelector(".vt-work__trail")).toBeNull();
 
-    await waitFor(() => expect(container.querySelector(".vt-work__trail")).toBeInTheDocument());
-    expect(container.querySelector(".vt-graph__sitting")).toBeInTheDocument();
+    // The row still says how much work is in there — it just does not open it.
+    expect(within(rows).getAllByText(/return/).length).toBeGreaterThan(0);
   });
 
   it("keeps the timeline rows independent of aggregate report loading", () => {
@@ -703,7 +721,7 @@ describe("VersionTimelineScreen", () => {
 
     const rows = screen.getByLabelText("Versions in this project");
     expect(within(rows).getAllByRole("button")).toHaveLength(3);
-    expect(within(rows).getAllByText(/^One sitting ·/)).toHaveLength(3);
+    expect(within(rows).getAllByText(/^1 return ·/)).toHaveLength(3);
   });
 
   it("shows the Report's loader while it reads, not a bare sentence", () => {
@@ -753,15 +771,35 @@ describe("VersionTimelineScreen", () => {
   it("uses a drawn structural-change icon instead of a raw sign", async () => {
     const capture = depthCapture("v1-return", start, [{ name: "Bass", devices: ["Serum"] }]);
     capture.changes = [];
-    capture.clipEvents = [{
-      id: "clip-added",
-      event_type: "midi_clip_created",
-      track_name: "Bass",
-      track_id: "track-Bass",
-      clip_name: "Hook",
+    capture.session.events = [{
+      id: "device-added",
+      type: "device_added",
+      timestamp_ms: start + 60_000,
+      summary: "Added Serum",
+      title: "Device added",
+      description: "Serum was added to Bass",
+      source: "test",
+      payload: null,
+      session_id: capture.session.id,
+      track: "Bass",
+      track_type: "midi",
+      device: "Serum",
+      device_chain: null,
+      parameter: null,
+      parameter_value: null,
+      previous_parameter_value: null,
+      parameter_value_percent: null,
+      previous_parameter_value_percent: null,
+      parameter_display_value: null,
+      previous_parameter_display_value: null,
+      parameter_is_quantized: null,
+      clip_name: null,
       sample_name: null,
-      changed_at_ms: start + 60_000,
-    } satisfies TimelineClipEvent];
+      file_path: null,
+      bpm: null,
+      playing: null,
+      is_heartbeat: false,
+    }];
     vi.mocked(loadVersionDepth).mockResolvedValue(
       buildVersionDepth({ captures: [capture], parent: null }),
     );
@@ -791,6 +829,14 @@ describe("VersionTimelineScreen", () => {
     expect(within(detail).getByText(/^Saved · /)).toBeInTheDocument();
   });
 
+  it("keeps the parent-version diff out of the retrace", async () => {
+    renderTimeline();
+
+    await screen.findByLabelText("Version detail");
+    expect(screen.queryByLabelText("Changed since the parent version")).toBeNull();
+    expect(screen.queryByText("Changed in the set")).toBeNull();
+  });
+
   it("lets one sitting be read by track instead of by the clock", async () => {
     const user = userEvent.setup();
     const capture = depthCapture("v1-return", start, [
@@ -809,6 +855,7 @@ describe("VersionTimelineScreen", () => {
     expect(
       within(detail).getByLabelText("Every captured movement, grouped by track"),
     ).toBeInTheDocument();
+    expect(within(detail).getAllByText("1 movement")).toHaveLength(2);
     expect(
       within(detail).queryByLabelText("Every captured movement in this sitting"),
     ).toBeNull();
@@ -838,6 +885,16 @@ describe("VersionTimelineScreen", () => {
     expect(byType.querySelectorAll(":scope > li")).toHaveLength(2);
     expect(within(byType).getByText("Mixing")).toBeInTheDocument();
     expect(within(byType).getByText("Sound & samples")).toBeInTheDocument();
+    const mixCard = byType.querySelector("[data-work-kind='mixing']");
+    expect(mixCard).not.toBeNull();
+    expect(mixCard?.querySelectorAll(".vt-scalar__meter")).toHaveLength(2);
+    expect(byType.querySelectorAll(".vt-scalar__knob")).toHaveLength(1);
+    expect(byType.querySelectorAll(".vt-scalar__meter-fill")).toHaveLength(2);
+    expect(byType.querySelectorAll(".vt-scalar__meter-change")).toHaveLength(1);
+    expect(mixCard?.querySelector(".vt-shape__arrow")).toBeNull();
+    expect(within(mixCard as HTMLElement).getByText("Before")).toBeInTheDocument();
+    expect(within(mixCard as HTMLElement).getByText("After")).toBeInTheDocument();
+    expect(within(mixCard as HTMLElement).getAllByLabelText(/0 at the top and negative infinity at the bottom/)).toHaveLength(2);
     expect(
       within(detail).queryByLabelText("Every captured movement in this sitting"),
     ).toBeNull();

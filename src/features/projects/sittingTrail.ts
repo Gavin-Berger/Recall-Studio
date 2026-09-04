@@ -33,12 +33,35 @@ import type { ReportDecision } from "./sessionReport";
  */
 export const TRAIL_GAP_MS = 120_000;
 
+/**
+ * How many movements a track has to hold before leaving it counts as a section.
+ *
+ * Without this, one move on another track and back puts a divider between every
+ * other card. Three is the smallest run that reads as "I was working here"
+ * rather than "I looked at this".
+ */
+export const MIN_FOCUS_RUN = 3;
+
 export type TrailEntry =
   | { kind: "movement"; key: string; decision: ReportDecision }
   /** A save the control surface watched. Everything before it is in that state. */
   | { kind: "save"; key: string; atMs: number }
   /** Drawn silence. Named, never implied. */
-  | { kind: "gap"; key: string; fromMs: number; toMs: number; durationMs: number };
+  | { kind: "gap"; key: string; fromMs: number; toMs: number; durationMs: number }
+  /**
+   * The producer moved to a different track.
+   *
+   * Miller: a busy hour with no pauses in it is one undifferentiated run of two
+   * hundred cards, and the reader has nowhere to hold their place. Gaps and
+   * saves already chunk the trail, but a continuous stretch has neither.
+   *
+   * Track is the chunk that already exists in the work — `SessionBlock` calls it
+   * "a contiguous stretch of work on one track" and says why: producers work in
+   * sections ("I was on the lead for a while"), not in isolated tweaks. So the
+   * boundary is not invented for the layout; it is where the producer actually
+   * turned their attention, which makes it information rather than decoration.
+   */
+  | { kind: "focus"; key: string; track: string; atMs: number };
 
 export type TrackGroup = {
   /** The track's name, or null for work that belongs to no single track. */
@@ -47,6 +70,57 @@ export type TrackGroup = {
 };
 
 export type SittingSave = { savedAtMs: number };
+
+/**
+ * Which movements begin a real stretch of work on a track.
+ *
+ * The verdict cannot be made at the moment the track changes, because whether a
+ * change is a section or a glance depends on what comes AFTER it: one move on
+ * another track and straight back is not somewhere the producer went. Deciding
+ * on the way past marked the glance and missed the return, which put a divider
+ * between every other card — the opposite of chunking.
+ *
+ * So the runs are measured first, and only a run long enough to have been worked
+ * in earns a divider. The first run is never marked: there was nothing to move
+ * away from.
+ *
+ * Movements with no track (tempo, the set's own structure) belong to no lane and
+ * neither break a run nor start one — a divider there would be a boundary the
+ * producer never crossed.
+ */
+function focusRunStarts(ordered: ReportDecision[]): Set<string> {
+  const starts = new Set<string>();
+  let run: { track: string; first: ReportDecision; length: number } | null = null;
+  // The last track the producer actually settled on. Compared against, rather
+  // than "the previous run", so coming back from a glance is not announced as
+  // arriving somewhere new — you never left.
+  let settledTrack: string | null = null;
+
+  const close = () => {
+    if (run && run.length >= MIN_FOCUS_RUN) {
+      // The first settled track establishes where the sitting started; every one
+      // after it is somewhere the producer moved TO.
+      if (settledTrack !== null && run.track !== settledTrack) starts.add(run.first.id);
+      settledTrack = run.track;
+    }
+    run = null;
+  };
+
+  for (const decision of ordered) {
+    const track = decision.track?.trim() || null;
+    if (track === null) continue;
+
+    if (run && run.track === track) {
+      run.length += 1;
+      continue;
+    }
+    close();
+    run = { track, first: decision, length: 1 };
+  }
+  close();
+
+  return starts;
+}
 
 /**
  * The chronological reading: movements in order, with saves and silences in
@@ -64,6 +138,7 @@ export function sittingTrail(
   const entries: TrailEntry[] = [];
   let previousEndMs: number | null = null;
   let nextSave = 0;
+  const focusStarts = focusRunStarts(ordered);
 
   for (const decision of ordered) {
     // Saves that happened before this movement land above it, in order.
@@ -84,6 +159,16 @@ export function sittingTrail(
         fromMs: previousEndMs,
         toMs: decision.atMs,
         durationMs: decision.atMs - previousEndMs,
+      });
+    }
+
+    if (focusStarts.has(decision.id)) {
+      const track = decision.track!.trim();
+      entries.push({
+        kind: "focus",
+        key: `focus:${track}:${decision.atMs}`,
+        track,
+        atMs: decision.atMs,
       });
     }
 
@@ -143,4 +228,52 @@ export function gapLabel(durationMs: number): string {
   if (minutes < 60) return `${minutes} ${minutes === 1 ? "minute" : "minutes"}`;
   const hours = Math.round(minutes / 60);
   return `${hours} ${hours === 1 ? "hour" : "hours"}`;
+}
+
+/**
+ * Which movements a producer spent themselves on.
+ *
+ * FOR THE REPORT, NOT THE TIMELINE. Ranking is a verdict about what mattered,
+ * and verdicts are the Report's job — it exists to break the comparisons down.
+ * The Timeline states what happened and lets the producer read it, so nothing
+ * there is emphasised over anything else.
+ *
+ * Kept here because it is the same sitting model the trail is built from, it is
+ * tested, and the Report will want it: a control ridden forty times and one
+ * nudged once are not the same fact.
+ *
+ * Weight is RELATIVE TO THE SITTING, deliberately. A quiet evening's busiest
+ * control is still that evening's story, and judging it against a marathon
+ * session would flatten the quiet one into nothing. The question is "where did
+ * this evening go", not "how does it compare to my best".
+ */
+export type MovementWeight = "heavy" | "medium" | "light";
+
+/**
+ * A movement has to account for at least this share of the busiest one to read
+ * as heavy. Not a fixed count: forty passes is a lot in an evening of fifties
+ * and unremarkable in an evening of four hundreds.
+ */
+const HEAVY_SHARE = 0.5;
+const MEDIUM_SHARE = 0.15;
+
+export function movementWeights(decisions: ReportDecision[]): Map<string, MovementWeight> {
+  const weights = new Map<string, MovementWeight>();
+  const busiest = decisions.reduce((most, decision) => Math.max(most, decision.count), 0);
+
+  // Everything moved once: there is no ranking to report, and picking a winner
+  // would invent one. Same rule the ranked content groups already follow.
+  if (busiest <= 1) {
+    for (const decision of decisions) weights.set(decision.id, "medium");
+    return weights;
+  }
+
+  for (const decision of decisions) {
+    const share = decision.count / busiest;
+    weights.set(
+      decision.id,
+      share >= HEAVY_SHARE ? "heavy" : share >= MEDIUM_SHARE ? "medium" : "light",
+    );
+  }
+  return weights;
 }

@@ -43,13 +43,20 @@ export type MovementShape =
       /** Live's own rendering, unit included, preferred over the raw number. */
       fromLabel: string | null;
       toLabel: string | null;
-      /** 0–1 positions for the bar. Null when Live gave no percentage. */
+      /** 0–1 positions for the knob. Null when Live gave no percentage. */
       fromFraction: number | null;
       toFraction: number | null;
       /** True when the value ended higher than it started. */
       rose: boolean | null;
+      /** A frequency uses its real logarithmic Hz range, never a fake percent. */
+      frequency: { from: number; to: number } | null;
     }
   | { shape: "pattern"; edit: NoteEdit }
+  | {
+      shape: "placement";
+      startBeats: number | null;
+      endBeats: number | null;
+    }
   | {
       shape: "span";
       startBeats: number;
@@ -221,12 +228,28 @@ function controlShape(first: ParameterChange, last: ParameterChange): MovementSh
     fromFraction !== null && toFraction !== null && fromFraction !== toFraction
       ? toFraction > fromFraction
       : null;
+  const frequency = frequencyValues(first, last);
 
   if (toLabel === null && toFraction === null) {
     return { shape: "text", text: "Adjusted — the value was not captured." };
   }
 
-  return { shape: "scalar", fromLabel, toLabel, fromFraction, toFraction, rose };
+  return { shape: "scalar", fromLabel, toLabel, fromFraction, toFraction, rose, frequency };
+}
+
+/** Read a captured Hz value without treating a 0–1 normalized control value
+    as literal hertz. Live's display string is authoritative when it has one. */
+function frequencyValue(raw: number | null, display: string | null, unit: string | null): number | null {
+  const label = clean(display);
+  const match = label?.match(/^\s*(\d+(?:\.\d+)?)\s*(k)?hz\s*$/i);
+  if (match) return Number(match[1]) * (match[2] ? 1_000 : 1);
+  return clean(unit)?.toLocaleLowerCase() === "hz" && raw !== null && raw > 0 ? raw : null;
+}
+
+function frequencyValues(first: ParameterChange, last: ParameterChange) {
+  const from = frequencyValue(first.before_value, first.before_display_value, first.unit);
+  const to = frequencyValue(last.after_value, last.after_display_value, last.unit);
+  return from !== null && to !== null ? { from, to } : null;
 }
 
 function capturedValue(raw: number | null, percent: number | null, unit: string | null): string | null {
@@ -256,17 +279,17 @@ function fractionOf(percent: number | null): number | null {
 function clipShape(event: TimelineClipEvent, outcome: string): MovementShape {
   const start = event.arrangement_start_beats;
   const end = event.arrangement_end_beats;
-  if (start !== null && start !== undefined && end !== null && end !== undefined && end > start) {
-    return {
-      shape: "span",
-      startBeats: start,
-      endBeats: end,
-    };
-  }
 
-  // No range captured — a Session-view clip, or an older event. It still
-  // ARRIVED, which is the other true thing about it.
-  return { shape: "tree", sign: "+", text: outcome };
+  // Every TimelineClipEvent currently emitted by the control script records a
+  // clip being created, added, or recorded. It has a location and may have a
+  // length, but it did not travel through the arrangement. A span bar falsely
+  // reads as movement, so keep these as placement facts even when incomplete.
+  void outcome;
+  return {
+    shape: "placement",
+    startBeats: start ?? null,
+    endBeats: end ?? null,
+  };
 }
 
 function structureShape(eventType: string, title: string, summary: string): MovementShape {

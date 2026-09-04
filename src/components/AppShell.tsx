@@ -55,7 +55,7 @@ type AppShellProps = {
   onOpenSettings: () => void;
 };
 
-export function AppShell({
+function AppShellContents({
   surface,
   onChangeSurface,
   connected,
@@ -193,6 +193,8 @@ export function AppShell({
     </main>
   );
 }
+
+export { AppShellContents as AppShell };
 
 function SettingsIcon() {
   return (

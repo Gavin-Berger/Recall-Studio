@@ -3,8 +3,8 @@ use crate::protocol::RecallEvent;
 use crate::schema_projection::{
     apply_first_observed_states, build_parameter_changes, parse_note_edit, parse_session_tree,
     ChangeEvent, CreativeMoment, CreativeMomentTarget, DeviceObj, DeviceRole, NoteEdit,
-    ObservedSave, ParameterChange, ParameterObj, ParsedParam, ParsedTrack, ProjectSchema,
-    TimelineClipEvent,
+    CaptureBundle, ObservedSave, ParameterChange, ParameterObj, ParsedParam, ParsedTrack,
+    ProjectSchema, TimelineClipEvent, VersionBundle,
     TrackObj, TrackType,
 };
 use crate::session::{
@@ -127,6 +127,18 @@ fn fallback_project_display_name(project_name: Option<&str>, project_path: Optio
         .or_else(|| clean_optional(project_path).and_then(project_name_from_path))
         .unwrap_or_else(|| "Untitled Ableton Set".to_string())
 }
+
+/// Event types whose payload is a whole-set snapshot.
+///
+/// These are the biggest rows in the database by a wide margin — measured on a
+/// real library, 209 of them across one project's captures carry 78 MB, and the
+/// whole `events` payload column is 152 MB with 142 MB of it these.
+///
+/// The schema projection reads them directly (see `materialize_session_schema`),
+/// which is the ONLY thing that needs the payload. Every reader that goes
+/// through `load_session` throws it away — `eventMemory.ts` lists
+/// `live_set_snapshot` under TELEMETRY_EVENT_TYPES and never opens it.
+const SNAPSHOT_EVENT_TYPES: &str = "'live_set_snapshot', 'session_snapshot', 'set_snapshot'";
 
 impl StorageState {
     pub fn new() -> Self {
@@ -691,6 +703,26 @@ impl StorageState {
             .map_err(|error| format!("Failed to collect saved sessions: {}", error))
     }
 
+    /// One capture's events, for the surfaces that read a session end to end.
+    ///
+    /// WHAT THIS DELIBERATELY DOES NOT RETURN: whole-set snapshot payloads.
+    ///
+    /// Measured on the live library, opening one project's version in the
+    /// Timeline moved 80 MB across the IPC bridge, 78 MB of which was
+    /// `live_set_snapshot` JSON — read from SQLite, serialized to JSON, parsed
+    /// in the webview, and then dropped without being looked at, because
+    /// `eventMemory.ts` classifies those events as telemetry. That was the
+    /// dominant cost of opening a version, with Ableton closed and nothing
+    /// capturing.
+    ///
+    /// The payload is nulled in SQL rather than after the read, so the bytes
+    /// never leave the database. Every other event type keeps its payload: the
+    /// row-to-event mapping below falls back to payload JSON for columns that
+    /// predate the canonical schema, and removing it wholesale would blank out
+    /// old events.
+    ///
+    /// `materialize_session_schema` reads snapshots through its own query and is
+    /// unaffected — it is the one caller that actually needs them.
     pub fn load_session(&self, session_id: &str) -> Result<SavedSession, String> {
         let metadata = self
             .list_saved_sessions()?
@@ -700,9 +732,8 @@ impl StorageState {
 
         let connection = self.open_connection()?;
 
-        let mut statement = connection
-            .prepare(
-                "
+        let sql = format!(
+            "
                 SELECT
                     id,
                     source,
@@ -710,7 +741,7 @@ impl StorageState {
                     timestamp_ms,
                     title,
                     description,
-                    payload,
+                    CASE WHEN event_type IN ({snapshots}) THEN NULL ELSE payload END,
                     session_id,
                     track_name,
                     track_type,
@@ -734,7 +765,11 @@ impl StorageState {
                 WHERE session_id = ?1
                 ORDER BY timestamp_ms ASC, id ASC
                 ",
-            )
+            snapshots = SNAPSHOT_EVENT_TYPES
+        );
+
+        let mut statement = connection
+            .prepare(&sql)
             .map_err(|error| format!("Failed to prepare session events query: {}", error))?;
 
         let rows = statement
@@ -2599,12 +2634,76 @@ impl StorageState {
             .map(|session| session.started_at_ms)
             .unwrap_or(0);
 
+        let (signature_numerator, signature_denominator) = self.session_meter(session_id)?;
+
         Ok(ProjectSchema {
             has_snapshot: !tracks.is_empty(),
             name: session_name(session_id, started_at),
             session_id: session_id.to_string(),
             tracks,
+            signature_numerator,
+            signature_denominator,
+            meter_changed: self.session_meter_changed(session_id)?,
         })
+    }
+
+    /// The set's time signature, from the newest snapshot that reported one.
+    ///
+    /// The newest, because that is the meter the set is in now — and for a set
+    /// that never changed meter, every snapshot agrees anyway.
+    fn session_meter(&self, session_id: &str) -> Result<(Option<i64>, Option<i64>), String> {
+        let connection = self.open_connection()?;
+        let mut statement = connection
+            .prepare(&format!(
+                "SELECT payload FROM events
+                 WHERE session_id = ?1 AND event_type IN ({snapshots})
+                   AND payload IS NOT NULL
+                 ORDER BY timestamp_ms DESC, id DESC",
+                snapshots = SNAPSHOT_EVENT_TYPES
+            ))
+            .map_err(|error| format!("Failed to prepare meter query: {}", error))?;
+
+        let rows = statement
+            .query_map(params![session_id], |row| row.get::<_, String>(0))
+            .map_err(|error| format!("Failed to read meter: {}", error))?;
+
+        for payload in rows {
+            let Ok(payload) = payload else { continue };
+            let Ok(json) = serde_json::from_str::<Value>(&payload) else {
+                continue;
+            };
+            let read = |key: &str| json.get(key).and_then(Value::as_i64);
+            let numerator = read("signature_numerator");
+            let denominator = read("signature_denominator");
+            // Both or neither: half a meter cannot convert a beat, and a
+            // defaulted denominator is the 4/4 assumption coming back in.
+            if let (Some(numerator), Some(denominator)) = (numerator, denominator) {
+                if numerator > 0 && denominator > 0 {
+                    return Ok((Some(numerator), Some(denominator)));
+                }
+            }
+        }
+
+        Ok((None, None))
+    }
+
+    /// Did the set change time signature while this capture was running?
+    ///
+    /// One meter cannot convert a song that changed meter, so the caller shows
+    /// no bar numbers at all rather than numbers that are wrong after the
+    /// change. Counted from the events, which is the only record of it.
+    fn session_meter_changed(&self, session_id: &str) -> Result<bool, String> {
+        let connection = self.open_connection()?;
+        let changes: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM events
+                 WHERE session_id = ?1
+                   AND event_type IN ('signature_changed', 'time_signature_changed')",
+                params![session_id],
+                |row| row.get(0),
+            )
+            .map_err(|error| format!("Failed to count meter changes: {}", error))?;
+        Ok(changes > 0)
     }
 
     /// Parameter changes for a session, in chronological order, with before/after.
@@ -2809,6 +2908,69 @@ impl StorageState {
 
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(|error| format!("Failed to collect timeline clip events: {}", error))
+    }
+
+    /// Everything the Timeline needs to open one version, in one call.
+    ///
+    /// WHY THIS EXISTS. Opening a version was six IPC round trips per capture
+    /// plus one for the saves — 71 crossings for a nine-capture version, each
+    /// with its own serialize, bridge hop, and parse. The database work was
+    /// never the problem; the bridge was.
+    ///
+    /// NOTHING IS SUMMARISED HERE. This calls the same per-session methods the
+    /// frontend was calling and returns their results unchanged, so the data is
+    /// identical row for row. The saving is entirely in the number of crossings.
+    /// Keeping it that way is deliberate: a batch endpoint that also "helpfully"
+    /// reduces its payload is how a read path quietly starts losing information.
+    ///
+    /// A capture that fails to load is SKIPPED rather than failing the whole
+    /// version. One unreadable capture out of nine should cost that capture, not
+    /// the other eight.
+    pub fn load_version_bundle(&self, session_ids: &[String]) -> Result<VersionBundle, String> {
+        let mut captures = Vec::with_capacity(session_ids.len());
+
+        for session_id in session_ids {
+            // Same order the frontend used: materialize first, so the schema
+            // read below sees a projection built from the current events.
+            if let Err(error) = self.materialize_session_schema(session_id) {
+                log::warn!("bundle: materialize failed for {} -> {}", session_id, error);
+            }
+
+            let session = match self.load_session(session_id) {
+                Ok(session) => session,
+                Err(error) => {
+                    log::warn!("bundle: skipping {} -> {}", session_id, error);
+                    continue;
+                }
+            };
+
+            // Every read for this capture, or none of it. `?` here would have
+            // made the promise above false: a corrupt payload row or a
+            // projection that has not materialised yet would abort the whole
+            // call and cost a nine-capture version all nine, not the one.
+            let bundle = (|| -> Result<CaptureBundle, String> {
+                Ok(CaptureBundle {
+                    session,
+                    schema: self.get_project_schema(session_id)?,
+                    changes: self.get_parameter_changes(session_id)?,
+                    note_edits: self.get_note_edits(session_id)?,
+                    clip_events: self.get_timeline_clip_events(session_id)?,
+                    moments: self.list_creative_moments(session_id)?,
+                })
+            })();
+
+            match bundle {
+                Ok(bundle) => captures.push(bundle),
+                Err(error) => {
+                    log::warn!("bundle: skipping {} -> {}", session_id, error);
+                }
+            }
+        }
+
+        Ok(VersionBundle {
+            captures,
+            saves: self.get_observed_saves(session_ids)?,
+        })
     }
 
     // ── Creative moments (user-authored) ─────────────────────────────────────
@@ -5549,6 +5711,262 @@ mod tests {
         let mut event = event(session_id, "live_set_snapshot");
         event.payload = Some(payload.to_string());
         event
+    }
+
+    // ── The version bundle ─────────────────────────────────────────────────
+    //
+    // Batching a read path is where information quietly goes missing: the
+    // endpoint gets "helpful", trims something nobody noticed, and the loss only
+    // shows up months later as a surface that used to say more. These pin that
+    // the bundle is a TRANSPORT change and nothing else — the same rows the six
+    // separate calls returned, crossing the bridge once instead of seven times.
+
+    #[test]
+    fn the_bundle_returns_exactly_what_the_separate_reads_returned() {
+        let (storage, path) = temp_storage();
+        let session_id = "take-bundle";
+        storage
+            .save_session_started(&SessionStatus {
+                active: true,
+                session_id: Some(session_id.into()),
+                started_at_ms: Some(1_000),
+                ended_at_ms: None,
+            })
+            .unwrap();
+
+        let snapshot = serde_json::json!({
+            "tracks": [{
+                "name": "Bass",
+                "type": "midi",
+                "devices": [{ "name": "Serum", "parameters": [{ "name": "Cutoff", "value": 0.5 }] }]
+            }]
+        });
+        storage
+            .save_events_batch(&[
+                snapshot_event(session_id, snapshot),
+                param_change(session_id, 2_000, "Bass", "Serum", "Cutoff", 0.7),
+                project_saved_event(session_id, 3_000, "M:/Ableton/Bundle.als"),
+            ])
+            .unwrap();
+        storage.materialize_session_schema(session_id).unwrap();
+
+        // What the frontend used to fetch, one call at a time.
+        let session = storage.load_session(session_id).unwrap();
+        let schema = storage.get_project_schema(session_id).unwrap();
+        let changes = storage.get_parameter_changes(session_id).unwrap();
+        let note_edits = storage.get_note_edits(session_id).unwrap();
+        let clip_events = storage.get_timeline_clip_events(session_id).unwrap();
+        let moments = storage.list_creative_moments(session_id).unwrap();
+        let saves = storage
+            .get_observed_saves(&[session_id.to_string()])
+            .unwrap();
+
+        let bundle = storage
+            .load_version_bundle(&[session_id.to_string()])
+            .unwrap();
+
+        assert_eq!(bundle.captures.len(), 1);
+        let one = &bundle.captures[0];
+
+        // Compared as serialized JSON so every field is covered, including any
+        // added later. A new column the bundle forgets to carry fails here.
+        assert_eq!(
+            serde_json::to_string(&one.session).unwrap(),
+            serde_json::to_string(&session).unwrap(),
+            "the session, events included"
+        );
+        assert_eq!(
+            serde_json::to_string(&one.schema).unwrap(),
+            serde_json::to_string(&schema).unwrap(),
+            "the schema"
+        );
+        assert_eq!(
+            serde_json::to_string(&one.changes).unwrap(),
+            serde_json::to_string(&changes).unwrap(),
+            "every parameter change"
+        );
+        assert_eq!(
+            serde_json::to_string(&one.note_edits).unwrap(),
+            serde_json::to_string(&note_edits).unwrap(),
+            "every note edit"
+        );
+        assert_eq!(
+            serde_json::to_string(&one.clip_events).unwrap(),
+            serde_json::to_string(&clip_events).unwrap(),
+            "every clip event"
+        );
+        assert_eq!(
+            serde_json::to_string(&one.moments).unwrap(),
+            serde_json::to_string(&moments).unwrap(),
+            "every creative moment"
+        );
+        assert_eq!(
+            serde_json::to_string(&bundle.saves).unwrap(),
+            serde_json::to_string(&saves).unwrap(),
+            "every observed save"
+        );
+
+        cleanup(&path);
+    }
+
+    #[test]
+    fn the_bundle_keeps_every_capture_in_the_order_it_was_asked_for() {
+        // A version's captures are folded into sittings downstream, and that
+        // fold reads them by id. Losing or reordering one silently moves work
+        // between evenings.
+        let (storage, path) = temp_storage();
+        let ids: Vec<String> = (0..3).map(|i| format!("take-order-{}", i)).collect();
+        for (index, id) in ids.iter().enumerate() {
+            storage
+                .save_session_started(&SessionStatus {
+                    active: true,
+                    session_id: Some(id.clone()),
+                    started_at_ms: Some(1_000 + index as u64),
+                    ended_at_ms: None,
+                })
+                .unwrap();
+            storage
+                .save_events_batch(&[event(id, "parameter_changed")])
+                .unwrap();
+        }
+
+        let bundle = storage.load_version_bundle(&ids).unwrap();
+
+        assert_eq!(
+            bundle
+                .captures
+                .iter()
+                .map(|capture| capture.session.id.clone())
+                .collect::<Vec<_>>(),
+            ids
+        );
+
+        cleanup(&path);
+    }
+
+    #[test]
+    fn one_unreadable_capture_does_not_cost_the_other_eight() {
+        let (storage, path) = temp_storage();
+        let real = "take-real";
+        storage
+            .save_session_started(&SessionStatus {
+                active: true,
+                session_id: Some(real.into()),
+                started_at_ms: Some(1_000),
+                ended_at_ms: None,
+            })
+            .unwrap();
+        storage
+            .save_events_batch(&[event(real, "parameter_changed")])
+            .unwrap();
+
+        let bundle = storage
+            .load_version_bundle(&["take-missing".to_string(), real.to_string()])
+            .unwrap();
+
+        assert_eq!(bundle.captures.len(), 1);
+        assert_eq!(bundle.captures[0].session.id, real);
+
+        cleanup(&path);
+    }
+
+    // ── What load_session is allowed to ship ───────────────────────────────
+    //
+    // Measured on the live library: opening one project's version in the
+    // Timeline moved 80 MB across the IPC bridge with Ableton closed and nothing
+    // capturing. 78 MB of it was `live_set_snapshot` payloads that the frontend
+    // classifies as telemetry and discards without reading.
+
+    #[test]
+    fn load_session_does_not_ship_whole_set_snapshots() {
+        let (storage, path) = temp_storage();
+        let session_id = "take-payload";
+        storage
+            .save_session_started(&SessionStatus {
+                active: true,
+                session_id: Some(session_id.into()),
+                started_at_ms: Some(1_000),
+                ended_at_ms: None,
+            })
+            .unwrap();
+
+        let heavy = serde_json::json!({ "tracks": vec!["x"; 500] });
+        storage
+            .save_events_batch(&[snapshot_event(session_id, heavy)])
+            .unwrap();
+
+        let loaded = storage.load_session(session_id).unwrap();
+
+        assert_eq!(loaded.events.len(), 1, "the event itself is still reported");
+        assert_eq!(loaded.events[0].event_type, "live_set_snapshot");
+        assert!(
+            loaded.events[0].payload.is_none(),
+            "the snapshot payload must not cross the bridge — nothing that reads \
+             load_session opens it, and it is the single largest cost of opening \
+             a version"
+        );
+
+        cleanup(&path);
+    }
+
+    #[test]
+    fn every_other_event_keeps_its_payload() {
+        // The row-to-event mapping falls back to payload JSON for columns that
+        // predate the canonical schema. Dropping payloads wholesale would blank
+        // out old events, so the trim has to be limited to snapshots.
+        let (storage, path) = temp_storage();
+        let session_id = "take-keeps";
+        storage
+            .save_session_started(&SessionStatus {
+                active: true,
+                session_id: Some(session_id.into()),
+                started_at_ms: Some(1_000),
+                ended_at_ms: None,
+            })
+            .unwrap();
+
+        let mut moved = event(session_id, "parameter_changed");
+        moved.payload = Some(r#"{"track_name":"Bass"}"#.into());
+        storage.save_events_batch(&[moved]).unwrap();
+
+        let loaded = storage.load_session(session_id).unwrap();
+
+        assert_eq!(loaded.events.len(), 1);
+        assert!(loaded.events[0].payload.is_some());
+
+        cleanup(&path);
+    }
+
+    #[test]
+    fn the_schema_projection_still_sees_the_snapshot_it_needs() {
+        // The one caller that genuinely needs snapshot payloads reads them
+        // through its own query. If the trim ever reached that path, "Rebuild
+        // timeline" would silently stop working — the same failure #15 caused.
+        let (storage, path) = temp_storage();
+        let session_id = "take-projection";
+        storage
+            .save_session_started(&SessionStatus {
+                active: true,
+                session_id: Some(session_id.into()),
+                started_at_ms: Some(1_000),
+                ended_at_ms: None,
+            })
+            .unwrap();
+
+        let snapshot = serde_json::json!({
+            "tracks": [{ "name": "Bass", "type": "midi", "devices": [] }]
+        });
+        storage
+            .save_events_batch(&[snapshot_event(session_id, snapshot)])
+            .unwrap();
+
+        storage.materialize_session_schema(session_id).unwrap();
+        let schema = storage.get_project_schema(session_id).unwrap();
+
+        assert!(schema.has_snapshot, "the projection must still read the payload");
+        assert_eq!(schema.tracks.len(), 1);
+
+        cleanup(&path);
     }
 
     // ── Observed saves ─────────────────────────────────────────────────────

@@ -35,7 +35,7 @@ function track(name: string, devices: DeviceObj[] = [], number = 1): TrackObj {
 }
 
 function schema(tracks: TrackObj[]): ProjectSchema {
-  return { session_id: "s", name: "Set", has_snapshot: true, tracks };
+  return { session_id: "s", name: "Set", has_snapshot: true, signature_numerator: 4, signature_denominator: 4, meter_changed: false, tracks };
 }
 
 describe("compareSchemas", () => {

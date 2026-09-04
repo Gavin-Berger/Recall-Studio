@@ -76,6 +76,10 @@ describe("layoutVersionTimeline", () => {
     expect(timeline.rows[1]!.y - timeline.rows[0]!.y).toBeCloseTo(
       TIMELINE_ROW_HEIGHT + (TIMELINE_BREAK_MS / hour) * TIMELINE_PIXELS_PER_HOUR,
     );
+    // The label occupies the collapsed gap itself, never the left date gutter
+    // of the version above it.
+    expect(timeline.breaks[0]!.y).toBeGreaterThan(timeline.rows[0]!.y + TIMELINE_ROW_HEIGHT);
+    expect(timeline.breaks[0]!.y).toBeLessThan(timeline.rows[1]!.y);
   });
 
   it("draws one 3px sitting tick for a Recall-split return, never one tick per capture", () => {

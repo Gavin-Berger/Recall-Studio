@@ -186,7 +186,14 @@ describe("movementShape · a continuous value has a unit and a direction", () =>
       fromFraction: 0.1,
       toFraction: 0.6,
       rose: true,
+      frequency: { from: 220, to: 4100 },
     });
+  });
+
+  it("uses the displayed Hz values instead of normalized control values", () => {
+    const shape = movementShape(decision());
+
+    expect(shape).toMatchObject({ frequency: { from: 220, to: 4100 } });
   });
 
   it("carries the gesture's landing place, not its first step", () => {
@@ -254,7 +261,7 @@ describe("movementShape · position, structure and set-wide values", () => {
     };
   }
 
-  it("reads a clip with an arrangement range as a span on the beat grid", () => {
+  it("reads a created clip as placement facts, not movement on a beat grid", () => {
     const shape = movementShape(
       decision({
         kind: "clip",
@@ -265,10 +272,10 @@ describe("movementShape · position, structure and set-wide values", () => {
       }),
     );
 
-    expect(shape).toEqual({ shape: "span", startBeats: 16, endBeats: 32 });
+    expect(shape).toEqual({ shape: "placement", startBeats: 16, endBeats: 32 });
   });
 
-  it("reads a clip with no range as something that arrived", () => {
+  it("keeps a clip with no captured range as incomplete placement facts", () => {
     const shape = movementShape(
       decision({
         kind: "clip",
@@ -277,7 +284,7 @@ describe("movementShape · position, structure and set-wide values", () => {
       }),
     );
 
-    expect(shape).toEqual({ shape: "tree", sign: "+", text: "Added MIDI clip" });
+    expect(shape).toEqual({ shape: "placement", startBeats: null, endBeats: null });
   });
 
   it("signs structural changes by whether the thing arrived or left", () => {

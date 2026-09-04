@@ -171,3 +171,74 @@ describe("versionForSession", () => {
     expect(versionForSession(versions, "does-not-exist")).toBeNull();
   });
 });
+
+describe("a version older than Recall (the Breaking Point case)", () => {
+  // Real data. `Breaking Point.als` was created Aug 01 at 01:06 and
+  // `Breaking Point v2 mixdown.als` at 02:05, an hour later. Recall met both on
+  // Aug 11 — v2 at 20:14, the original at 20:15 — and from that one minute
+  // concluded v2 came first, then made it the PARENT of the file it was saved
+  // from. The producer knew the lineage was backwards.
+  const aug01_0106 = Date.UTC(2026, 7, 1, 1, 6);
+  const aug01_0205 = Date.UTC(2026, 7, 1, 2, 5);
+  const aug11_2014 = Date.UTC(2026, 7, 11, 20, 14);
+  const aug11_2015 = Date.UTC(2026, 7, 11, 20, 15);
+
+  function bp(): SavedSessionMetadata[] {
+    return [
+      capture({
+        id: "v2-first-seen",
+        als_path: "C:\\Music\\bp\\Breaking Point v2 mixdown.als",
+        started_at_ms: aug11_2014,
+        last_updated_at_ms: aug11_2014 + 60_000,
+      }),
+      capture({
+        id: "original-first-seen",
+        als_path: "C:\\Music\\bp\\Breaking Point.als",
+        started_at_ms: aug11_2015,
+        last_updated_at_ms: aug11_2015 + 60_000,
+      }),
+    ];
+  }
+
+  const ages = new Map([
+    [normalizeAlsPath("C:\\Music\\bp\\Breaking Point.als")!, aug01_0106],
+    [normalizeAlsPath("C:\\Music\\bp\\Breaking Point v2 mixdown.als")!, aug01_0205],
+  ]);
+
+  it("orders versions by the file's real age, not by when Recall met them", () => {
+    const versions = projectVersions(bp(), ages);
+
+    expect(versions.map((version) => version.name)).toEqual([
+      "Breaking Point",
+      "Breaking Point v2 mixdown",
+    ]);
+  });
+
+  it("marks a file that existed before Recall ever captured it", () => {
+    const versions = projectVersions(bp(), ages);
+    expect(versions.every((version) => version.predatesCapture)).toBe(true);
+  });
+
+  it("still uses first capture when Recall watched the file appear", () => {
+    // A version created while capture was running has no older file evidence,
+    // and nothing about the old behaviour should change for it.
+    const born = capture({
+      id: "born-live",
+      als_path: "C:\\Music\\bp\\Breaking Point v3 mixdown.als",
+      started_at_ms: aug11_2015,
+      last_updated_at_ms: aug11_2015 + 60_000,
+    });
+    const versions = projectVersions([born], new Map([
+      [normalizeAlsPath(born.als_path)!, aug11_2015 + 5_000],
+    ]));
+
+    expect(versions[0]!.startedAtMs).toBe(aug11_2015);
+    expect(versions[0]!.predatesCapture).toBe(false);
+  });
+
+  it("falls back to first capture when the file is gone from disk", () => {
+    const versions = projectVersions(bp(), new Map());
+    expect(versions[0]!.startedAtMs).toBe(aug11_2014);
+    expect(versions[0]!.predatesCapture).toBe(false);
+  });
+});

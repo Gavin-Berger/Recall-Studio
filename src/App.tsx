@@ -71,6 +71,21 @@ type FolderMetadataRefresh = {
   unavailable: number;
 };
 
+/**
+ * Is this the same connection status we already have?
+ *
+ * Every field, so a real change is never swallowed — the point is to skip
+ * identical objects, not to stop noticing.
+ */
+function sameConnection(left: ConnectionStatus, right: ConnectionStatus): boolean {
+  return (
+    left.connected === right.connected &&
+    left.last_heartbeat_ms === right.last_heartbeat_ms &&
+    left.last_message === right.last_message &&
+    left.bridge_version === right.bridge_version
+  );
+}
+
 const POLL_INTERVAL_MS = 1000;
 const BACKGROUND_POLL_INTERVAL_MS = 30_000;
 /**
@@ -436,11 +451,20 @@ function App() {
     async function pollConnection() {
       try {
         const status = await invoke<ConnectionStatus>(BACKEND_CONNECTION_COMMAND);
-        if (mounted) setConnection(status);
+        // Replace the object ONLY when something in it actually changed.
+        //
+        // This poll runs once a second and used to hand React a brand-new
+        // object every time, unchanged or not. A new object is a new state
+        // value, so App re-rendered every second and took the whole tree with
+        // it — including the Timeline's several hundred movement cards and
+        // their piano-roll SVGs. That is a full reconciliation at 1Hz, felt as
+        // a regular hitch while scrolling, and it happened with Ableton closed
+        // and nothing capturing, because the poll does not care either way.
+        if (mounted) setConnection((current) => (sameConnection(current, status) ? current : status));
       } catch (error) {
         console.error("Failed to get connection status:", error);
         if (mounted) {
-          setConnection((current) => ({ ...current, connected: false }));
+          setConnection((current) => (current.connected ? { ...current, connected: false } : current));
         }
       }
     }

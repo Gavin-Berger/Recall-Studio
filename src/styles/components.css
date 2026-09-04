@@ -2503,6 +2503,13 @@
   background: rgb(var(--signal-rgb) / 0.085);
 }
 
+/* A live project has one extra action (start another take). Its normal 192px
+   action rail is too narrow and lets the controls overflow over Recording.
+   Keep the row single-line; only reserve the extra action width it needs. */
+.px-group.is-recording .px-row--project {
+  grid-template-columns: 34px minmax(0, 1fr) 70px 116px 150px 320px;
+}
+
 .px-row--draft {
   background: rgb(var(--signal-rgb) / 0.06);
 }

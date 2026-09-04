@@ -72,6 +72,9 @@ function schema(sessionId = "take-2"): ProjectSchema {
     session_id: sessionId,
     name: "Nightdrive",
     has_snapshot: true,
+    signature_numerator: 4,
+    signature_denominator: 4,
+    meter_changed: false,
     tracks: [{
       id: "track-1",
       ableton_id: "track-1",

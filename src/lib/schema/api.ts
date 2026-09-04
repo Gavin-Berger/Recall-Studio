@@ -44,6 +44,50 @@ export function getTimelineClipEvents(sessionId: string): Promise<TimelineClipEv
 }
 
 /**
+ * When each `.als` was made, straight off the filesystem.
+ *
+ * A version's birth used to be its first capture, which is a birth date only if
+ * Recall was watching when the file was created. Read live rather than stored: a
+ * file's age is a fact about the disk, and copying or restoring a set changes
+ * it, so a cached copy would go stale silently.
+ */
+export function getAlsFileTimes(paths: string[]): Promise<StoredAlsFileTimes[]> {
+  return invoke<StoredAlsFileTimes[]>("get_als_file_times", { paths });
+}
+
+export type StoredAlsFileTimes = {
+  path: string;
+  created_ms: number | null;
+  modified_ms: number | null;
+};
+
+/**
+ * One version's captures in a single crossing.
+ *
+ * Opening a version used to be six calls per capture plus one for the saves —
+ * 71 IPC round trips for a nine-capture version. The rows are identical; the
+ * backend simply assembles them before they cross, so nothing here summarises
+ * or trims. See `load_version_bundle` in storage.rs.
+ */
+export function loadVersionBundleRows(sessionIds: string[]): Promise<StoredVersionBundle> {
+  return invoke<StoredVersionBundle>("load_version_bundle", { sessionIds });
+}
+
+export type StoredCaptureBundle = {
+  session: SavedSession;
+  schema: ProjectSchema;
+  changes: ParameterChange[];
+  note_edits: NoteEdit[];
+  clip_events: TimelineClipEvent[];
+  moments: CreativeMoment[];
+};
+
+export type StoredVersionBundle = {
+  captures: StoredCaptureBundle[];
+  saves: StoredObservedSave[];
+};
+
+/**
  * Saves the control surface watched, across a set of captures. Oldest first.
  *
  * The only evidence in the version graph that is observed rather than inferred:

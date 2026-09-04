@@ -72,6 +72,9 @@ function schema(sessionId: string, tracks: { name: string; devices: string[] }[]
     session_id: sessionId,
     name: "Nightdrive",
     has_snapshot: true,
+    signature_numerator: 4,
+    signature_denominator: 4,
+    meter_changed: false,
     tracks: tracks.map((track, index) => ({
       id: `track-${track.name}`,
       ableton_id: `track-${track.name}`,

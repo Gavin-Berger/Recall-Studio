@@ -66,6 +66,20 @@ export type VersionDepth = {
   diff: CommitDiff;
   /** The parent's display name, for the diff heading. Null at the root. */
   parentName: string | null;
+  /**
+   * The set's time signature, from the version's final snapshot.
+   *
+   * Live gives every position in quarter-notes; a producer reads bars. This is
+   * what lets the surface say "Bar 33" and "1.3" instead of "beat 128" and
+   * "beat 3". Null when the snapshot never reported one, or the set changed
+   * meter — in which case the surface shows no bars at all rather than wrong
+   * ones. See songPosition.ts.
+   */
+  meter: {
+    signatureNumerator: number | null;
+    signatureDenominator: number | null;
+    meterChanged: boolean;
+  } | null;
   /** Newest sitting first: the last thing you did is the thing you are resuming. */
   sittings: SittingDepth[];
   /**
@@ -162,10 +176,20 @@ export function buildVersionDepth({
     })
     .sort((left, right) => right.startedAtMs - left.startedAtMs);
 
+  const finalCapture = finalSchema(captures);
+  const schema = finalCapture?.schema ?? null;
+
   return {
     report,
     contents,
     diff,
+    meter: schema
+      ? {
+          signatureNumerator: schema.signature_numerator,
+          signatureDenominator: schema.signature_denominator,
+          meterChanged: schema.meter_changed,
+        }
+      : null,
     parentName: parent?.name ?? null,
     sittings,
     recordedNothing: grouped.recordedNothing,

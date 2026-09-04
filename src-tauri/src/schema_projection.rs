@@ -10,6 +10,8 @@
 //! `storage.rs`, which calls into the parsers below.
 
 use serde::{Deserialize, Serialize};
+
+use crate::session::SavedSession;
 use serde_json::Value;
 use std::collections::HashMap;
 
@@ -227,6 +229,21 @@ pub struct ProjectSchema {
     pub name: String,
     pub has_snapshot: bool,
     pub tracks: Vec<TrackObj>,
+    /// The set's time signature, as Live reported it in the whole-set snapshot.
+    ///
+    /// WHY THE APP NEEDS THIS. Live hands out arrangement positions in beats —
+    /// quarter notes from the start of the song. "Song beat 128" is unreadable
+    /// to a producer; bar 33 is the same fact in the only unit they think in.
+    /// The conversion needs the meter, so without this the Timeline could
+    /// either print the raw beat or assume 4/4 forever, and it printed the beat.
+    pub signature_numerator: Option<i64>,
+    pub signature_denominator: Option<i64>,
+    /// True when the set changed time signature at least once while captured.
+    ///
+    /// One meter cannot convert the whole song then, and a bar number that is
+    /// four out is worse than no bar number. The Timeline shows nothing rather
+    /// than guess; building the full meter map is the follow-up.
+    pub meter_changed: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -345,6 +362,28 @@ fn parse_midi_notes(value: Option<&Value>) -> Vec<MidiNoteSnapshot> {
         .flatten()
         .filter_map(|note| serde_json::from_value(note.clone()).ok())
         .collect()
+}
+
+/// Everything one capture contributes to a version, assembled in one place.
+///
+/// Exactly the six reads the frontend was making per capture, with the same
+/// types and the same rows — the only thing that changes is that they cross the
+/// IPC bridge once instead of six times.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CaptureBundle {
+    pub session: SavedSession,
+    pub schema: ProjectSchema,
+    pub changes: Vec<ParameterChange>,
+    pub note_edits: Vec<NoteEdit>,
+    pub clip_events: Vec<TimelineClipEvent>,
+    pub moments: Vec<CreativeMoment>,
+}
+
+/// One version's captures plus the saves watched across them.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VersionBundle {
+    pub captures: Vec<CaptureBundle>,
+    pub saves: Vec<ObservedSave>,
 }
 
 /// A save the control surface actually WATCHED happen.

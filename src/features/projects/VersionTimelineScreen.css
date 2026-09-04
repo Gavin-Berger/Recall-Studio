@@ -1,6 +1,9 @@
 /* Timeline — a project-level version graph with a selected-version inspector.
    Sittings are facts inside a version; they never become the graph's nodes. */
 .vt {
+  /* The graph is a spatial drawing and owns the full canvas. The retrace is a
+     logbook, so it stays at the readable measure from DESIGN.md §8. */
+  --vt-reading-width: 1080px;
   width: 100%;
   display: flex;
   flex-direction: column;
@@ -16,6 +19,17 @@
     linear-gradient(145deg, rgb(var(--signal-rgb) / 0.11), transparent 46%),
     var(--panel);
   box-shadow: var(--glass-elevation);
+}
+
+/* The glass blur is kept for the small panels and NOT for `.vt__surface`.
+   A backdrop-filter re-filters whenever the element or the thing behind it
+   moves, and `.vt__surface` is the whole timeline — thousands of pixels tall,
+   scrolling. `--panel` is 72% opaque, so what the blur contributes over that
+   height is a faint softening of the page gradient at the edges; what it costs
+   is a full-surface filter pass every scroll frame.
+   One line to put back if the look is worth it. */
+.vt__bar,
+.vt-empty {
   backdrop-filter: blur(18px) saturate(120%);
 }
 
@@ -26,6 +40,9 @@
   gap: var(--s4);
   padding: clamp(16px, 1.4vw, 28px);
   flex-wrap: wrap;
+  width: 100%;
+  max-width: var(--vt-reading-width);
+  margin-inline: auto;
 }
 
 .vt__eyebrow {
@@ -87,6 +104,15 @@
 .recall-app--timeline,
 .vt__surface { overflow: clip; }
 
+/* The graph and inspector are part of the same version-reading surface as the
+   retrace below. Keeping their shell on the same measure stops a short history
+   from becoming a mostly empty desktop-wide panel. */
+.vt__surface {
+  width: 100%;
+  max-width: var(--vt-reading-width);
+  margin-inline: auto;
+}
+
 .vt__surface-head {
   display: flex;
   align-items: end;
@@ -94,6 +120,9 @@
   gap: var(--s4);
   padding: var(--s4);
   border-bottom: var(--stroke-hair) solid var(--line-soft);
+  width: 100%;
+  max-width: none;
+  margin-inline: 0;
 }
 
 .vt__surface-head h2 { font-size: var(--t-h2); }
@@ -109,8 +138,11 @@
 
 .vt__body {
   display: grid;
-  grid-template-columns: minmax(360px, 1.1fr) minmax(320px, 0.9fr);
-  align-items: stretch;
+  grid-template-columns: minmax(520px, 2fr) minmax(360px, 1fr);
+  align-items: start;
+  width: 100%;
+  max-width: none;
+  margin-inline: 0;
 }
 
 .vt__graph-panel { min-width: 0; }
@@ -410,7 +442,7 @@
 
 .vt-inspector__facts > div {
   display: grid;
-  grid-template-columns: 88px minmax(0, 1fr);
+  grid-template-columns: 104px minmax(0, 1fr);
   gap: var(--s2);
   align-items: start;
   padding-top: var(--s2);
@@ -458,18 +490,18 @@
   --t-body: clamp(16px, 0.9vw, 18px);
   --t-meta: clamp(14px, 0.78vw, 16px);
   --t-micro: clamp(12px, 0.66vw, 13px);
-  padding: clamp(16px, 1.4vw, 28px);
+  width: 100%;
+  max-width: var(--vt-reading-width);
+  margin-inline: auto;
+  padding: var(--s4);
   border-top: var(--stroke-hair) solid var(--line-soft);
   background: rgb(1 3 10 / 0.09);
 }
 
 .vt-depth__head {
   width: 100%;
-  max-width: 1680px;
-  margin-right: auto;
-  margin-left: auto;
-  padding-left: var(--s3);
-  border-left: 3px solid var(--signal-soft);
+  max-width: none;
+  margin: 0;
 }
 
 .vt-depth__head h2 {
@@ -493,26 +525,14 @@
 
 .vt-depth__head > .vt__eyebrow { margin: 0 0 var(--s1); }
 
-.vt-depth__origin {
-  flex: none;
-  padding: 1px var(--s2);
-  border: var(--stroke-hair) solid var(--line-soft);
-  border-radius: 999px;
-  color: var(--paper);
-  font-family: var(--font-mono);
-  font-size: var(--t-micro);
-  line-height: 1.6;
-  text-transform: uppercase;
-}
-
 .vt-depth__grid {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   gap: var(--s4);
   align-items: start;
   width: 100%;
-  max-width: 1680px;
-  margin: var(--s4) auto 0;
+  max-width: none;
+  margin: var(--s4) 0 0;
 }
 
 .vt-depth__grid > section { min-width: 0; }
@@ -522,16 +542,6 @@
   font-size: var(--t-meta);
   line-height: 1.5;
 }
-
-.vt-depth__headline,
-.vt-depth__more {
-  margin: 0 0 var(--s2);
-  color: var(--muted);
-  font-family: var(--font-mono);
-  font-size: var(--t-meta);
-}
-
-.vt-depth__more { margin: var(--s2) 0 0; }
 
 /* The diff. A sign column, fixed width, so + and − line up down the list the
    way they do in a real diff — the shape is half of what makes it readable. */
@@ -681,45 +691,97 @@
 }
 
 .vt-movement-card {
-  --vt-card-accent: 177 188 210;
+  /* Historical work has no category colour. The icon silhouette and three
+     luminance levels carry type; colour remains reserved for active UI and
+     producer-pinned moments (DESIGN.md §2). */
+  --vt-card-accent: 186 215 247;
   width: 100%;
   overflow: hidden;
-  border: var(--stroke-hair) solid rgb(var(--vt-card-accent) / 0.32);
-  border-left: 4px solid rgb(var(--vt-card-accent) / 0.82);
+  border: var(--stroke-hair) solid var(--line);
+  border-left: var(--stroke-hair) solid var(--line);
   border-radius: var(--radius-sm);
-  background: rgb(19 25 38 / 0.94);
-  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.035);
+  background:
+    linear-gradient(115deg, rgb(186 215 247 / 0.045), transparent 34%),
+    rgb(19 25 38 / 0.96);
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.045),
+    0 6px 20px rgb(0 0 0 / 0.08);
+  container: vt-movement-card / inline-size;
+
+  /* SCROLL COST, and why this card is written the way it is.
+     One version of a real project renders about 400 of these, 233 of them
+     carrying a piano-roll SVG. At that count three ordinary-looking properties
+     stop being ordinary:
+
+     `will-change: transform` was here and is now gone. It promotes an element
+     to its own compositor layer, which is right for the one thing about to
+     animate and catastrophic for a list item repeated 400 times — 400 layers,
+     each with its own GPU memory, recomposited as the list moves.
+
+     `box-shadow` was in the transition above and is now out. The compositor
+     cannot animate a shadow, so every frame repainted the card. The report
+     stylesheet already banned this for the same reason (see the "never
+     transitions box-shadow" guard); the rule simply had not reached this file.
+
+     `content-visibility` below is the replacement for both. The browser skips
+     layout and paint for cards outside the viewport entirely, which is what
+     hundreds of off-screen piano rolls actually cost. */
+  content-visibility: auto;
+  /* `auto` means "use the last measured height once you have one", and the
+     number is only the guess before first paint. Getting that guess badly wrong
+     is itself a source of jitter: the page grows as taller cards render and the
+     scroll position shifts under the reader. A MIDI card carries a piano roll
+     and is several times the height of a control card, so the estimate is
+     pitched between them rather than at the smaller one. */
+  contain-intrinsic-size: auto 260px;
+  opacity: var(--vt-scroll-opacity, 1);
 }
 
-.vt-movement-card[data-work-kind="writing"] { --vt-card-accent: 183 170 242; }
-.vt-movement-card[data-work-kind="recording"] { --vt-card-accent: 231 149 143; }
-.vt-movement-card[data-work-kind="sound"] { --vt-card-accent: 126 205 218; }
-.vt-movement-card[data-work-kind="arrangement"] { --vt-card-accent: 129 169 235; }
-.vt-movement-card[data-work-kind="mixing"] { --vt-card-accent: 224 190 122; }
-.vt-movement-card[data-work-kind="project"] { --vt-card-accent: 183 192 209; }
-.vt-movement-card[data-work-kind="moment"] { --vt-card-accent: 225 158 197; }
+/* A card with a piano roll is much taller than the average, and there are
+   hundreds of them. Telling the browser that up front keeps the scrollbar from
+   resizing as they come into view. */
+.vt-movement-card.is-midi {
+  contain-intrinsic-size: auto 520px;
+}
 
-/* The silhouette reinforces the category even when color is unavailable. */
-.vt-movement-card.is-midi { border-left-width: 6px; }
-.vt-movement-card.is-clip { border-left-style: double; border-left-width: 6px; }
-.vt-movement-card.is-structure { border-left-style: dashed; }
-.vt-movement-card.is-moment {
-  border-top: 3px solid rgb(var(--vt-card-accent) / 0.82);
-  border-left-width: var(--stroke-hair);
+/* One reading highlight follows the card nearest the timeline's reading line.
+   It is an orientation signal, never a category colour or animation. */
+.vt-movement-card[data-timeline-active="true"] {
+  border-color: rgb(var(--signal-rgb) / 0.72);
+  background:
+    linear-gradient(115deg, rgb(var(--signal-rgb) / 0.12), transparent 38%),
+    rgb(19 25 38 / 0.98);
+  box-shadow:
+    inset 3px 0 0 var(--signal),
+    inset 0 1px 0 rgb(255 255 255 / 0.07),
+    0 8px 24px rgb(var(--signal-rgb) / 0.1);
+}
+
+.vt-movement-card:focus-within {
+  outline: 2px solid var(--signal);
+  outline-offset: 2px;
 }
 
 .vt-movement-card article {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) clamp(164px, 11vw, 196px);
+  grid-template-columns: minmax(0, 1fr) clamp(146px, 9.5vw, 172px);
+  align-items: start;
 }
 
 .vt-movement-card__content {
   display: grid;
-  grid-template-columns: minmax(250px, 0.36fr) minmax(420px, 0.64fr);
+  grid-template-columns: 44px minmax(190px, 248px) minmax(240px, 520px);
   align-items: start;
-  gap: 0 clamp(20px, 1.5vw, 32px);
+  align-content: start;
+  justify-content: start;
+  column-gap: var(--s3);
   min-width: 0;
   padding: clamp(16px, 1.25vw, 24px);
+}
+
+.vt-movement-card.is-midi .vt-movement-card__content {
+  grid-template-columns: 44px minmax(190px, 244px) minmax(0, 1fr);
+  justify-content: stretch;
 }
 
 .vt-movement-card__head {
@@ -734,30 +796,90 @@
 }
 
 .vt-movement-card__identity {
-  display: flex;
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr);
   align-items: center;
   gap: var(--s3);
+  width: 100%;
   min-width: 0;
 }
 
-.vt-movement-card__identity > div { min-width: 0; }
+.vt-movement-card__identity > div {
+  grid-column: 2;
+  min-width: 0;
+}
 
+.vt-movement-card__badges {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+/* The type signal, now that hue is not.
+   Filled and high-contrast on purpose: a glyph at this size is legible in
+   peripheral vision while scrolling, which is the job the colour stripe was
+   doing. A faint outlined icon would leave the reader exactly where straight
+   grey did. */
 .vt-movement-card__icon {
   display: grid;
   flex: 0 0 44px;
   width: 44px;
   height: 44px;
   place-items: center;
-  border: var(--stroke-hair) solid rgb(var(--vt-card-accent) / 0.42);
+  border: var(--stroke-hair) solid var(--line);
   border-radius: var(--radius-sm);
-  background: rgb(var(--vt-card-accent) / 0.1);
-  color: rgb(var(--vt-card-accent));
+  background: rgb(186 215 247 / 0.06);
+  color: var(--paper-strong);
 }
+
+/* Three luminance steps, and deliberately only three.
+   Not a step per type — that is the retired palette again in grey. These group
+   the six glyphs by what the producer was DOING, which is a fact about the
+   movement and not a verdict about it: notes and clips are the music, controls
+   are the sound, the rest is the set around them. Enough separation to find
+   your place while scrolling, not enough to become a legend to learn. */
+.vt-movement-card__icon.is-midi,
+.vt-movement-card__icon.is-clip {
+  color: var(--paper-strong);
+  background: var(--panel-3);
+}
+
+.vt-movement-card__icon.is-sound,
+.vt-movement-card__icon.is-mixing {
+  color: var(--paper);
+  background: rgb(186 215 247 / 0.075);
+}
+
+.vt-movement-card__icon.is-structure,
+.vt-movement-card__icon.is-moment {
+  color: var(--muted);
+  background: rgb(186 215 247 / 0.04);
+}
+
+.vt-movement-card__icon svg {
+  width: 22px;
+  height: 22px;
+  fill: none;
+  stroke: currentColor;
+  /* Heavier than the old 1.25px: stroke weight is what makes one glyph tell
+     itself apart from another at a glance. */
+  stroke-width: 1.75;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* No ranking here, deliberately.
+   Emphasis by how much work a movement took is a VERDICT, and verdicts are the
+   Report's job — it exists to break the comparisons down. The Timeline is the
+   information: it says what happened and lets the producer read it.
+   `movementWeights()` in sittingTrail.ts computes that ranking and is left for
+   the Report to use. */
+
 
 .vt-movement-card__icon.is-sound { border-radius: 50%; }
 .vt-movement-card__icon.is-mixing { border-radius: 4px 4px 12px 12px; }
-.vt-movement-card__icon.is-midi { box-shadow: inset 0 -3px 0 rgb(var(--vt-card-accent) / 0.2); }
-.vt-movement-card__icon.is-clip { border-style: double; border-width: 3px; }
+.vt-movement-card__icon.is-midi { box-shadow: inset 0 -3px 0 rgb(186 215 247 / 0.16); }
 .vt-movement-card__icon.is-structure { border-style: dashed; }
 .vt-movement-card__icon.is-moment { border-radius: 50% 50% var(--radius-sm) var(--radius-sm); }
 
@@ -772,6 +894,7 @@
 }
 
 .vt-movement-card__kind,
+.vt-movement-card__shape-badge,
 .vt-movement-card__facts dt,
 .vt-movement-card__positions > span {
   color: var(--muted);
@@ -782,7 +905,26 @@
   text-transform: uppercase;
 }
 
-.vt-movement-card__kind { color: rgb(var(--vt-card-accent)); }
+.vt-movement-card__kind,
+.vt-movement-card__shape-badge {
+  display: inline;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+}
+
+.vt-movement-card__kind {
+  background: transparent;
+  color: var(--paper);
+}
+
+.vt-movement-card__shape-badge {
+  margin-left: var(--s2);
+  color: var(--faint-aa);
+}
+
+.vt-movement-card__shape-badge::before { margin-right: var(--s2); content: "·"; }
 
 .vt-movement-card__head h4 {
   margin: var(--s1) 0 0;
@@ -795,14 +937,34 @@
 
 .vt-movement-card__facts {
   display: grid;
-  grid-column: 1;
-  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
-  gap: var(--s2) var(--s4);
+  grid-column: 2;
+  grid-template-columns: 1fr;
+  gap: 0;
   margin: var(--s3) 0 0;
   padding-top: var(--s2);
 }
 
-.vt-movement-card__facts > div { min-width: 0; }
+.vt-movement-card__facts > div {
+  min-width: 0;
+  padding: var(--s2) 0;
+  border-bottom: var(--stroke-hair) solid var(--line-soft);
+}
+
+.vt-midi-fact-stack {
+  display: grid;
+  gap: var(--s3);
+}
+
+.vt-movement-card.is-midi .vt-midi-fact-stack > div {
+  padding: var(--s2) 0;
+  border-bottom: var(--stroke-hair) solid var(--line-soft);
+}
+
+.vt-movement-card.is-midi .vt-movement-card__facts > .vt-midi-fact-stack {
+  gap: 0;
+  padding: 0;
+  border-bottom: 0;
+}
 
 .vt-movement-card__facts dd {
   margin: 0;
@@ -820,24 +982,32 @@
 .vt-movement-card__content > .vt-midi-pattern,
 .vt-movement-card__content > .vt-midi-scale,
 .vt-movement-card__content > .vt-midi-scale__empty {
-  grid-column: 2;
+  grid-column: 3;
+  align-self: start;
   min-width: 0;
+  margin-top: var(--s3);
 }
 
 .vt-movement-time {
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  align-content: start;
+  gap: var(--s2);
   min-width: 0;
   padding: clamp(16px, 1.25vw, 24px);
-  border-left: var(--stroke-hair) solid rgb(var(--vt-card-accent) / 0.25);
-  background: rgb(var(--vt-card-accent) / 0.045);
+  border-left: var(--stroke-hair) solid var(--line-soft);
+  background:
+    linear-gradient(180deg, rgb(186 215 247 / 0.045), rgb(186 215 247 / 0.02));
 }
 
-.vt-movement-time.is-point { justify-content: center; }
+.vt-movement-time.is-point {
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-start;
+}
 
 .vt-movement-time__title,
 .vt-movement-time__point > span {
-  color: rgb(var(--vt-card-accent));
+  color: var(--faint-aa);
   font-family: var(--font-sans);
   font-size: var(--t-micro);
   font-weight: 600;
@@ -848,7 +1018,6 @@
 .vt-movement-time__point {
   display: grid;
   gap: 3px;
-  margin-top: var(--s3);
 }
 
 .vt-movement-time__point > span { color: var(--muted); }
@@ -863,31 +1032,13 @@
 }
 
 .vt-movement-time__rail {
-  position: relative;
-  width: 2px;
-  height: clamp(22px, 2vw, 36px);
-  margin: var(--s1) 0 calc(var(--s1) * -1) 4px;
-  background: rgb(var(--vt-card-accent) / 0.32);
+  display: none;
 }
-
-.vt-movement-time__rail::before,
-.vt-movement-time__rail::after {
-  position: absolute;
-  left: -3px;
-  width: 8px;
-  height: 8px;
-  border: 2px solid rgb(var(--vt-card-accent) / 0.7);
-  border-radius: 50%;
-  background: var(--panel-2);
-  content: "";
-}
-
-.vt-movement-time__rail::before { top: -2px; }
-.vt-movement-time__rail::after { bottom: -2px; }
 
 .vt-movement-time > strong {
-  margin-top: auto;
-  padding-top: var(--s4);
+  margin-top: var(--s1);
+  padding-top: var(--s2);
+  border-top: var(--stroke-hair) solid var(--line-soft);
   color: var(--muted);
   font-family: var(--font-mono);
   font-size: var(--t-meta);
@@ -928,53 +1079,120 @@
 
 .vt-midi-pattern__rows {
   display: grid;
-  gap: var(--s2);
-  margin-top: var(--s2);
+  gap: var(--s3);
+  margin-top: var(--s3);
 }
 
 .vt-midi-pattern__row {
-  display: grid;
-  grid-template-columns: 64px minmax(0, 1fr) 72px;
+  min-width: 0;
+  overflow: hidden;
+  border: var(--stroke-hair) solid rgb(var(--vt-card-accent) / 0.28);
+  border-radius: var(--radius-sm);
+  background: rgb(6 9 16 / 0.42);
+}
+
+.vt-midi-pattern__row > header {
+  display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: var(--s2);
+  min-height: 32px;
+  padding: 5px var(--s2);
+  border-bottom: var(--stroke-hair) solid var(--line-soft);
+}
+
+.vt-midi-pattern__state {
+  display: inline-flex;
+  align-items: center;
+  min-height: 20px;
+  padding: 1px 7px;
+  border: var(--stroke-hair) solid rgb(var(--vt-card-accent) / 0.34);
+  border-radius: var(--radius-pill);
+  color: rgb(var(--vt-card-accent));
+}
+
+.vt-midi-pattern__row.is-before .vt-midi-pattern__state {
+  border-style: dashed;
+  color: var(--muted);
 }
 
 .vt-midi-pattern__row svg {
   display: block;
   width: 100%;
-  height: clamp(96px, 7vw, 124px);
+  height: clamp(176px, 13vw, 232px);
   overflow: hidden;
-  border: var(--stroke-hair) solid var(--glass-edge);
-  border-radius: 4px;
-  background: rgb(0 0 0 / 0.16);
+  background: #20242d;
 }
 
-.vt-midi-pattern__beat,
-.vt-midi-pattern__octave {
-  stroke: var(--line-soft);
-  stroke-width: 1;
+.vt-midi-roll__ruler { fill: #30343e; }
+.vt-midi-roll__loop { fill: rgb(var(--vt-card-accent) / 0.88); }
+
+.vt-midi-roll__lane.is-white { fill: #2d3139; }
+.vt-midi-roll__lane.is-black { fill: #272b33; }
+
+.vt-midi-roll__key.is-white {
+  fill: #a8abb1;
+  stroke: #50545c;
+  stroke-width: 0.8;
+}
+
+.vt-midi-roll__key.is-black {
+  fill: #464a52;
+  stroke: #22262d;
+  stroke-width: 0.8;
+}
+
+.vt-midi-roll__key-label,
+.vt-midi-roll__beat-label,
+.vt-midi-roll__note-label {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  pointer-events: none;
+  user-select: none;
+}
+
+.vt-midi-roll__key-label { fill: #11151c; }
+.vt-midi-roll__key.is-black + .vt-midi-roll__key-label { fill: #e3e6eb; }
+.vt-midi-roll__beat-label { fill: #b6bac4; }
+.vt-midi-roll__note-label { fill: #10131a; }
+
+.vt-midi-roll__tick {
+  stroke: #4b505a;
+  stroke-width: 0.8;
   vector-effect: non-scaling-stroke;
 }
 
-.vt-midi-pattern__octave { stroke: var(--line); }
-
-.vt-midi-pattern rect {
+.vt-midi-roll__tick.is-subdivision { stroke: #393e47; }
+.vt-midi-roll__keyboard-edge {
+  stroke: #141820;
+  stroke-width: 1.5;
   vector-effect: non-scaling-stroke;
 }
 
-.vt-midi-pattern rect.is-before {
-  fill: rgb(255 255 255 / 0.035);
-  stroke: var(--muted);
-  stroke-width: 1;
+.vt-midi-roll__note {
+  vector-effect: non-scaling-stroke;
 }
 
-.vt-midi-pattern rect.is-after { fill: var(--paper-strong); }
-.vt-midi-pattern rect.is-muted { opacity: 0.3; }
+.vt-midi-roll__note.is-before {
+  fill: rgb(var(--vt-card-accent) / 0.22);
+  stroke: rgb(var(--vt-card-accent) / 0.82);
+  stroke-width: 1.2;
+}
+
+.vt-midi-roll__note.is-after {
+  fill: rgb(var(--vt-card-accent) / 0.92);
+  stroke: rgb(235 232 255 / 0.72);
+  stroke-width: 0.8;
+}
+
+.vt-midi-roll__note.is-muted { opacity: 0.34; }
 
 .vt-midi-pattern__axis {
   display: flex;
   justify-content: space-between;
-  margin: var(--s1) 80px 0 72px;
+  gap: var(--s3);
+  margin: var(--s2) 0 0;
   color: var(--muted);
   font-family: var(--font-mono);
   font-size: var(--t-micro);
@@ -1140,10 +1358,10 @@
   line-height: 1.5;
 }
 
-.vt-movement-card__content > .vt-midi-missing { grid-column: 2; }
+.vt-movement-card__content > .vt-midi-missing { grid-column: 3; }
 
 .vt-movement-card__positions {
-  grid-column: 1 / -1;
+  grid-column: 2 / -1;
   display: grid;
   grid-template-columns: 112px minmax(0, 1fr);
   gap: var(--s2);
@@ -1168,7 +1386,7 @@
 }
 
 .vt-movement-card__evidence {
-  grid-column: 1 / -1;
+  grid-column: 2 / -1;
   margin-top: var(--s3);
   padding-top: var(--s2);
   border-top: var(--stroke-hair) solid var(--line-soft);
@@ -1218,11 +1436,6 @@
   color: var(--muted);
   font-size: var(--t-meta);
   line-height: 1.5;
-}
-
-/* A root version has no set delta, so the chronology owns the full width. */
-.vt-depth__grid.is-rootless {
-  grid-template-columns: minmax(0, 1fr);
 }
 
 .vt-sittings__when {
@@ -1358,60 +1571,315 @@
 }
 
 .vt-enum__is {
-  padding: 1px var(--s2);
-  border: var(--stroke-hair) solid var(--line-soft);
-  border-radius: var(--radius-sm);
-  background: var(--panel-3);
   color: var(--paper-strong);
   font-size: var(--t-meta);
-  font-weight: 600;
+  font-weight: 400;
 }
 
-/* A value. The bar carries the distance travelled, which two numbers alone do
-   not — 10%→12% and 10%→90% read identically as text. */
-.vt-shape--scalar {
-  display: block;
+/* Filter frequency is not a generic 0–100 value. Its real scale is logarithmic
+   from 20 Hz to 20 kHz, matching the way producers read frequency in Live. */
+.vt-shape--frequency {
+  display: grid;
+  gap: var(--s3);
+  width: min(100%, 520px);
 }
 
-.vt-scalar__values {
+.vt-frequency__readings {
   display: flex;
-  align-items: baseline;
-  gap: var(--s2);
+  flex-wrap: wrap;
+  gap: var(--s3);
   font-family: var(--font-mono);
   font-size: var(--t-meta);
   font-variant-numeric: tabular-nums;
 }
 
-.vt-scalar__from { color: var(--muted); }
-.vt-scalar__to { color: var(--paper-strong); font-weight: 600; }
-
-.vt-scalar__track {
-  position: relative;
-  height: 6px;
-  margin-top: var(--s2);
-  border-radius: 3px;
-  background: var(--line-soft);
+.vt-frequency__reading {
+  display: grid;
+  gap: 2px;
+  color: var(--paper);
+  font-weight: 400;
 }
 
-.vt-scalar__travel {
+.vt-frequency__reading > span {
+  color: var(--muted);
+  font-family: var(--font-sans);
+  font-size: var(--t-micro);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.vt-frequency__reading.is-before { color: var(--faint-aa); }
+.vt-frequency__reading.is-after { color: var(--paper-strong); }
+
+.vt-frequency__scale {
+  position: relative;
+  height: 38px;
+  margin: 0 var(--s2);
+  border-top: 2px solid var(--line-soft);
+}
+
+.vt-frequency__range {
   position: absolute;
-  top: 0;
-  bottom: 0;
-  border-radius: 3px;
+  top: -3px;
+  height: 4px;
+  border-radius: var(--radius-pill);
   background: var(--paper);
 }
 
-.vt-scalar__mark {
+.vt-frequency__tick {
   position: absolute;
-  top: -3px;
-  width: 2px;
-  height: 12px;
-  margin-left: -1px;
-  border-radius: 1px;
+  top: -2px;
+  display: grid;
+  justify-items: center;
+  gap: 5px;
+  transform: translateX(-50%);
+  color: var(--faint-aa);
+  font-family: var(--font-mono);
+  font-size: var(--t-micro);
+  font-variant-numeric: tabular-nums;
 }
 
-.vt-scalar__mark.is-from { background: var(--faint-aa); }
-.vt-scalar__mark.is-to { background: var(--paper-strong); }
+.vt-frequency__tick i {
+  display: block;
+  width: 1px;
+  height: 8px;
+  background: var(--line);
+}
+
+.vt-frequency__tick b { font-weight: 400; }
+
+.vt-frequency__marker {
+  position: absolute;
+  top: -7px;
+  width: 12px;
+  height: 12px;
+  border: 2px solid var(--panel);
+  border-radius: 50%;
+  transform: translateX(-50%);
+}
+
+.vt-frequency__marker.is-before { background: var(--faint-aa); }
+.vt-frequency__marker.is-after { background: var(--paper-strong); }
+
+/* A continuous value shown as the control gesture that produced it. */
+.vt-shape--scalar {
+  display: inline-flex;
+  align-items: flex-start;
+  gap: var(--s4);
+  min-height: 78px;
+}
+
+.vt-shape--scalar.is-meter {
+  display: block;
+  justify-self: start;
+  min-height: 0;
+  margin-top: var(--s3);
+}
+
+.vt-scalar__values {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.vt-scalar__reading {
+  display: grid;
+  gap: 2px;
+}
+
+.vt-scalar__reading > span {
+  color: var(--muted);
+  font-family: var(--font-sans);
+  font-size: var(--t-micro);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.vt-scalar__reading > strong {
+  font-size: var(--t-meta);
+  font-weight: 600;
+}
+
+.vt-scalar__from strong { color: var(--faint-aa); }
+.vt-scalar__to strong { color: var(--paper-strong); }
+
+.vt-scalar__knob {
+  width: 78px;
+  height: 78px;
+  flex: 0 0 78px;
+  overflow: visible;
+}
+
+.vt-scalar__knob-track,
+.vt-scalar__knob-travel,
+.vt-scalar__knob-hand {
+  fill: none;
+  stroke-linecap: round;
+}
+
+.vt-scalar__knob-track {
+  stroke: var(--line-soft);
+  stroke-width: 5;
+}
+
+.vt-scalar__knob-travel {
+  stroke: rgb(var(--vt-card-accent) / 0.82);
+  stroke-width: 5;
+}
+
+.vt-scalar__knob-face {
+  fill: var(--panel-3);
+  stroke: rgb(var(--vt-card-accent) / 0.34);
+  stroke-width: 1;
+}
+
+.vt-scalar__knob-hand {
+  stroke-width: 2;
+}
+
+.vt-scalar__knob-hand.is-from {
+  stroke: var(--faint-aa);
+  stroke-dasharray: 2 3;
+}
+
+.vt-scalar__knob-hand.is-to {
+  stroke: var(--paper-strong);
+  stroke-width: 3;
+}
+
+.vt-scalar__knob-cap {
+  fill: rgb(var(--vt-card-accent));
+}
+
+.vt-scalar__meter-comparison {
+  display: flex;
+  align-items: flex-start;
+  gap: clamp(28px, 3vw, 52px);
+}
+
+.vt-scalar__meter-column {
+  display: grid;
+  justify-items: center;
+  gap: 3px;
+  min-width: 84px;
+}
+
+.vt-scalar__meter-column > strong {
+  min-height: 1.5em;
+  color: var(--paper-strong);
+  font-family: var(--font-mono);
+  font-size: var(--t-meta);
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+
+.vt-scalar__meter-column.is-before > strong {
+  color: var(--faint-aa);
+}
+
+.vt-scalar__meter-label {
+  color: var(--muted);
+  font-size: var(--t-micro);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.vt-scalar__meter {
+  display: grid;
+  grid-template-rows: auto 104px auto;
+  justify-items: center;
+  gap: 3px;
+  min-width: 56px;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: var(--t-micro);
+  font-variant-numeric: tabular-nums;
+}
+
+.vt-scalar__meter-zero,
+.vt-scalar__meter-infinity {
+  line-height: 1;
+}
+
+.vt-scalar__meter-rail {
+  position: relative;
+  display: block;
+  width: 28px;
+  height: 104px;
+  border: var(--stroke-hair) solid var(--line-soft);
+  border-radius: 4px;
+  background: rgb(4 7 13 / 0.72);
+  box-shadow: inset 0 0 0 2px rgb(0 0 0 / 0.22);
+  overflow: hidden;
+}
+
+.vt-scalar__meter-fill,
+.vt-scalar__meter-change {
+  position: absolute;
+  right: 2px;
+  left: 2px;
+  border-radius: 2px 2px 0 0;
+}
+
+.vt-scalar__meter-fill.is-before {
+  background: rgb(186 215 247 / 0.22);
+}
+
+.vt-scalar__meter-fill.is-after {
+  background: linear-gradient(180deg, var(--paper-strong) 0%, var(--paper) 58%, var(--muted) 100%);
+}
+
+.vt-scalar__meter-change {
+  z-index: 1;
+  min-height: 6px;
+  border: 1px solid var(--paper-strong);
+  border-radius: 2px;
+  background: var(--paper-strong);
+}
+
+.vt-scalar__meter-comparison.is-lower .vt-scalar__meter-change {
+  background:
+    repeating-linear-gradient(-45deg, rgb(209 228 250 / 0.82) 0 3px, rgb(125 145 170 / 0.82) 3px 6px);
+}
+
+/* Creation is a point-in-time result, not travel through an arrangement. */
+.vt-shape--placement {
+  display: flex;
+  align-items: flex-start;
+  gap: clamp(var(--s5), 8vw, 120px);
+  padding: var(--s3) 0;
+  border-top: var(--stroke-hair) solid var(--line-soft);
+  border-bottom: var(--stroke-hair) solid var(--line-soft);
+}
+
+.vt-shape--placement > div {
+  display: grid;
+  gap: 3px;
+}
+
+.vt-shape--placement dt {
+  color: var(--muted);
+  font-size: var(--t-micro);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.vt-shape--placement dd {
+  margin: 0;
+  color: var(--paper-strong);
+  font-family: var(--font-mono);
+  font-size: var(--t-meta);
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
 
 /* A position in the song. Same left-to-right beat reading as the piano roll,
    so "where in the arrangement" looks the same wherever it appears. */
@@ -1536,17 +2004,49 @@
 .vt-endpoints__from { color: var(--muted); }
 .vt-endpoints__to { color: var(--paper-strong); font-weight: 600; }
 
-@media (max-width: 1180px) {
-  .vt-depth__grid,
-  .vt-depth__grid.is-rootless { grid-template-columns: 1fr; }
+/* The app rail consumes real width, so a viewport breakpoint alone cannot tell
+   when a card's two columns have become cramped. Let the card decide from the
+   space it actually received; MIDI then gets the full readable lane width. */
+@container vt-movement-card (max-width: 900px) {
+  .vt-movement-card__content,
+  .vt-movement-card.is-midi .vt-movement-card__content {
+    grid-template-columns: 44px minmax(0, 1fr);
+  }
 
-  .vt-movement-card article { grid-template-columns: minmax(0, 1fr); }
-  .vt-movement-card__content { grid-template-columns: minmax(0, 1fr); }
+  .vt-movement-card__facts {
+    grid-column: 2;
+    grid-template-columns: 1fr;
+  }
+
   .vt-movement-card__content > .vt-shape,
   .vt-movement-card__content > .vt-midi-pattern,
   .vt-movement-card__content > .vt-midi-scale,
   .vt-movement-card__content > .vt-midi-scale__empty,
-  .vt-movement-card__content > .vt-midi-missing { grid-column: 1; }
+  .vt-movement-card__content > .vt-midi-missing {
+    grid-column: 2;
+  }
+
+  .vt-movement-card__positions,
+  .vt-movement-card__evidence { grid-column: 2; }
+}
+
+@media (max-width: 1180px) {
+  .vt-depth__grid { grid-template-columns: 1fr; }
+
+  .vt-movement-card article { grid-template-columns: minmax(0, 1fr); }
+  .vt-movement-card__content,
+  .vt-movement-card.is-midi .vt-movement-card__content {
+    grid-template-columns: 44px minmax(0, 1fr);
+  }
+  .vt-movement-card__content > .vt-shape,
+  .vt-movement-card__content > .vt-midi-pattern,
+  .vt-movement-card__content > .vt-midi-scale,
+  .vt-movement-card__content > .vt-midi-scale__empty,
+  .vt-movement-card__content > .vt-midi-missing { grid-column: 2; }
+
+  .vt-movement-card__facts,
+  .vt-movement-card__positions,
+  .vt-movement-card__evidence { grid-column: 2; }
 
   .vt-movement-time {
     display: grid;
@@ -1568,11 +2068,11 @@
   .vt-movement-time > strong { margin: 0; padding: 0; text-align: right; }
   .vt-movement-time.is-range { grid-template-columns: auto 1fr auto auto; }
   .vt-movement-time.is-point { display: flex; align-items: flex-end; }
+
 }
 
 @media (max-width: 760px) {
-  .vt-depth__grid,
-  .vt-depth__grid.is-rootless { grid-template-columns: 1fr; }
+  .vt-depth__grid { grid-template-columns: 1fr; }
 
   .vt-sittings summary { align-items: start; }
   .vt-sittings__identity { align-items: flex-start; flex-direction: column; gap: var(--s1); }
@@ -1616,9 +2116,8 @@
   .vt-midi-scale__row { grid-template-columns: 56px minmax(0, 1fr); align-items: start; }
   .vt-midi-scale__row strong { grid-column: 2; }
   .vt-midi-scale.has-no-geometry .vt-midi-scale__row { grid-template-columns: 56px minmax(0, 1fr); }
-  .vt-midi-pattern__row { grid-template-columns: 52px minmax(0, 1fr); align-items: start; }
-  .vt-midi-pattern__row > strong { grid-column: 2; }
-  .vt-midi-pattern__axis { margin-right: 0; margin-left: 60px; }
+  .vt-midi-pattern__row svg { height: clamp(164px, 42vw, 220px); }
+  .vt-midi-pattern__axis { align-items: flex-start; flex-direction: column; gap: 2px; }
   .vt-span__head { align-items: flex-start; flex-direction: column; }
   .vt-shape--endpoints { flex-wrap: wrap; }
   .vt-movement-card__positions,
@@ -1634,6 +2133,69 @@
   align-items: center;
   gap: var(--s2);
   margin: 0 var(--s4) var(--s2);
+}
+
+/* Orientation belongs to the sitting that owns the cards. This rail is local
+   to the Timeline—not the global app navigation—and stays present while the
+   producer moves through a long return. */
+.vt-trail-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 164px;
+  align-items: start;
+  gap: var(--s3);
+}
+
+.vt-trail-layout__content { min-width: 0; }
+
+.vt-location {
+  position: sticky;
+  top: var(--s3);
+  display: grid;
+  gap: 5px;
+  padding: var(--s2);
+  border: var(--stroke-hair) solid var(--line-soft);
+  border-radius: var(--radius-sm);
+  background: var(--panel-2);
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: var(--t-micro);
+  font-variant-numeric: tabular-nums;
+}
+
+.vt-location__label {
+  color: var(--faint-aa);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.vt-location > strong {
+  color: var(--paper-strong);
+  font-family: var(--font-sans);
+  font-size: var(--t-meta);
+}
+
+.vt-location__step {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+  margin-top: var(--s1);
+}
+
+.vt-location__step button {
+  padding: 4px 3px;
+  border: var(--stroke-hair) solid var(--line-soft);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--paper);
+  font: inherit;
+  cursor: pointer;
+}
+
+.vt-location__step button:hover:not(:disabled) { background: var(--panel-3); }
+.vt-location__step button:disabled { color: var(--faint-aa); cursor: default; }
+.vt-location__step button:focus-visible {
+  outline: 2px solid var(--signal);
+  outline-offset: 2px;
 }
 
 .vt-trail-controls__label {
@@ -1670,148 +2232,6 @@
 .vt-trail-toggle button:focus-visible {
   outline: 2px solid var(--signal);
   outline-offset: -2px;
-}
-
-/* A compact bottom dock for long sittings. It stays available without putting
-   a full-width toolbar between the producer and the work they are reading. */
-.vt-jumpbar {
-  position: sticky;
-  z-index: 4;
-  top: calc(100dvh - 58px);
-  display: grid;
-  grid-template-columns: auto auto minmax(260px, 520px);
-  align-items: center;
-  justify-content: center;
-  gap: var(--s2);
-  width: min(960px, calc(100% - 32px));
-  margin: 0 auto var(--s3);
-  padding: 5px 6px;
-  border: var(--stroke-hair) solid var(--line);
-  border-radius: var(--radius-pill);
-  background: rgb(15 21 33 / 0.96);
-  box-shadow: 0 10px 28px rgb(0 0 0 / 0.3);
-  backdrop-filter: blur(12px);
-}
-
-.vt-jumpbar.is-moving-down { animation: vt-jumpbar-down 360ms ease-out; }
-.vt-jumpbar.is-moving-up { animation: vt-jumpbar-up 360ms ease-out; }
-
-@keyframes vt-jumpbar-down {
-  0% { transform: translateY(0); }
-  38% { transform: translateY(5px); }
-  100% { transform: translateY(0); }
-}
-
-@keyframes vt-jumpbar-up {
-  0% { transform: translateY(0); }
-  38% { transform: translateY(-5px); }
-  100% { transform: translateY(0); }
-}
-
-.vt-jumpbar__position {
-  display: inline-flex;
-  align-items: baseline;
-  gap: 4px;
-  min-width: max-content;
-  margin: 0;
-  color: var(--faint-aa);
-  font-family: var(--font-mono);
-  font-size: var(--t-micro);
-  font-variant-numeric: tabular-nums;
-  text-transform: uppercase;
-}
-
-.vt-jumpbar__position strong {
-  color: var(--paper-strong);
-  font-size: var(--t-meta);
-}
-
-.vt-jumpbar__motion {
-  display: inline-flex;
-  align-items: center;
-  width: 14px;
-  color: var(--paper);
-  opacity: 0;
-  transition: opacity 120ms ease;
-}
-
-.vt-jumpbar__motion.is-visible { opacity: 1; }
-
-.vt-jumpbar__motion svg {
-  width: 12px;
-  height: 12px;
-  fill: none;
-  stroke: currentColor;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  stroke-width: 2;
-}
-
-.vt-jumpbar__motion svg.is-down { transform: rotate(180deg); }
-
-.vt-jumpbar__buttons {
-  display: inline-flex;
-  overflow: hidden;
-  border: var(--stroke-hair) solid var(--line-soft);
-  border-radius: var(--radius-pill);
-}
-
-.vt-jumpbar__buttons button {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 4px 8px;
-  border: 0;
-  border-right: var(--stroke-hair) solid var(--line-soft);
-  background: transparent;
-  color: var(--paper);
-  font-family: var(--font-sans);
-  font-size: var(--t-micro);
-  cursor: pointer;
-}
-
-.vt-jumpbar__buttons button.is-edge { padding-right: 6px; padding-left: 6px; }
-
-.vt-jumpbar__buttons button:last-child { border-right: 0; }
-.vt-jumpbar__buttons button:hover:not(:disabled) { background: var(--glass-fill); }
-.vt-jumpbar__buttons button:disabled { color: var(--faint-aa); cursor: default; opacity: 0.45; }
-
-.vt-jumpbar__buttons button:focus-visible,
-.vt-jumpbar__select select:focus-visible {
-  outline: 2px solid var(--signal);
-  outline-offset: -2px;
-}
-
-.vt-jumpbar__icon {
-  width: 14px;
-  height: 14px;
-  fill: none;
-  stroke: currentColor;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  stroke-width: 1.8;
-}
-
-.vt-jumpbar__select {
-  display: block;
-  min-width: 0;
-  color: var(--faint-aa);
-  font-family: var(--font-mono);
-  font-size: var(--t-micro);
-  text-transform: uppercase;
-}
-
-.vt-jumpbar__select select {
-  min-width: 0;
-  width: 100%;
-  padding: 4px 28px 4px 10px;
-  border: var(--stroke-hair) solid var(--line-soft);
-  border-radius: var(--radius-pill);
-  background: var(--panel-3);
-  color: var(--paper);
-  font-family: var(--font-sans);
-  font-size: var(--t-micro);
-  text-transform: none;
 }
 
 .vt-movement-card { scroll-margin-top: var(--s3); }
@@ -1873,7 +2293,6 @@
 .vt-track-groups__head {
   display: flex;
   align-items: baseline;
-  justify-content: space-between;
   gap: var(--s2);
   margin: 0 0 var(--s2);
   padding-bottom: var(--s1);
@@ -1883,12 +2302,18 @@
   font-weight: 600;
 }
 
-.vt-track-groups__head span:last-child {
+.vt-track-groups__count {
   color: var(--faint-aa);
   font-family: var(--font-mono);
   font-size: var(--t-micro);
   font-variant-numeric: tabular-nums;
   font-weight: 400;
+}
+
+.vt-track-groups__count::before {
+  margin-right: var(--s2);
+  color: var(--line);
+  content: "·";
 }
 
 .vt-type-groups > li {
@@ -1899,34 +2324,55 @@
 .vt-type-groups__head { text-transform: uppercase; }
 
 @media (prefers-reduced-motion: reduce) {
-  .vt-jumpbar.is-moving-down,
-  .vt-jumpbar.is-moving-up { animation: none; }
-  .vt-jumpbar__motion { transition: none; }
+  .vt-movement-card,
+  .vt-movement-card__icon {
+    transition: none;
+  }
+
+  .vt-movement-card { animation: none; }
+
+  .vt-movement-card:hover,
+  .vt-movement-card:focus-within,
+  .vt-movement-card:hover .vt-movement-card__icon,
+  .vt-movement-card:focus-within .vt-movement-card__icon {
+    transform: none;
+  }
 }
 
 @media (max-width: 860px) {
-  .vt-jumpbar {
-    top: calc(100dvh - 92px);
-    grid-template-columns: auto minmax(0, 1fr);
-  }
-  .vt-jumpbar__select { grid-column: 1 / -1; }
+  .vt-trail-layout { grid-template-columns: 1fr; }
+  .vt-location { position: static; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .vt-location__label,
+  .vt-location > strong { grid-column: 1 / -1; }
+  .vt-location__step,
+  .vt-location label { margin-top: 0; }
 }
 
 @media (max-width: 620px) {
-  .vt-jumpbar {
-    top: calc(100dvh - 142px);
-    grid-template-columns: 1fr;
-  }
+}
 
-  .vt-jumpbar__buttons {
-    display: grid;
-    grid-template-columns: repeat(4, 1fr);
-  }
+/* Where the producer moved to another track.
+   Miller: a busy hour with no pauses is one run of two hundred cards and the
+   reader has nowhere to hold their place. Gaps and saves already chunk the
+   trail; a continuous stretch has neither, and track is the chunk that is
+   already in the work rather than invented for the layout.
+   Quieter than a gap or a save on purpose — nothing was interrupted. */
+.vt-trail-focus {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: var(--s2);
+  padding: var(--s2) 0 var(--s1);
+  list-style: none;
+}
 
-  .vt-jumpbar__buttons button {
-    justify-content: center;
-    padding: 7px 4px;
-  }
+.vt-trail-focus__track {
+  color: var(--paper);
+  font-size: var(--t-meta);
+  font-weight: 600;
+}
 
-  .vt-jumpbar__select { grid-column: auto; }
+.vt-trail-focus__rule {
+  height: 1px;
+  background: var(--line-soft);
 }

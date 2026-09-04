@@ -1,6 +1,14 @@
-import { useEffect, useId, useMemo, useRef, useState, type CSSProperties } from "react";
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useId,
+  useMemo,
+  useState,
+  type CSSProperties,
+} from "react";
 import { isTauri } from "@tauri-apps/api/core";
-import type { SavedProject } from "../../types/recall";
+import type { SavedProject, SavedSessionMetadata } from "../../types/recall";
 import { NOTE_KIND_LABEL, type MidiClipNote, type NoteEdit } from "../../types/schema";
 import { formatSessionDate } from "../sessionFormat";
 import { formatClock, formatDuration } from "../../components/schema/timeline/format";
@@ -8,9 +16,13 @@ import {
   describeMidiChange,
   namedMidiClip,
 } from "../../components/schema/timeline/midiChange";
-import { presentPassageStory } from "../../components/schema/timeline/passagePresenter";
 import { producerWorkDefinition } from "../../components/schema/timeline/producerWork";
-import { projectVersions, type ProjectVersion } from "./projectVersions";
+import {
+  normalizeAlsPath,
+  projectVersions,
+  type AlsFileAges,
+  type ProjectVersion,
+} from "./projectVersions";
 import { layoutVersionGraph } from "./versionGraphLayout";
 import { versionGraph, type ObservedSave, type VersionNode } from "./versionGraph";
 import { sittings as groupSittings } from "./sittings";
@@ -19,11 +31,18 @@ import {
   TIMELINE_ROW_HEIGHT,
   type VersionTimelineLayout,
 } from "./versionTimelineLayout";
-import { diffHeadline, diffLines } from "./commitDiff";
 import { movementShape, type MovementShape } from "./movementShape";
+import {
+  barBeatLabel,
+  barCountLabel,
+  type SongPositionSource,
+} from "./songPosition";
 import { gapLabel, sittingByTrack, sittingTrail } from "./sittingTrail";
 import type { SittingDepth, VersionDepth } from "./versionDepth";
-import { getObservedSaves } from "../../lib/schema/api";
+import {
+  getAlsFileTimes,
+  getObservedSaves,
+} from "../../lib/schema/api";
 import { ReportLoading } from "./ReportLoading";
 import { loadVersionDepth } from "./versionReportLoader";
 import type { ReportDecision, ReportEvidence } from "./sessionReport";
@@ -36,6 +55,11 @@ type VersionTimelineScreenProps = {
   onSelectProject: (projectId: string) => void;
   onOpenReport: (sessionId: string, scope: "version") => void;
   onOpenProjects: () => void;
+};
+
+type SelectedVersionParent = {
+  name: string;
+  sessionId: string | null;
 };
 
 /** Must match `.vt-graph__rows > li` in the stylesheet. */
@@ -58,16 +82,26 @@ function latestSitting(version: ProjectVersion): string | null {
   return lastWorked?.captureIds.at(-1) ?? version.sessions.at(-1)?.id ?? null;
 }
 
-/** Orientation that helps someone resume: returns and dates, never rollups. */
+/** The exact stored path, not ProjectVersion.alsPath, which is normalized for identity. */
+function versionSourcePath(version: ProjectVersion): string | null {
+  for (const session of [...version.sessions].reverse()) {
+    const path = session.als_path?.trim();
+    if (path && path !== "0") return path;
+  }
+  return null;
+}
+
+/** The graph owns calendar time on its axis. Its rows only state the return
+    count; repeating a date range beneath the file name makes a producer parse
+    the same time fact twice. */
 function versionWorkLine(version: ProjectVersion): string {
   const worked = groupSittings(version.sessions).sittings;
   if (worked.length === 0) return "Recall captured no producer work in this file";
   const first = worked[0]!;
-  const last = worked.at(-1)!;
   if (worked.length === 1) {
-    return `One sitting · ${formatSessionDate(first.startMs)} · ${formatClock(first.startMs)}–${formatClock(first.endMs)}`;
+    return `1 return · ${formatClock(first.startMs)}–${formatClock(first.endMs)}`;
   }
-  return `${worked.length} returns · ${formatSessionDate(first.startMs)} → ${formatSessionDate(last.startMs)}`;
+  return `${worked.length} returns`;
 }
 
 
@@ -135,7 +169,6 @@ function VersionLogGraph({
   onSelectVersion: (versionId: string) => void;
 }) {
   const layout = useMemo(() => layoutVersionGraph(nodes), [nodes]);
-  const [expandedWorkId, setExpandedWorkId] = useState<string | null>(null);
   const placementById = useMemo(
     () => new Map(layout.placements.map((placement) => [placement.nodeId, placement])),
     [layout],
@@ -146,8 +179,8 @@ function VersionLogGraph({
     [nodes],
   );
   const timeline = useMemo<VersionTimelineLayout>(
-    () => layoutVersionTimeline(nodes, layout, saves, expandedWorkId),
-    [nodes, layout, saves, expandedWorkId],
+    () => layoutVersionTimeline(nodes, layout, saves),
+    [nodes, layout, saves],
   );
   const rowById = useMemo(
     () => new Map(timeline.rows.map((row) => [row.nodeId, row])),
@@ -290,8 +323,6 @@ function VersionLogGraph({
           const selected = node.id === selectedVersionId;
           const isLatest = latestVersion(nodes.map((item) => item.version))?.id === node.id;
           const row = rowById.get(node.id);
-          const work = groupSittings(node.version.sessions);
-          const saveCount = timeline.saveTicks.filter((tick) => tick.nodeId === node.id).length;
           return (
             <li
               key={node.id}
@@ -312,13 +343,6 @@ function VersionLogGraph({
                   Last worked {formatSessionDate(node.version.lastUpdatedAtMs)}
                 </span>
               </button>
-              <VersionWorkStretch
-                version={node.version}
-                sittingCount={work.sittings.length}
-                saveCount={saveCount}
-                expanded={expandedWorkId === node.id}
-                onExpandedChange={(expanded) => setExpandedWorkId(expanded ? node.id : null)}
-              />
             </li>
           );
         })}
@@ -328,105 +352,62 @@ function VersionLogGraph({
 }
 
 /**
- * The record carried by a stretch of lane. The closed line tells a producer
- * what happened without forcing another fetch; opening it reads the sitting
- * trails, so the moves live on the Timeline rather than only in the Report.
+ * When each of a project's `.als` files was actually made.
+ *
+ * Asked of the filesystem, once per project. Without it every version falls back
+ * to its first capture — which is what the app did before, and is still right
+ * for files Recall watched being created.
  */
-function VersionWorkStretch({
-  version,
-  sittingCount,
-  saveCount,
-  expanded,
-  onExpandedChange,
-}: {
-  version: ProjectVersion;
-  sittingCount: number;
-  saveCount: number;
-  expanded: boolean;
-  onExpandedChange: (expanded: boolean) => void;
-}) {
-  const sessionIds = version.sessions.map((session) => session.id);
-  const sessionKey = sessionIds.join("|");
-  const [depth, setDepth] = useState<VersionDepth | null>(null);
-  const [status, setStatus] = useState<"idle" | "loading" | "ready" | "error">("idle");
+function useAlsFileAges(captures: SavedSessionMetadata[]): AlsFileAges {
+  const [ages, setAges] = useState<AlsFileAges>(() => new Map());
+  const paths = useMemo(
+    () => [...new Set(captures.map((capture) => capture.als_path).filter((path): path is string => Boolean(path)))],
+    [captures],
+  );
+  const key = paths.join("|");
 
   useEffect(() => {
-    setDepth(null);
-    setStatus("idle");
-  }, [sessionKey]);
-
-  useEffect(() => {
-    if (!expanded || status !== "idle") return;
     let cancelled = false;
-    setStatus("loading");
-    void loadVersionDepth(sessionIds, null)
-      .then((next) => {
+    if (paths.length === 0) {
+      setAges(new Map());
+      return;
+    }
+    void getAlsFileTimes(paths)
+      .then((rows) => {
         if (cancelled) return;
-        setDepth(next);
-        setStatus("ready");
+        const next: AlsFileAges = new Map();
+        for (const row of rows) {
+          // Creation first, falling back to modification: a copied or restored
+          // set can carry a modification time older than its creation, and the
+          // earliest credible proof it existed is what the graph wants.
+          const made = row.created_ms ?? row.modified_ms;
+          const path = normalizeAlsPath(row.path);
+          if (made !== null && made !== undefined && path) next.set(path, made);
+        }
+        setAges(next);
       })
+      // The files may be on a drive that is not mounted. Falling back to first
+      // capture is the old behaviour, not a failure worth showing.
       .catch(() => {
-        if (!cancelled) setStatus("error");
+        if (!cancelled) setAges(new Map());
       });
     return () => {
       cancelled = true;
     };
-  }, [expanded, sessionKey, status]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key]);
 
-  const sittingText = sittingCount === 0
-    ? "No producer work captured"
-    : `${sittingCount} ${sittingCount === 1 ? "sitting" : "sittings"}`;
-
-  return (
-    <div className="vt-work" aria-label={`Work on ${versionLabel(version)}`}>
-      {sittingCount > 0 && (
-        <details
-          className="vt-work__details"
-          open={expanded}
-          onToggle={(event) => onExpandedChange(event.currentTarget.open)}
-        >
-          <summary>
-            Retrace {sittingText}
-            {saveCount > 0 && ` · ${saveCount} ${saveCount === 1 ? "save" : "saves"} observed`}
-          </summary>
-          {status === "loading" && <p className="vt-work__status">Reading the sittings…</p>}
-          {status === "error" && (
-            <p className="vt-work__status">Recall could not read the moves in these sittings.</p>
-          )}
-          {status === "ready" && depth && (
-            <ol className="vt-work__trail">
-              {depth.sittings.map((sitting) => (
-                <li key={sitting.sessionId}>
-                  <time>{formatSessionDate(sitting.startedAtMs)} · {formatClock(sitting.startedAtMs)}</time>
-                  <span>
-                    {sitting.report.chapters.length > 0 ? (
-                      <>
-                        <strong>
-                          Started with {presentPassageStory(sitting.report.chapters[0]!).title}
-                        </strong>
-                        <span className="vt-work__ending">
-                          Left off with {presentPassageStory(sitting.report.chapters.at(-1)!).title}
-                        </span>
-                      </>
-                    ) : (
-                      <span className="vt-work__ending">This sitting captured no work trail.</span>
-                    )}
-                  </span>
-                </li>
-              ))}
-            </ol>
-          )}
-        </details>
-      )}
-      {sittingCount === 0 && (
-        <p className="vt-work__summary">
-          {sittingText}
-          {saveCount > 0 && ` · ${saveCount} ${saveCount === 1 ? "save" : "saves"} observed`}
-        </p>
-      )}
-    </div>
-  );
+  return ages;
 }
+
+/* The graph is versions, and nothing else.
+   A "Retrace N sittings" disclosure used to open inside the lane, pushing the
+   version points apart and leaving a screen of empty rail behind whichever row
+   was open. It also read a whole version bundle per row, on top of the one the
+   detail below was already reading.
+   The graph is the navigator: which files exist, how they descend, and when.
+   What happened INSIDE a version belongs to the detail below, which is the
+   surface built for it. */
 
 function VersionInspector({
   selected,
@@ -510,60 +491,6 @@ function VersionInspector({
       </div>
       {revealStatus && <p className="vt-inspector__status" role="status">{revealStatus}</p>}
     </aside>
-  );
-}
-
-/**
- * The Timeline is where a producer reads a version closely.
- *
- * The graph picks the point; this says what the point IS. It answers the two
- * questions that let a producer retrace it: what changed in the set since the
- * version this one came from, and what happened in order each time they
- * returned. Aggregates belong in the Report, not in this memory path.
- */
-function DiffBlock({ depth }: { depth: VersionDepth }) {
-  const { diff, parentName } = depth;
-  const rendered = diff.status === "changed" ? diffLines(diff.diff) : null;
-
-  return (
-    <section className="vt-depth__diff" aria-label="Changed since the parent version">
-      <p className="vt__eyebrow">Changed in the set</p>
-      <h3>{parentName ? `Since ${parentName}` : "The first version"}</h3>
-      {diff.status === "root" && (
-        <p className="vt-depth__empty">
-          Nothing came before this version, so there is nothing to compare it against.
-        </p>
-      )}
-      {diff.status === "unknown" && (
-        // Honest degradation: "no snapshot" and "nothing changed" are different
-        // facts and must never be printed as the same sentence.
-        <p className="vt-depth__empty">
-          One of the two versions has no structure snapshot, so Recall cannot say what changed.
-        </p>
-      )}
-      {diff.status === "unchanged" && (
-        <p className="vt-depth__empty">
-          Same tracks, same devices. Whatever happened here happened inside them.
-        </p>
-      )}
-      {diff.status === "changed" && rendered && (
-        <>
-          <p className="vt-depth__headline">{diffHeadline(diff.diff)}</p>
-          <ul className="vt-diff">
-            {rendered.lines.map((line) => (
-              <li key={line.key} className={line.sign === "+" ? "is-added" : "is-removed"}>
-                <StructuralChangeIcon sign={line.sign} />
-                <span className="vt-diff__label">{line.label}</span>
-                {line.context && <span className="vt-diff__context">{line.context}</span>}
-              </li>
-            ))}
-          </ul>
-          {rendered.total > rendered.lines.length && (
-            <p className="vt-depth__more">{rendered.total - rendered.lines.length} more</p>
-          )}
-        </>
-      )}
-    </section>
   );
 }
 
@@ -651,6 +578,21 @@ function MovementKindIcon({ decision }: { decision: ReportDecision }) {
   );
 }
 
+function movementShapeLabel(shape: MovementShape): string {
+  switch (shape.shape) {
+    case "binary": return "Switch";
+    case "enum": return "Mode";
+    case "scalar": return "Value";
+    case "pattern": return "Piano roll";
+    case "placement": return "Created";
+    case "span": return "Clip span";
+    case "tree": return shape.sign === "+" ? "Added" : shape.sign === "−" ? "Removed" : "Changed";
+    case "global": return "Whole set";
+    case "endpoints": return "Signal path";
+    case "text": return "Captured note";
+  }
+}
+
 const LIVE_PITCH_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"] as const;
 
 function livePitchName(pitch: number): string {
@@ -697,32 +639,184 @@ function noteInventory(notes: MidiClipNote[]): string | null {
   return pitches.length > 0 ? pitches.map(livePitchName).join(" · ") : null;
 }
 
-function MidiPatternChange({ edit }: { edit: NoteEdit }) {
+function isBlackPitch(pitch: number): boolean {
+  return new Set([1, 3, 6, 8, 10]).has(((pitch % 12) + 12) % 12);
+}
+
+type MidiRollRow = { key: "before" | "after"; label: string; notes: MidiClipNote[] };
+
+function MidiPianoRoll({
+  row,
+  lowPitch,
+  highPitch,
+  startBeat,
+  endBeat,
+  meter,
+}: {
+  row: MidiRollRow;
+  lowPitch: number;
+  highPitch: number;
+  startBeat: number;
+  endBeat: number;
+  /** The set's time signature, so the ruler can count the way Live's does. */
+  meter: SongPositionSource | null;
+}) {
+  const keyboardWidth = 76;
+  const viewWidth = 900;
+  const rulerHeight = 26;
+  const pitchCount = Math.max(1, highPitch - lowPitch + 1);
+  const rowHeight = pitchCount > 28 ? 9 : pitchCount > 18 ? 11 : 14;
+  const viewHeight = rulerHeight + pitchCount * rowHeight;
+  const gridWidth = viewWidth - keyboardWidth;
+  const timeSpan = Math.max(1, endBeat - startBeat);
+  const pitches = Array.from({ length: pitchCount }, (_, index) => highPitch - index);
+  const usedPitches = new Set(row.notes.map((note) => note.pitch));
+  const subdivision = timeSpan > 32 ? 4 : timeSpan > 16 ? 2 : timeSpan > 8 ? 1 : 0.25;
+  const firstTick = Math.ceil(startBeat / subdivision) * subdivision;
+  const ticks = Array.from(
+    { length: Math.floor((endBeat - firstTick) / subdivision) + 1 },
+    (_, index) => firstTick + index * subdivision,
+  ).filter((beat) => beat >= startBeat && beat <= endBeat);
+  const beatX = (beat: number) => keyboardWidth + ((beat - startBeat) / timeSpan) * gridWidth;
+  const isMajorTick = (beat: number) => Math.abs(beat - Math.round(beat)) < 0.0001;
+
+  return (
+    <section className={`vt-midi-pattern__row is-${row.key}`} aria-label={`${row.label} MIDI pattern`}>
+      <header>
+        <span className="vt-midi-pattern__state">{row.label}</span>
+        <strong>{row.notes.length} {row.notes.length === 1 ? "note" : "notes"}</strong>
+      </header>
+      <svg
+        viewBox={`0 0 ${viewWidth} ${viewHeight}`}
+        preserveAspectRatio="none"
+        role="img"
+        aria-label={`${row.label}: ${row.notes.length} captured ${row.notes.length === 1 ? "note" : "notes"} on an Ableton-style piano roll`}
+        style={{ ["--midi-roll-ratio" as string]: `${viewWidth} / ${viewHeight}` }}
+      >
+        <rect className="vt-midi-roll__ruler" x={keyboardWidth} y="0" width={gridWidth} height={rulerHeight} />
+        <rect className="vt-midi-roll__loop" x={keyboardWidth} y="2" width={gridWidth} height="4" rx="2" />
+
+        {pitches.map((pitch, index) => {
+          const y = rulerHeight + index * rowHeight;
+          const black = isBlackPitch(pitch);
+          const labelPitch = pitch % 12 === 0 || usedPitches.has(pitch);
+          return (
+            <g key={pitch}>
+              <rect
+                className={`vt-midi-roll__lane ${black ? "is-black" : "is-white"}`}
+                x={keyboardWidth}
+                y={y}
+                width={gridWidth}
+                height={rowHeight}
+              />
+              <rect
+                className={`vt-midi-roll__key ${black ? "is-black" : "is-white"}`}
+                x="0"
+                y={y}
+                width={black ? keyboardWidth * 0.66 : keyboardWidth}
+                height={rowHeight}
+              />
+              {labelPitch && rowHeight >= 9 && (
+                <text
+                  className="vt-midi-roll__key-label"
+                  x={black ? keyboardWidth * 0.61 : keyboardWidth - 5}
+                  y={y + rowHeight * 0.72}
+                  textAnchor="end"
+                >
+                  {livePitchName(pitch)}
+                </text>
+              )}
+            </g>
+          );
+        })}
+
+        {ticks.map((beat) => {
+          const x = beatX(beat);
+          const major = isMajorTick(beat);
+          return (
+            <g key={beat}>
+              <line
+                className={`vt-midi-roll__tick ${major ? "is-major" : "is-subdivision"}`}
+                x1={x}
+                x2={x}
+                y1={major ? 7 : rulerHeight - 7}
+                y2={viewHeight}
+              />
+              {major && beat < endBeat && (
+                <text className="vt-midi-roll__beat-label" x={x + 5} y="20">
+                  {/* Live's own notation: 1.1 · 1.2 · 1.3 · 1.4 · 2.1. This
+                      counted raw quarter-notes (1 2 3 4 5 6 7 8), so a note at
+                      1.3 was labelled "beat 3" — right in Live's internal unit
+                      and in the wrong language. Falls back to the plain count
+                      only when the meter is unknown, never to an assumed 4/4. */}
+                  {barBeatLabel(beat - startBeat, meter) ?? Math.floor(beat - startBeat) + 1}
+                </text>
+              )}
+            </g>
+          );
+        })}
+
+        {row.notes.map((note, index) => {
+          const x = beatX(note.start_time);
+          const width = Math.max(4, (note.duration / timeSpan) * gridWidth);
+          const y = rulerHeight + (highPitch - note.pitch) * rowHeight + 1;
+          const canLabel = width >= 40 && rowHeight >= 11;
+          return (
+            <g key={note.note_id ?? `${note.pitch}-${note.start_time}-${index}`}>
+              <rect
+                className={`vt-midi-roll__note is-${row.key} ${note.mute ? "is-muted" : ""}`}
+                x={x}
+                y={y}
+                width={Math.min(width, keyboardWidth + gridWidth - x)}
+                height={Math.max(5, rowHeight - 2)}
+                rx="1.5"
+              />
+              {canLabel && (
+                <text className="vt-midi-roll__note-label" x={x + 5} y={y + rowHeight * 0.69}>
+                  {livePitchName(note.pitch)}
+                </text>
+              )}
+            </g>
+          );
+        })}
+        <line className="vt-midi-roll__keyboard-edge" x1={keyboardWidth} x2={keyboardWidth} y1="0" y2={viewHeight} />
+      </svg>
+    </section>
+  );
+}
+
+function MidiPatternChange({
+  edit,
+  meter,
+}: {
+  edit: NoteEdit;
+  /** The set's time signature. Null when it is unknown or the set changed it. */
+  meter: SongPositionSource | null;
+}) {
   const after = edit.midi_notes ?? [];
   const before = edit.previous_midi_notes;
   const all = [...(before ?? []), ...after];
   if (all.length === 0 && before === null) return null;
 
-  const minStart = all.length > 0 ? Math.min(...all.map((note) => note.start_time)) : 0;
-  const maxEnd = all.length > 0
-    ? Math.max(...all.map((note) => note.start_time + note.duration), minStart + 1)
-    : Math.max(1, edit.length_beats ?? 1);
-  const minPitch = all.length > 0 ? Math.min(...all.map((note) => note.pitch)) : 60;
-  const maxPitch = all.length > 0 ? Math.max(...all.map((note) => note.pitch)) : minPitch + 1;
-  const pitchSpan = Math.max(3, maxPitch - minPitch + 1);
-  const timeSpan = Math.max(1, maxEnd - minStart);
-  const firstGridBeat = Math.floor(minStart);
-  const lastGridBeat = Math.ceil(maxEnd);
-  const gridStep = lastGridBeat - firstGridBeat > 32 ? 4 : lastGridBeat - firstGridBeat > 16 ? 2 : 1;
-  const beatLines = Array.from(
-    { length: Math.floor((lastGridBeat - firstGridBeat) / gridStep) + 1 },
-    (_, index) => firstGridBeat + index * gridStep,
-  ).filter((beat) => beat >= minStart && beat <= maxEnd);
-  const cMarkers = Array.from({ length: maxPitch - minPitch + 1 }, (_, index) => minPitch + index)
-    .filter((pitch) => pitch % 12 === 0);
+  // A piano roll starts at the clip boundary, even when the first note does
+  // not. Keeping the empty lead-in is what makes a late entrance visible.
+  const minStart = all.length > 0 ? Math.min(0, ...all.map((note) => note.start_time)) : 0;
+  const maxEnd = Math.max(
+    all.length > 0 ? Math.max(...all.map((note) => note.start_time + note.duration)) : 0,
+    edit.length_beats ?? 0,
+    minStart + 1,
+  );
+  let minPitch = all.length > 0 ? Math.max(0, Math.min(...all.map((note) => note.pitch)) - 2) : 60;
+  let maxPitch = all.length > 0 ? Math.min(127, Math.max(...all.map((note) => note.pitch)) + 2) : 71;
+  if (maxPitch - minPitch + 1 < 12) {
+    const center = Math.round((minPitch + maxPitch) / 2);
+    minPitch = Math.max(0, center - 6);
+    maxPitch = Math.min(127, minPitch + 11);
+    minPitch = Math.max(0, maxPitch - 11);
+  }
   const rows = before !== undefined && before !== null
-    ? [{ key: "before", label: "Before", notes: before }, { key: "after", label: "After", notes: after }]
-    : [{ key: "after", label: "Pattern", notes: after }];
+    ? [{ key: "before" as const, label: "Before", notes: before }, { key: "after" as const, label: "After", notes: after }]
+    : [{ key: "after" as const, label: "Pattern", notes: after }];
   const details = rows.flatMap((row) => row.notes.map((note, index) => ({ ...row, note, index })));
   const valuesDiffer = <T,>(values: T[]) => new Set(values).size > 1;
   const velocities = details.map(({ note }) => note.velocity).filter((value): value is number => value !== null);
@@ -740,57 +834,29 @@ function MidiPatternChange({ edit }: { edit: NoteEdit }) {
   return (
     <section className="vt-midi-pattern" aria-label="Exact captured MIDI pattern">
       <header>
-        <span>Piano roll · inside this clip</span>
+        <span>Piano roll · clip beats</span>
         <strong>{noteInventory(after) ?? (after.length === 0 ? "No notes after this edit" : "Pitch names unavailable")}</strong>
       </header>
       <div className="vt-midi-pattern__rows">
         {rows.map((row) => (
-          <div className="vt-midi-pattern__row" key={row.key}>
-            <span>{row.label}</span>
-            <svg
-              viewBox="0 0 800 88"
-              preserveAspectRatio="none"
-              role="img"
-              aria-label={`${row.label}: ${row.notes.length} captured ${row.notes.length === 1 ? "note" : "notes"}`}
-            >
-              {beatLines.map((beat) => (
-                <line
-                  className="vt-midi-pattern__beat"
-                  key={beat}
-                  x1={((beat - minStart) / timeSpan) * 800}
-                  x2={((beat - minStart) / timeSpan) * 800}
-                  y1="0"
-                  y2="88"
-                />
-              ))}
-              {cMarkers.map((pitch) => {
-                const y = 80 - ((pitch - minPitch) / pitchSpan) * 72;
-                return <line className="vt-midi-pattern__octave" key={pitch} x1="0" x2="800" y1={y} y2={y} />;
-              })}
-              {row.notes.map((note, index) => {
-                const x = ((note.start_time - minStart) / timeSpan) * 800;
-                const width = Math.max(3, (note.duration / timeSpan) * 800);
-                const y = 76 - ((note.pitch - minPitch) / pitchSpan) * 68;
-                return (
-                  <rect
-                    key={note.note_id ?? `${note.pitch}-${note.start_time}-${index}`}
-                    className={`${row.key === "before" ? "is-before" : "is-after"} ${note.mute ? "is-muted" : ""}`}
-                    x={x}
-                    y={y}
-                    width={width}
-                    height="8"
-                    rx="2"
-                  />
-                );
-              })}
-            </svg>
-            <strong>{row.notes.length} {row.notes.length === 1 ? "note" : "notes"}</strong>
-          </div>
+          <MidiPianoRoll
+            key={row.key}
+            row={row}
+            lowPitch={minPitch}
+            highPitch={maxPitch}
+            startBeat={minStart}
+            endBeat={maxEnd}
+            meter={meter}
+          />
         ))}
       </div>
       <div className="vt-midi-pattern__axis">
         <span>{beatOffset(minStart, "clip")}</span>
-        <span>{beatOffset(maxEnd, "clip")}</span>
+        <span>
+          {barCountLabel(maxEnd - minStart, meter) ??
+            `${compactNumber(maxEnd - minStart)} quarter-note ${maxEnd - minStart === 1 ? "beat" : "beats"} shown`}
+          {barCountLabel(maxEnd - minStart, meter) ? " shown" : ""}
+        </span>
       </div>
       {(edit.midi_notes_truncated || edit.previous_midi_notes_truncated) && (
         <p className="vt-midi-pattern__limit">
@@ -985,49 +1051,203 @@ function EnumChange({ from, to, note }: { from: string | null; to: string; note:
   );
 }
 
+const FREQUENCY_TICKS = [20, 100, 1_000, 10_000, 20_000];
+
+function frequencyPosition(value: number) {
+  const low = 20;
+  const high = 20_000;
+  const clamped = Math.min(high, Math.max(low, value));
+  return (Math.log(clamped / low) / Math.log(high / low)) * 100;
+}
+
+function frequencyLabel(value: number) {
+  return value >= 1_000 ? `${value / 1_000}k` : `${value}`;
+}
+
+/** Hz is perceived and laid out logarithmically: 20→200 Hz deserves the same
+    width as 2k→20k Hz. A generic percentage or rotary control hides that. */
+function FrequencyScale({
+  from,
+  to,
+  fromLabel,
+  toLabel,
+}: {
+  from: number;
+  to: number;
+  fromLabel: string | null;
+  toLabel: string | null;
+}) {
+  const fromPosition = frequencyPosition(from);
+  const toPosition = frequencyPosition(to);
+  const start = Math.min(fromPosition, toPosition);
+  const width = Math.max(1, Math.abs(toPosition - fromPosition));
+
+  return (
+    <div className="vt-shape vt-shape--frequency">
+      <div className="vt-frequency__readings">
+        <span className="vt-frequency__reading is-before"><span>Before</span>{fromLabel ?? `${from} Hz`}</span>
+        <span className="vt-frequency__reading is-after"><span>After</span>{toLabel ?? `${to} Hz`}</span>
+      </div>
+      <div
+        className="vt-frequency__scale"
+        role="img"
+        aria-label={`Frequency moved from ${fromLabel ?? `${from} Hz`} to ${toLabel ?? `${to} Hz`} on a logarithmic 20 Hz to 20 kHz scale`}
+      >
+        <span className="vt-frequency__range" style={{ left: `${start}%`, width: `${width}%` }} aria-hidden="true" />
+        {FREQUENCY_TICKS.map((tick) => (
+          <span
+            key={tick}
+            className="vt-frequency__tick"
+            style={{ left: `${frequencyPosition(tick)}%` }}
+            aria-hidden="true"
+          >
+            <i />
+            <b>{frequencyLabel(tick)}</b>
+          </span>
+        ))}
+        <span className="vt-frequency__marker is-before" style={{ left: `${fromPosition}%` }} aria-hidden="true" />
+        <span className="vt-frequency__marker is-after" style={{ left: `${toPosition}%` }} aria-hidden="true" />
+      </div>
+    </div>
+  );
+}
+
 function ScalarChange({
   fromLabel,
   toLabel,
   fromFraction,
   toFraction,
   rose,
+  asMeter,
+  frequency,
 }: {
   fromLabel: string | null;
   toLabel: string | null;
   fromFraction: number | null;
   toFraction: number | null;
   rose: boolean | null;
+  asMeter: boolean;
+  frequency: { from: number; to: number } | null;
 }) {
+  if (frequency && !asMeter) {
+    return <FrequencyScale from={frequency.from} to={frequency.to} fromLabel={fromLabel} toLabel={toLabel} />;
+  }
   const drawable = fromFraction !== null && toFraction !== null;
-  const low = drawable ? Math.min(fromFraction, toFraction) : 0;
-  const high = drawable ? Math.max(fromFraction, toFraction) : 0;
+  const knobPoint = (fraction: number, radius: number) => {
+    const angle = (-135 + fraction * 270) * (Math.PI / 180);
+    return {
+      x: 42 + Math.cos(angle) * radius,
+      y: 42 + Math.sin(angle) * radius,
+    };
+  };
+
+  let knobTravel: string | null = null;
+  let fromPoint = { x: 42, y: 42 };
+  let toPoint = { x: 42, y: 42 };
+  if (drawable) {
+    const low = Math.min(fromFraction, toFraction);
+    const high = Math.max(fromFraction, toFraction);
+    const travelStart = knobPoint(low, 32);
+    const travelEnd = knobPoint(high, 32);
+    knobTravel = [
+      `M ${travelStart.x} ${travelStart.y}`,
+      `A 32 32 0 ${high - low > 2 / 3 ? 1 : 0} 1 ${travelEnd.x} ${travelEnd.y}`,
+    ].join(" ");
+    fromPoint = knobPoint(fromFraction, 21);
+    toPoint = knobPoint(toFraction, 23);
+  }
 
   return (
-    <div className="vt-shape vt-shape--scalar">
-      <div className="vt-scalar__values">
-        {fromLabel && <span className="vt-scalar__from">{fromLabel}</span>}
-        {fromLabel && toLabel && (
-          <span className="vt-shape__arrow" aria-hidden="true">
-            {rose === null ? "→" : rose ? "↗" : "↘"}
+    <div className={`vt-shape vt-shape--scalar ${asMeter ? "is-meter" : "is-knob"}`}>
+      {(!asMeter || !drawable) && <div className="vt-scalar__values">
+        {fromLabel && (
+          <span className="vt-scalar__reading vt-scalar__from">
+            <span>Before</span>
+            <strong>{fromLabel}</strong>
           </span>
         )}
-        {toLabel && <span className="vt-scalar__to">{toLabel}</span>}
-      </div>
-      {drawable && (
-        // The bar carries the distance travelled, which the two numbers alone
-        // do not: 10%→12% and 10%→90% read the same as text.
-        <div
-          className="vt-scalar__track"
-          role="img"
-          aria-label={`Moved from ${Math.round(fromFraction * 100)}% to ${Math.round(toFraction * 100)}%`}
-        >
-          <span
-            className="vt-scalar__travel"
-            style={{ left: `${low * 100}%`, width: `${Math.max(1, (high - low) * 100)}%` }}
-          />
-          <span className="vt-scalar__mark is-from" style={{ left: `${fromFraction * 100}%` }} />
-          <span className="vt-scalar__mark is-to" style={{ left: `${toFraction * 100}%` }} />
+        {toLabel && (
+          <span className="vt-scalar__reading vt-scalar__to">
+            <span>After</span>
+            <strong>{toLabel}</strong>
+          </span>
+        )}
+      </div>}
+      {drawable && asMeter && (
+        <div className={`vt-scalar__meter-comparison ${rose === false ? "is-lower" : "is-higher"}`}>
+          <div className="vt-scalar__meter-column is-before">
+            <span className="vt-scalar__meter-label">Before</span>
+            <strong>{fromLabel ?? `${Math.round(fromFraction * 100)}%`}</strong>
+            <div
+              className="vt-scalar__meter"
+              role="img"
+              aria-label={`Before level ${fromLabel ?? `${Math.round(fromFraction * 100)}%`}; 0 at the top and negative infinity at the bottom`}
+            >
+              <span className="vt-scalar__meter-zero">0</span>
+              <span className="vt-scalar__meter-rail" aria-hidden="true">
+                <i
+                  className="vt-scalar__meter-fill is-before"
+                  style={{ top: `${(1 - fromFraction) * 100}%`, height: `${fromFraction * 100}%` }}
+                />
+              </span>
+              <span className="vt-scalar__meter-infinity">−∞</span>
+            </div>
+          </div>
+          <div className="vt-scalar__meter-column is-after">
+            <span className="vt-scalar__meter-label">After</span>
+            <strong>{toLabel ?? `${Math.round(toFraction * 100)}%`}</strong>
+            <div
+              className="vt-scalar__meter"
+              role="img"
+              aria-label={`After level ${toLabel ?? `${Math.round(toFraction * 100)}%`}; 0 at the top and negative infinity at the bottom`}
+            >
+              <span className="vt-scalar__meter-zero">0</span>
+              <span className="vt-scalar__meter-rail" aria-hidden="true">
+                <i
+                  className="vt-scalar__meter-fill is-after"
+                  style={{ top: `${(1 - toFraction) * 100}%`, height: `${toFraction * 100}%` }}
+                />
+                <i
+                  className="vt-scalar__meter-change"
+                  style={{
+                    top: `${(1 - Math.max(fromFraction, toFraction)) * 100}%`,
+                    height: `${Math.abs(toFraction - fromFraction) * 100}%`,
+                  }}
+                />
+              </span>
+              <span className="vt-scalar__meter-infinity">−∞</span>
+            </div>
+          </div>
         </div>
+      )}
+      {drawable && !asMeter && (
+        // A rotary control mirrors the physical gesture: the producer turned
+        // a control from the ghost hand to the bright final hand.
+        <svg
+          className="vt-scalar__knob"
+          viewBox="0 0 84 84"
+          role="img"
+          aria-label={`Turned from ${Math.round(fromFraction * 100)}% to ${Math.round(toFraction * 100)}%`}
+        >
+          <path className="vt-scalar__knob-track" d="M 19.37 19.37 A 32 32 0 1 1 19.37 64.63" />
+          {knobTravel && <path className="vt-scalar__knob-travel" d={knobTravel} />}
+          <circle className="vt-scalar__knob-face" cx="42" cy="42" r="25" />
+          <line
+            className="vt-scalar__knob-hand is-from"
+            x1="42"
+            y1="42"
+            x2={fromPoint.x}
+            y2={fromPoint.y}
+          />
+          <line
+            className="vt-scalar__knob-hand is-to"
+            x1="42"
+            y1="42"
+            x2={toPoint.x}
+            y2={toPoint.y}
+          />
+          <circle className="vt-scalar__knob-cap" cx="42" cy="42" r="3" />
+        </svg>
       )}
     </div>
   );
@@ -1083,6 +1303,39 @@ function BeatSpan({
         <span className="vt-span__block" style={{ left: `${left}%`, width: `${width}%` }} />
       </div>
     </div>
+  );
+}
+
+function ClipPlacement({
+  startBeats,
+  endBeats,
+  position,
+}: {
+  startBeats: number | null;
+  endBeats: number | null;
+  position: string | null;
+}) {
+  const length = startBeats !== null && endBeats !== null && endBeats > startBeats
+    ? endBeats - startBeats
+    : null;
+  const where = position ?? (startBeats !== null ? `Song beat ${compactNumber(startBeats)}` : "Not captured");
+
+  return (
+    <dl
+      className="vt-shape vt-shape--placement"
+      aria-label={`Clip created at ${where}${length !== null ? `; ${compactNumber(length)} ${length === 1 ? "beat" : "beats"} long` : ""}`}
+    >
+      <div>
+        <dt>Created at</dt>
+        <dd>{where}</dd>
+      </div>
+      {length !== null && (
+        <div>
+          <dt>Length</dt>
+          <dd>{compactNumber(length)} {length === 1 ? "beat" : "beats"}</dd>
+        </div>
+      )}
+    </dl>
   );
 }
 
@@ -1150,7 +1403,15 @@ function Endpoints({ from, to }: { from: string | null; to: string }) {
 }
 
 /** The whole switch, so a card never has to know about shapes individually. */
-function MovementShapeView({ shape, position = null }: { shape: MovementShape; position?: string | null }) {
+function MovementShapeView({
+  shape,
+  position = null,
+  mixControl = false,
+}: {
+  shape: MovementShape;
+  position?: string | null;
+  mixControl?: boolean;
+}) {
   switch (shape.shape) {
     case "binary":
       return <BinaryState on={shape.on} from={shape.from} label={shape.label} />;
@@ -1164,11 +1425,21 @@ function MovementShapeView({ shape, position = null }: { shape: MovementShape; p
           fromFraction={shape.fromFraction}
           toFraction={shape.toFraction}
           rose={shape.rose}
+          asMeter={mixControl}
+          frequency={shape.frequency}
         />
       );
     case "span":
       return (
         <BeatSpan
+          startBeats={shape.startBeats}
+          endBeats={shape.endBeats}
+          position={position}
+        />
+      );
+    case "placement":
+      return (
+        <ClipPlacement
           startBeats={shape.startBeats}
           endBeats={shape.endBeats}
           position={position}
@@ -1219,14 +1490,27 @@ function MovementTime({ startMs, endMs }: { startMs: number; endMs: number }) {
   );
 }
 
-function MovementCard({
+/**
+ * Memoised because a version renders hundreds of these, and a third of them
+ * build a piano-roll SVG with up to a few thousand `<rect>` elements.
+ *
+ * The decision and its evidence are immutable once loaded, so anything that
+ * re-renders the screen for an unrelated reason — a connection poll, a library
+ * refresh, opening a different sitting — must not rebuild all of them.
+ */
+const MovementCard = memo(function MovementCard({
   decision,
   evidence,
   domId,
+  meter,
+  showSongPositions,
 }: {
   decision: ReportDecision;
   evidence: ReportEvidence[];
   domId: string;
+  /** The set's time signature, so positions read in bars rather than beats. */
+  meter: SongPositionSource | null;
+  showSongPositions: boolean;
 }) {
   const positions = [...new Set(evidence
     .map((row) => row.position)
@@ -1252,17 +1536,18 @@ function MovementCard({
       midi.midi_notes.some((note) => note.velocity !== null && note.velocity !== 100)
     ),
   );
-  const showTopLevelPositions = decision.kind !== "control" && !(decision.kind === "clip" && shape.shape === "span");
-  const positionLabel = decision.kind === "midi"
-    ? "Edited at"
-    : decision.kind === "moment"
-      ? "Marked at"
-      : decision.kind === "structure" && /\bmoved\b/i.test(decision.subject)
-        ? "Moved to"
-        : "Song position";
-  const renderedPositionLabel = positionLabel === "Song position" && positions.length > 1
-    ? "Song positions"
-    : positionLabel;
+  // Track and device administration belongs to the set, not a point in the
+  // arrangement. Keep song positions for musical work (including clip moves),
+  // but do not imply that a rename or device-chain edit happened *at* a bar.
+  const isSetAdministration = decision.kind === "structure" && /\b(?:track|device)\b/i.test(decision.subject);
+  const showTopLevelPositions = showSongPositions && !isSetAdministration && decision.kind !== "control" && !(
+    decision.kind === "clip" && (shape.shape === "span" || shape.shape === "placement")
+  );
+  // The bar/beat is transport context. A structural move can describe the
+  // destination; every other action is simply recorded at the playhead.
+  const renderedPositionLabel = decision.kind === "structure" && /\bmoved\b/i.test(decision.subject)
+    ? "Moved to"
+    : "At";
   const midiMissing = midi
     ? [
         midi.note_count === null && midi.previous_note_count === null ? "note count" : null,
@@ -1279,6 +1564,7 @@ function MovementCard({
       id={domId}
       className={`vt-movement-card is-${decision.kind}`}
       data-work-kind={decision.workKind}
+      data-movement-shape={shape.shape}
       data-timeline-movement="true"
     >
       <article aria-label={`${movementCardLabel(decision)}: ${displayTitle}`}>
@@ -1287,7 +1573,10 @@ function MovementCard({
             <div className="vt-movement-card__identity">
               <MovementKindIcon decision={decision} />
               <div>
-                <span className="vt-movement-card__kind">{movementCardLabel(decision)}</span>
+                <div className="vt-movement-card__badges">
+                  <span className="vt-movement-card__kind">{movementCardLabel(decision)}</span>
+                  <span className="vt-movement-card__shape-badge">{movementShapeLabel(shape)}</span>
+                </div>
                 <h4>{displayTitle}</h4>
               </div>
             </div>
@@ -1299,14 +1588,16 @@ function MovementCard({
             {midi ? (
               <>
                 <div><dt>Edit</dt><dd>{midiEditLabel(midi)}</dd></div>
-                <div><dt>Notes</dt><dd>{noteCountLabel(midi)}</dd></div>
+                <div className="vt-midi-fact-stack">
+                  {midi.length_beats !== null && (
+                    <div><dt>Clip length</dt><dd>{compactNumber(midi.length_beats)} {midi.length_beats === 1 ? "beat" : "beats"}</dd></div>
+                  )}
+                  <div><dt>Notes</dt><dd>{noteCountLabel(midi)}</dd></div>
+                </div>
                 {!hasMidiPattern && midiPitches ? (
                   <div><dt>Pitches used{midi.distinct_pitches !== null ? ` (${midi.distinct_pitches})` : ""}</dt><dd>{midiPitches}</dd></div>
                 ) : !hasMidiPattern && midi.distinct_pitches !== null && <div><dt>Distinct pitches</dt><dd>{midi.distinct_pitches}</dd></div>}
                 {midiVelocityIsUseful && <div><dt>Average velocity</dt><dd>{midi.velocity_mean}</dd></div>}
-                {midi.length_beats !== null && (
-                  <div><dt>Clip length</dt><dd>{compactNumber(midi.length_beats)} {midi.length_beats === 1 ? "beat" : "beats"}</dd></div>
-                )}
               </>
             ) : null}
             {repeated && <div><dt>Movements</dt><dd>{decision.count}</dd></div>}
@@ -1316,9 +1607,15 @@ function MovementCard({
               wrong shape for almost all of this: a device toggle read "changed"
               when the fact is that it landed off, and a mode switch read like a
               magnitude. See movementShape.ts. */}
-          {!midi && <MovementShapeView shape={shape} position={positions[0] ?? null} />}
+          {!midi && (
+            <MovementShapeView
+              shape={shape}
+              position={positions[0] ?? null}
+              mixControl={decision.workKind === "mixing"}
+            />
+          )}
 
-          {midi && (hasMidiPattern ? <MidiPatternChange edit={midi} /> : <MidiPitchScale edit={midi} />)}
+          {midi && (hasMidiPattern ? <MidiPatternChange edit={midi} meter={meter} /> : <MidiPitchScale edit={midi} />)}
           {midiMissing.length > 0 && (
             <p className="vt-midi-missing">Not captured: {midiMissing.join(", ")}.</p>
           )}
@@ -1326,7 +1623,13 @@ function MovementCard({
           {showTopLevelPositions && positions.length > 0 && (
             <div className="vt-movement-card__positions">
               <span>{renderedPositionLabel}</span>
-              <ul>{positions.map((position) => <li key={position}>{position}</li>)}</ul>
+              <ul>
+                {positions.map((position) => (
+                  <li key={position}>
+                    {position}
+                  </li>
+                ))}
+              </ul>
             </div>
           )}
 
@@ -1361,203 +1664,7 @@ function MovementCard({
       </article>
     </li>
   );
-}
-
-type JumpIconName = "first" | "previous" | "next" | "last";
-
-function JumpIcon({ name }: { name: JumpIconName }) {
-  const points = name === "previous" || name === "first" ? "15 6 9 12 15 18" : "9 6 15 12 9 18";
-  return (
-    <svg className="vt-jumpbar__icon" viewBox="0 0 24 24" focusable="false" aria-hidden="true">
-      {(name === "first" || name === "last") && (
-        <path d={name === "first" ? "M6 5v14" : "M18 5v14"} />
-      )}
-      <polyline points={points} />
-    </svg>
-  );
-}
-
-type SittingNavigationItem = {
-  decision: ReportDecision;
-  domId: string;
-  positions: string[];
-};
-
-/** A compact map for a sitting that may contain hundreds of movement cards. */
-function SittingNavigator({ items }: { items: SittingNavigationItem[] }) {
-  const [activeIndex, setActiveIndex] = useState(0);
-  const [motion, setMotion] = useState<"up" | "down" | null>(null);
-  const navigatorRef = useRef<HTMLElement>(null);
-  const activeIndexRef = useRef(0);
-  const motionTimerRef = useRef<number | null>(null);
-  const movementTypes = [...new Set(items.map((item) => movementType(item.decision)))];
-  const songPositions = items.flatMap((item, index) =>
-    item.positions.map((position) => ({ position, index })),
-  ).filter((item, index, all) => all.findIndex((other) => other.position === item.position) === index);
-
-  function setActiveMovement(next: number) {
-    const previous = activeIndexRef.current;
-    if (next !== previous) {
-      setMotion(next > previous ? "down" : "up");
-      if (motionTimerRef.current !== null) window.clearTimeout(motionTimerRef.current);
-      motionTimerRef.current = window.setTimeout(() => setMotion(null), 480);
-    }
-    activeIndexRef.current = next;
-    setActiveIndex(next);
-  }
-
-  useEffect(() => () => {
-    if (motionTimerRef.current !== null) window.clearTimeout(motionTimerRef.current);
-  }, []);
-
-  useEffect(() => {
-    let frame = 0;
-    const updateFromScroll = () => {
-      const navigator = navigatorRef.current;
-      // Closed sitting disclosures remain mounted. Do no card geometry work for
-      // a trail the producer cannot currently see.
-      if (!navigator || navigator.getClientRects().length === 0) return;
-      const readingLine = navigator.getBoundingClientRect().bottom + 12;
-      let closestIndex = 0;
-      let closestDistance = Number.POSITIVE_INFINITY;
-
-      items.forEach((item, index) => {
-        const rect = document.getElementById(item.domId)?.getBoundingClientRect();
-        if (!rect) return;
-        const distance = rect.top > readingLine
-          ? rect.top - readingLine
-          : rect.bottom < readingLine
-            ? readingLine - rect.bottom
-            : 0;
-        if (distance < closestDistance) {
-          closestDistance = distance;
-          closestIndex = index;
-        }
-      });
-      setActiveMovement(closestIndex);
-    };
-    const scheduleUpdate = () => {
-      if (frame !== 0) return;
-      frame = window.requestAnimationFrame(() => {
-        frame = 0;
-        updateFromScroll();
-      });
-    };
-
-    updateFromScroll();
-    window.addEventListener("scroll", scheduleUpdate, { passive: true });
-    return () => {
-      window.removeEventListener("scroll", scheduleUpdate);
-      if (frame !== 0) window.cancelAnimationFrame(frame);
-    };
-  }, [items]);
-
-  if (items.length === 0) return null;
-
-  function jumpTo(index: number) {
-    const next = Math.max(0, Math.min(items.length - 1, index));
-    const target = document.getElementById(items[next]!.domId);
-    target?.scrollIntoView({
-      // A jump in a 100+ card sitting should be immediate and dependable. A
-      // long smooth flight makes the producer wait through the list they were
-      // explicitly trying to skip.
-      behavior: "auto",
-      block: "start",
-    });
-    setActiveMovement(next);
-  }
-
-  function jumpToNextType(type: string) {
-    const later = items.findIndex((item, index) => index > activeIndex && movementType(item.decision) === type);
-    const first = items.findIndex((item) => movementType(item.decision) === type);
-    jumpTo(later >= 0 ? later : first);
-  }
-
-  return (
-    <nav
-      ref={navigatorRef}
-      className={`vt-jumpbar ${motion ? `is-moving-${motion}` : ""}`}
-      aria-label="Jump through this sitting"
-    >
-      <p
-        className="vt-jumpbar__position"
-        aria-label={`Movement ${activeIndex + 1} of ${items.length}`}
-        aria-live="polite"
-      >
-        <strong>{activeIndex + 1}</strong>
-        <span>/ {items.length}</span>
-        <span className={`vt-jumpbar__motion ${motion ? "is-visible" : ""}`}>
-          <svg className={motion === "down" ? "is-down" : ""} viewBox="0 0 24 24" aria-hidden="true">
-            <path d="M5 14l7-7 7 7" />
-          </svg>
-        </span>
-      </p>
-      <div className="vt-jumpbar__buttons">
-        <button
-          type="button"
-          className="is-edge"
-          aria-label="Start"
-          title="First movement"
-          onClick={() => jumpTo(0)}
-          disabled={activeIndex === 0}
-        >
-          <JumpIcon name="first" />
-        </button>
-        <button type="button" onClick={() => jumpTo(activeIndex - 1)} disabled={activeIndex === 0}>
-          <JumpIcon name="previous" />
-          <span>Previous</span>
-        </button>
-        <button type="button" onClick={() => jumpTo(activeIndex + 1)} disabled={activeIndex === items.length - 1}>
-          <JumpIcon name="next" />
-          <span>Next</span>
-        </button>
-        <button
-          type="button"
-          className="is-edge"
-          aria-label="End"
-          title="Last movement"
-          onClick={() => jumpTo(items.length - 1)}
-          disabled={activeIndex === items.length - 1}
-        >
-          <JumpIcon name="last" />
-        </button>
-      </div>
-      <label className="vt-jumpbar__select">
-        <select
-          aria-label="Jump to a movement, type, or song position"
-          value=""
-          onChange={(event) => {
-            const [kind, rawIndex] = event.target.value.split(":");
-            const index = Number(rawIndex);
-            if (kind === "type") jumpToNextType(movementTypes[index]!);
-            if (kind === "position" || kind === "movement") jumpTo(index);
-          }}
-        >
-          <option value="">Jump to movement, type, or position…</option>
-          <optgroup label="Next movement of type">
-            {movementTypes.map((type, index) => (
-              <option key={type} value={`type:${index}`}>{type}</option>
-            ))}
-          </optgroup>
-          {songPositions.length > 0 && (
-            <optgroup label="Song position">
-              {songPositions.map((item) => (
-                <option key={item.position} value={`position:${item.index}`}>{item.position}</option>
-              ))}
-            </optgroup>
-          )}
-          <optgroup label="Every movement">
-            {items.map((item, index) => (
-              <option key={item.domId} value={`movement:${index}`}>
-                {index + 1}. {formatClock(item.decision.atMs)} · {movementType(item.decision)} · {readableSubject(item.decision.subject)}
-              </option>
-            ))}
-          </optgroup>
-        </select>
-      </label>
-    </nav>
-  );
-}
+})
 
 /**
  * One sitting's work, in the order it is being read.
@@ -1573,14 +1680,136 @@ function SittingNavigator({ items }: { items: SittingNavigationItem[] }) {
  */
 type SittingReadMode = "time" | "track" | "type";
 
+type SittingNavigationItem = {
+  decision: ReportDecision;
+  domId: string;
+  positions: string[];
+};
+
+/** A local rail, owned by this sitting rather than the application's sidebar. */
+function TimelineLocation({ items }: { items: SittingNavigationItem[] }) {
+  const [activeIndex, setActiveIndex] = useState(0);
+  const distinctPositions = new Set(items.flatMap((item) => item.positions));
+  const hasUsefulPosition = items.length === 1
+    ? distinctPositions.size > 0
+    : distinctPositions.size > 1;
+
+  useEffect(() => {
+    let frame = 0;
+    const update = () => {
+      const readingLine = Math.min(Math.max(96, window.innerHeight * 0.2), 240);
+      const edgeSize = 180;
+      let closestIndex = 0;
+      let closestDistance = Number.POSITIVE_INFINITY;
+      items.forEach((item, index) => {
+        const card = document.getElementById(item.domId);
+        const rect = card?.getBoundingClientRect();
+        if (!rect || !card) return;
+
+        // A card should come into focus as it enters the reading viewport and
+        // recede as it leaves. The value is written directly on the card so
+        // hundreds of cards do not need to re-render on every scroll frame.
+        const leavingTop = Math.min(1, Math.max(0, (rect.bottom + 32) / edgeSize));
+        const arrivingBottom = Math.min(1, Math.max(0, (window.innerHeight - rect.top + 32) / edgeSize));
+        const edgeVisibility = Math.min(leavingTop, arrivingBottom);
+        card.style.setProperty("--vt-scroll-opacity", String(0.48 + edgeVisibility * 0.52));
+
+        const distance = rect.top > readingLine
+          ? rect.top - readingLine
+          : rect.bottom < readingLine
+            ? readingLine - rect.bottom
+            : 0;
+        if (distance < closestDistance) {
+          closestDistance = distance;
+          closestIndex = index;
+        }
+      });
+      items.forEach((item, index) => {
+        const card = document.getElementById(item.domId);
+        if (card) card.dataset.timelineActive = String(index === closestIndex);
+      });
+      setActiveIndex(closestIndex);
+    };
+    const schedule = () => {
+      if (frame !== 0) return;
+      frame = window.requestAnimationFrame(() => {
+        frame = 0;
+        update();
+      });
+    };
+    update();
+    // The app uses an internal scrolling pane, not the browser window. Scroll
+    // events do not bubble, but capture sees the pane as well as document
+    // scrolling, so the location marker cannot freeze on the first card.
+    document.addEventListener("scroll", schedule, { capture: true, passive: true });
+    window.addEventListener("resize", schedule, { passive: true });
+    return () => {
+      document.removeEventListener("scroll", schedule, true);
+      window.removeEventListener("resize", schedule);
+      if (frame !== 0) window.cancelAnimationFrame(frame);
+    };
+  }, [items]);
+
+  if (items.length === 0) return null;
+  const active = items[activeIndex] ?? items[0]!;
+  const jumpTo = (index: number) => {
+    const next = Math.max(0, Math.min(items.length - 1, index));
+    document.getElementById(items[next]!.domId)?.scrollIntoView({ behavior: "auto", block: "start" });
+    setActiveIndex(next);
+  };
+
+  return (
+    <aside className="vt-location" aria-label="Timeline location">
+      <span className="vt-location__label">Timeline location</span>
+      <strong>Movement {activeIndex + 1} / {items.length}</strong>
+      <span>{formatClock(active.decision.atMs)}</span>
+      {hasUsefulPosition && active.positions[0] && <span>{active.positions[0]}</span>}
+      <div className="vt-location__step">
+        <button type="button" onClick={() => jumpTo(activeIndex - 1)} disabled={activeIndex === 0}>Previous</button>
+        <button type="button" onClick={() => jumpTo(activeIndex + 1)} disabled={activeIndex === items.length - 1}>Next</button>
+      </div>
+    </aside>
+  );
+}
+
+/** Shared so "no evidence" is a stable reference too. */
+const EMPTY_EVIDENCE: ReportEvidence[] = [];
+
 function SittingWork({
   sitting,
-  evidenceFor,
+  meter,
 }: {
   sitting: SittingDepth;
-  evidenceFor: (decision: ReportDecision) => ReportEvidence[];
+  meter: SongPositionSource | null;
 }) {
   const [readMode, setReadMode] = useState<SittingReadMode>("time");
+
+  // Each decision's evidence, resolved once and kept.
+  //
+  // This used to be a function prop that built a fresh array per call, which
+  // meant every card received a new `evidence` array on every render — enough
+  // on its own to defeat MovementCard's memo and rebuild several hundred piano
+  // rolls for an unrelated state change. The arrays are derived from immutable
+  // report data, so computing them once is not a cache; it is just not doing
+  // the work repeatedly.
+  const evidenceByDecision = useMemo(() => {
+    const map = new Map<string, ReportEvidence[]>();
+    for (const decision of sitting.report.decisions) {
+      map.set(
+        decision.id,
+        decision.evidenceIds
+          .map((id) => sitting.report.evidence[id])
+          .filter((row): row is ReportEvidence => row !== undefined),
+      );
+    }
+    return map;
+  }, [sitting.report]);
+
+  const evidenceFor = useCallback(
+    (decision: ReportDecision) => evidenceByDecision.get(decision.id) ?? EMPTY_EVIDENCE,
+    [evidenceByDecision],
+  );
+
   const navigationScope = useId().replace(/:/g, "");
   const decisions = sitting.report.decisions;
   const trail = useMemo(() => sittingTrail(decisions, sitting.saves), [decisions, sitting.saves]);
@@ -1619,13 +1848,18 @@ function SittingWork({
       .filter((position): position is string => Boolean(position))
       .map(readablePosition))],
   }));
+  const distinctSongPositions = new Set(navigationItems.flatMap((item) => item.positions));
+  // One recorded movement still needs its location. Repetition is noise only
+  // when a return has several movements that all report the same position.
+  const showSongPositions = navigationItems.length === 1 || distinctSongPositions.size > 1;
 
   if (decisions.length === 0 && sitting.saves.length === 0) {
     return <p className="vt-depth__empty">This sitting captured no work.</p>;
   }
 
   return (
-    <>
+    <div className="vt-trail-layout">
+      <div className="vt-trail-layout__content">
       <div className="vt-trail-controls">
         <span className="vt-trail-controls__label">Read</span>
         <div className="vt-trail-toggle" role="group" aria-label="How to read this sitting">
@@ -1656,8 +1890,6 @@ function SittingWork({
         </div>
       </div>
 
-      <SittingNavigator key={readMode} items={navigationItems} />
-
       {readMode !== "time" ? (
         <ol
           className={`vt-track-groups ${readMode === "type" ? "vt-type-groups" : ""}`}
@@ -1668,8 +1900,10 @@ function SittingWork({
           {displayedGroups.map((group) => (
             <li key={group.key}>
               <p className={`vt-track-groups__head ${readMode === "type" ? "vt-type-groups__head" : ""}`}>
-                <span>{group.label}</span>
-                <span>{group.decisions.length}</span>
+                <span className="vt-track-groups__label">{group.label}</span>
+                <span className="vt-track-groups__count">
+                  {group.decisions.length} {group.decisions.length === 1 ? "movement" : "movements"}
+                </span>
               </p>
               <ol className="vt-movements">
                 {group.decisions.map((decision) => (
@@ -1677,7 +1911,9 @@ function SittingWork({
                     key={decision.id}
                     decision={decision}
                     evidence={evidenceFor(decision)}
+                    meter={meter}
                     domId={domIdFor(decision)}
+                    showSongPositions={showSongPositions}
                   />
                 ))}
               </ol>
@@ -1693,7 +1929,9 @@ function SittingWork({
                   key={entry.key}
                   decision={entry.decision}
                   evidence={evidenceFor(entry.decision)}
+                    meter={meter}
                   domId={domIdFor(entry.decision)}
+                  showSongPositions={showSongPositions}
                 />
               );
             }
@@ -1710,19 +1948,32 @@ function SittingWork({
                 </li>
               );
             }
+            if (entry.kind === "gap") {
+              return (
+                // A break that names what it removed is honest; even spacing
+                // that hides twenty minutes is not.
+                <li key={entry.key} className="vt-trail-gap">
+                  <span aria-hidden="true" />
+                  <span>{gapLabel(entry.durationMs)} with nothing captured</span>
+                  <span aria-hidden="true" />
+                </li>
+              );
+            }
             return (
-              // A break that names what it removed is honest; even spacing that
-              // hides twenty minutes is not.
-              <li key={entry.key} className="vt-trail-gap">
-                <span aria-hidden="true" />
-                <span>{gapLabel(entry.durationMs)} with nothing captured</span>
-                <span aria-hidden="true" />
+              // Where the producer moved their attention. Quieter than a gap or
+              // a save, because it did not interrupt the work — it is a place to
+              // hold your position in a long run, not an event.
+              <li key={entry.key} className="vt-trail-focus">
+                <span className="vt-trail-focus__track">{entry.track}</span>
+                <span className="vt-trail-focus__rule" aria-hidden="true" />
               </li>
             );
           })}
         </ol>
       )}
-    </>
+      </div>
+      <TimelineLocation key={readMode} items={navigationItems} />
+    </div>
   );
 }
 
@@ -1734,7 +1985,14 @@ function SittingWork({
  * last. Flattening them into a single chronological list was the old behaviour
  * and it hid the boundaries that make a version legible.
  */
-function SittingsBlock({ sittings }: { sittings: SittingDepth[] }) {
+function SittingsBlock({
+  sittings,
+  meter,
+}: {
+  sittings: SittingDepth[];
+  /** The set's time signature, so positions read in bars rather than beats. */
+  meter: SongPositionSource | null;
+}) {
   return (
     <section className="vt-depth__sittings" aria-label="Sittings in this version, in detail">
       {sittings.length === 0 ? (
@@ -1778,14 +2036,7 @@ function SittingsBlock({ sittings }: { sittings: SittingDepth[] }) {
                     </span>
                   </summary>
                   <div className="vt-sittings__body">
-                    <SittingWork
-                      sitting={sitting}
-                      evidenceFor={(decision) =>
-                        decision.evidenceIds
-                          .map((id) => sitting.report.evidence[id])
-                          .filter((row): row is ReportEvidence => row !== undefined)
-                      }
-                    />
+                    <SittingWork sitting={sitting} meter={meter} />
                   </div>
                 </details>
               </li>
@@ -1802,7 +2053,7 @@ function VersionDetail({
   parent,
 }: {
   selected: ProjectVersion;
-  parent: { name: string; sessionId: string | null } | null;
+  parent: SelectedVersionParent | null;
 }) {
   const sessionIds = selected.sessions.map((session) => session.id);
   const depthKey = `${sessionIds.join("|")}::${parent?.sessionId ?? ""}`;
@@ -1879,20 +2130,11 @@ function VersionDetail({
             ? "No captured returns"
             : `${returnCount} ${returnCount === 1 ? "return" : "returns"}, move by move`}
         </h2>
-        <p>
-          {depth.diff.status === "root" && (
-            <span className="vt-depth__origin">First captured version</span>
-          )}
-          Choose a return, then follow every captured control, track, and song position in order.
-        </p>
+        <p>Choose a return, then follow every captured control, track, and song position in order.</p>
       </header>
 
-      {/* The root version has nothing to diff against, and a column saying so
-          costs a third of the width to deliver one sentence. It moves up into
-          the header, where one sentence belongs. */}
-      <div className={`vt-depth__grid ${depth.diff.status === "root" ? "is-rootless" : ""}`}>
-        {depth.diff.status !== "root" && <DiffBlock depth={depth} />}
-        <SittingsBlock sittings={depth.sittings} />
+      <div className="vt-depth__grid">
+        <SittingsBlock meter={depth.meter} sittings={depth.sittings} />
       </div>
     </section>
   );
@@ -1910,7 +2152,11 @@ export function VersionTimelineScreen({
     () => projects.find((candidate) => candidate.id === projectId) ?? projects[0] ?? null,
     [projects, projectId],
   );
-  const versions = useMemo(() => projectVersions(project?.captures ?? []), [project]);
+  const fileAges = useAlsFileAges(project?.captures ?? []);
+  const versions = useMemo(
+    () => projectVersions(project?.captures ?? [], fileAges),
+    [project, fileAges],
+  );
   const saves = useObservedSaves(versions);
   const nodes = useMemo(() => versionGraph(versions, saves), [versions, saves]);
   const newest = useMemo(() => latestVersion(versions), [versions]);
@@ -1941,7 +2187,10 @@ export function VersionTimelineScreen({
     if (!selectedNode?.parentId) return null;
     const parent = versions.find((version) => version.id === selectedNode.parentId);
     if (!parent) return null;
-    return { name: versionLabel(parent), sessionId: latestSitting(parent) };
+    return {
+      name: versionLabel(parent),
+      sessionId: latestSitting(parent),
+    };
   }, [selectedNode?.parentId, versions]);
 
   if (projects.length === 0) {

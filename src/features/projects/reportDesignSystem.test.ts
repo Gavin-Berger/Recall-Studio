@@ -190,6 +190,19 @@ describe("version timeline · producer-readable work trail", () => {
     return timeline.match(new RegExp(`${escaped}\\s*\\{[^}]*\\}`))?.[0] ?? "";
   }
 
+  it("keeps the graph and retrace on the same centered reading measure", () => {
+    expect(rule(".vt")).toMatch(/--vt-reading-width:\s*1080px/);
+    expect(timeline).toMatch(/\.vt__surface\s*\{[^}]*max-width:\s*var\(--vt-reading-width\)/);
+    expect(timeline).toMatch(/\.vt__surface\s*\{[^}]*margin-inline:\s*auto/);
+    expect(rule(".vt__surface-head")).toMatch(/max-width:\s*none/);
+    expect(rule(".vt__body")).toMatch(
+      /grid-template-columns:\s*minmax\(520px, 2fr\) minmax\(360px, 1fr\)/,
+    );
+    expect(rule(".vt__body")).toMatch(/max-width:\s*none/);
+    expect(rule(".vt-depth")).toMatch(/max-width:\s*var\(--vt-reading-width\)/);
+    expect(rule(".vt-depth__head")).not.toMatch(/border-left:/);
+  });
+
   it("makes every movement card's subject and result readable body text", () => {
     expect(rule(".vt-movement-card__head h4")).toMatch(/color:\s*var\(--paper-strong\)/);
     expect(rule(".vt-movement-card__head h4")).toMatch(/font-size:\s*var\(--t-body\)/);
@@ -200,8 +213,44 @@ describe("version timeline · producer-readable work trail", () => {
   it("lays track, result, and movement count out as labelled facts", () => {
     const facts = rule(".vt-movement-card__facts");
     expect(facts).toMatch(/display:\s*grid/);
-    expect(facts).toMatch(/grid-template-columns:/);
+    expect(facts).toMatch(/grid-template-columns:\s*1fr/);
     expect(timeline).toMatch(/\.vt-movement-card__facts dt[\s\S]*?color:\s*var\(--muted\)/);
+  });
+
+  it("aligns the icon, title, facts, and visual on one explicit card grid", () => {
+    expect(rule(".vt-movement-card__content")).toMatch(
+      /grid-template-columns:\s*44px minmax\(190px, 248px\) minmax\(240px, 520px\)/,
+    );
+    expect(rule(".vt-movement-card__identity")).toMatch(
+      /grid-template-columns:\s*44px minmax\(0, 1fr\)/,
+    );
+    expect(rule(".vt-movement-card__facts")).toMatch(/grid-column:\s*2/);
+    expect(timeline).toMatch(
+      /\.vt-movement-card__content > \.vt-shape,[\s\S]*?grid-column:\s*3/,
+    );
+    expect(rule(".vt-movement-card__positions")).toMatch(/grid-column:\s*2 \/ -1/);
+  });
+
+  it("shows sound parameters as knobs and mix levels as monochrome vertical meters", () => {
+    expect(rule(".vt-shape--scalar")).toMatch(/display:\s*inline-flex/);
+    expect(rule(".vt-scalar__knob")).toMatch(/width:\s*78px/);
+    expect(rule(".vt-scalar__knob-travel")).toMatch(/stroke:/);
+    expect(rule(".vt-scalar__knob-hand.is-from")).toMatch(/stroke-dasharray:/);
+    expect(rule(".vt-scalar__knob-hand.is-to")).toMatch(/stroke-width:\s*3/);
+    expect(rule(".vt-scalar__meter")).toMatch(/grid-template-rows:\s*auto 104px auto/);
+    expect(rule(".vt-scalar__meter-rail")).toMatch(/height:\s*104px/);
+    expect(rule(".vt-scalar__meter-comparison")).toMatch(/display:\s*flex/);
+    expect(rule(".vt-scalar__meter-fill.is-after")).toMatch(/var\(--paper-strong\)/);
+    expect(timeline).toMatch(/\.vt-scalar__meter-change\s*\{\s*z-index:[\s\S]*?min-height:\s*6px/);
+    expect(timeline).not.toContain(".vt-scalar__track");
+  });
+
+  it("draws captured frequencies on a logarithmic Hz scale", () => {
+    expect(rule(".vt-shape--frequency")).toMatch(/display:\s*grid/);
+    expect(rule(".vt-frequency__scale")).toMatch(/position:\s*relative/);
+    expect(rule(".vt-frequency__range")).toMatch(/position:\s*absolute/);
+    expect(rule(".vt-frequency__marker.is-before")).toMatch(/background:\s*var\(--faint-aa\)/);
+    expect(rule(".vt-frequency__marker.is-after")).toMatch(/background:\s*var\(--paper-strong\)/);
   });
 
   it("separates song position and expandable raw evidence from the result", () => {
@@ -212,6 +261,53 @@ describe("version timeline · producer-readable work trail", () => {
     expect(rule(".vt-movement-card__evidence-detail")).toMatch(/font-size:\s*var\(--t-meta\)/);
   });
 
+  it("uses one static reading highlight while preserving a keyboard focus ring", () => {
+    expect(rule(".vt-movement-card")).not.toMatch(/transition:/);
+    expect(rule(".vt-movement-card:focus-within")).toMatch(/outline:\s*2px solid var\(--signal\)/);
+    expect(timeline).not.toMatch(/\.vt-movement-card:hover[\s\S]*?translateY/);
+    expect(rule(".vt-movement-card")).toMatch(/opacity:\s*var\(--vt-scroll-opacity, 1\)/);
+    const active = rule('.vt-movement-card[data-timeline-active="true"]');
+    expect(active).toMatch(/border-color:\s*rgb\(var\(--signal-rgb\) \/ 0\.72\)/);
+    expect(active).toMatch(/inset 3px 0 0 var\(--signal\)/);
+  });
+
+  it("keeps long-sitting navigation out of the timeline card lane", () => {
+    expect(timeline).not.toMatch(/\.vt-navigator/);
+    expect(timeline).not.toMatch(/\.vt-jumpbar/);
+    expect(rule(".vt-trail-layout")).toMatch(/grid-template-columns:\s*minmax\(0, 1fr\) 164px/);
+    expect(rule(".vt-location")).toMatch(/position:\s*sticky/);
+    expect(timeline).not.toMatch(/Jump to a movement in this timeline/);
+  });
+
+  it("does not turn the after state of a mode into a badge or headline", () => {
+    const after = rule(".vt-enum__is");
+    expect(after).toMatch(/font-weight:\s*400/);
+    expect(after).not.toMatch(/background:/);
+    expect(after).not.toMatch(/border:/);
+  });
+
+  it("does not give set administration a misleading song position", () => {
+    const screen = readFileSync(
+      fileURLToPath(new URL("./VersionTimelineScreen.tsx", import.meta.url)),
+      "utf8",
+    );
+    expect(screen).toMatch(/isSetAdministration[\s\S]*?\btrack\|device\b/);
+    expect(screen).toMatch(/showTopLevelPositions = showSongPositions && !isSetAdministration/);
+  });
+
+  it("uses icon luminance rather than category colour or pill badges", () => {
+    expect(timeline).not.toMatch(/data-work-kind=["'][^"']+["']\]\s*\{[^}]*--vt-card-accent/);
+    expect(timeline).toMatch(
+      /\.vt-movement-card__kind,\s*\.vt-movement-card__shape-badge\s*\{[^}]*border:\s*0/,
+    );
+    expect(timeline).toMatch(
+      /\.vt-movement-card__icon\.is-midi,\s*\.vt-movement-card__icon\.is-clip\s*\{[^}]*color:\s*var\(--paper-strong\)/,
+    );
+    expect(timeline).toMatch(
+      /\.vt-movement-card__icon\.is-structure,\s*\.vt-movement-card__icon\.is-moment\s*\{[^}]*color:\s*var\(--muted\)/,
+    );
+  });
+
   it("draws MIDI before and after on one shared pitch scale", () => {
     expect(rule(".vt-midi-scale__row")).toMatch(/display:\s*grid/);
     expect(rule(".vt-midi-scale__lane")).toMatch(/repeating-linear-gradient/);
@@ -220,12 +316,46 @@ describe("version timeline · producer-readable work trail", () => {
   });
 
   it("draws exact MIDI notes across pitch and beat when the snapshot exists", () => {
-    expect(rule(".vt-midi-pattern__row")).toMatch(/display:\s*grid/);
     expect(rule(".vt-midi-pattern__row svg")).toMatch(
-      /height:\s*clamp\(96px,\s*7vw,\s*124px\)/,
+      /height:\s*clamp\(176px,\s*13vw,\s*232px\)/,
     );
-    expect(rule(".vt-midi-pattern rect.is-before")).toMatch(/stroke:\s*var\(--muted\)/);
-    expect(rule(".vt-midi-pattern rect.is-after")).toMatch(/fill:\s*var\(--paper-strong\)/);
+    expect(rule(".vt-midi-roll__key.is-white")).toMatch(/fill:/);
+    expect(rule(".vt-midi-roll__key.is-black")).toMatch(/fill:/);
+    expect(rule(".vt-midi-roll__note.is-before")).toMatch(/stroke:/);
+    expect(rule(".vt-midi-roll__note.is-after")).toMatch(/fill:/);
     expect(rule(".vt-midi-note-list li")).toMatch(/flex-wrap:\s*wrap/);
+  });
+});
+
+// ── Scroll cost, everywhere a long list is rendered ────────────────────────
+//
+// The report banned transitioned box-shadows because the compositor cannot
+// animate one — every frame repaints the element. That rule was scoped to the
+// report stylesheet, so when the Timeline grew a card list it reintroduced the
+// same bug, plus `will-change: transform` on a row that renders about 400 times
+// in one version. Both are only a problem at volume, which is exactly when
+// nobody is looking at the stylesheet.
+const LIST_HEAVY_STYLESHEETS = [
+  "./SessionRecapScreen.css",
+  "./VersionTimelineScreen.css",
+  "./ProjectHistoryScreen.css",
+  "../../components/schema/SchemaTimeline.css",
+];
+
+describe("long lists · scroll cost", () => {
+  it.each(LIST_HEAVY_STYLESHEETS)("never transitions box-shadow in %s", (relative) => {
+    const sheet = readFileSync(fileURLToPath(new URL(relative, import.meta.url)), "utf8")
+      .replace(/\/\*[\s\S]*?\*\//g, "");
+    const offenders = [...sheet.matchAll(/transition:[^;]*box-shadow[^;]*;/g)].map((m) => m[0]);
+    expect(offenders).toEqual([]);
+  });
+
+  it.each(LIST_HEAVY_STYLESHEETS)("does not promote repeated rows to layers in %s", (relative) => {
+    // `will-change` is for the one element about to animate. On a list item it
+    // multiplies by the row count: 400 rows, 400 compositor layers.
+    const sheet = readFileSync(fileURLToPath(new URL(relative, import.meta.url)), "utf8")
+      .replace(/\/\*[\s\S]*?\*\//g, "");
+    const offenders = [...sheet.matchAll(/will-change:\s*(?!auto)[^;]+;/g)].map((m) => m[0]);
+    expect(offenders).toEqual([]);
   });
 });

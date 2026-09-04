@@ -35,7 +35,7 @@ function track(name: string, devices: DeviceObj[]): TrackObj {
 }
 
 function schema(tracks: TrackObj[]): ProjectSchema {
-  return { session_id: "s1", name: "nightfall", has_snapshot: true, tracks };
+  return { session_id: "s1", name: "nightfall", has_snapshot: true, signature_numerator: 4, signature_denominator: 4, meter_changed: false, tracks };
 }
 
 const drumRack: RackObj = {

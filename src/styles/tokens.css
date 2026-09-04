@@ -29,6 +29,9 @@
   --signal-soft: #c6c0ff;
   --signal-bright: #e3e0ff;
   --focus-rgb: 177 169 255;
+  /* Channels for the places that need to tint the accent rather than use it
+     flat — an icon wash, a hover ring. Same colour, one definition. */
+  --moment-rgb: 227 182 103;
   --moment: #e3b667; /* the producer's pinned mark â€” the one warm accent */
   --danger: #dc5a6a; /* error / destructive state only */
 

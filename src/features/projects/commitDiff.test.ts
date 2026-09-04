@@ -36,7 +36,7 @@ function track(name: string, devices: string[] = []): TrackObj {
 }
 
 function schema(tracks: TrackObj[], hasSnapshot = true): ProjectSchema {
-  return { session_id: "s", name: "nightfall", has_snapshot: hasSnapshot, tracks };
+  return { session_id: "s", name: "nightfall", has_snapshot: hasSnapshot, signature_numerator: 4, signature_denominator: 4, meter_changed: false, tracks };
 }
 
 describe("commitDiff", () => {

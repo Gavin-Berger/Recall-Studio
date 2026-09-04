@@ -36,7 +36,23 @@ export type ProjectVersion = {
   /** Sessions that recorded at least one event, oldest first. */
   recordedSessions: SavedSessionMetadata[];
   /** When the first capture against this file began. */
+  /**
+   * The earliest proof this version existed.
+   *
+   * The first capture on it when that is all Recall has, and the FILE'S OWN
+   * creation time when the file is older — which it is for anything made before
+   * Recall was installed or before capture was switched on.
+   */
   startedAtMs: number;
+  /**
+   * True when the file predates Recall's first capture on it.
+   *
+   * Recall was not present when this version appeared, so nothing it observed
+   * can say where the version came from. The graph must not claim a parent from
+   * activity for these — "you were working in X when Y appeared" is false when
+   * Y already existed.
+   */
+  predatesCapture: boolean;
   /** The last moment any capture against this file was updated. */
   lastUpdatedAtMs: number;
   /** Total events across every sitting. */
@@ -79,7 +95,19 @@ function versionName(sessions: SavedSessionMetadata[]): string {
  * project's history in the order it happened. Sessions inside a version keep
  * the same ordering for the same reason.
  */
-export function projectVersions(sessions: SavedSessionMetadata[]): ProjectVersion[] {
+/**
+ * When each `.als` was made, keyed by normalised path.
+ *
+ * Optional throughout: without it every version falls back to its first capture,
+ * which is what the app did before and is still correct for files Recall watched
+ * being created.
+ */
+export type AlsFileAges = Map<string, number>;
+
+export function projectVersions(
+  sessions: SavedSessionMetadata[],
+  fileTimes?: AlsFileAges,
+): ProjectVersion[] {
   const groups = new Map<string, SavedSessionMetadata[]>();
 
   for (const session of sessions) {
@@ -94,13 +122,33 @@ export function projectVersions(sessions: SavedSessionMetadata[]): ProjectVersio
     .map(([key, group]): ProjectVersion => {
       const ordered = [...group].sort((a, b) => a.started_at_ms - b.started_at_ms);
       const first = ordered[0]!;
+      const alsPath = normalizeAlsPath(first.als_path);
+
+      // WHEN DID THIS VERSION APPEAR?
+      //
+      // It used to be "when Recall's first capture on it began", which is a
+      // birth date only if Recall was watching when the file was made.
+      //
+      // Real case: `Breaking Point.als` was created Aug 01 at 01:06 and
+      // `Breaking Point v2 mixdown.als` at 02:05, an hour later. Recall met both
+      // on Aug 11 — v2 at 20:14, the original at 20:15 — and from that one
+      // minute concluded that v2 was the PARENT of the file it was saved from.
+      // The lineage was stated backwards and the producer knew it was wrong.
+      //
+      // The filesystem knew all along. Where it is older, it wins.
+      const fileMs = alsPath ? fileTimes?.get(alsPath) ?? null : null;
+      const startedAtMs = fileMs !== null && fileMs < first.started_at_ms
+        ? fileMs
+        : first.started_at_ms;
+
       return {
         id: key,
         name: versionName(ordered),
-        alsPath: normalizeAlsPath(first.als_path),
+        alsPath,
         sessions: ordered,
         recordedSessions: ordered.filter((session) => session.event_count > 0),
-        startedAtMs: first.started_at_ms,
+        startedAtMs,
+        predatesCapture: fileMs !== null && fileMs < first.started_at_ms,
         lastUpdatedAtMs: Math.max(...ordered.map((session) => session.last_updated_at_ms)),
         eventCount: ordered.reduce((total, session) => total + session.event_count, 0),
         creativeEventCount: ordered.reduce((total, session) => total + session.creative_event_count, 0),

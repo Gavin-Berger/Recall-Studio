@@ -205,7 +205,7 @@ const currentTracks = [
 ];
 
 function schema(sessionId: string, tracks: TrackObj[]): ProjectSchema {
-  return { session_id: sessionId, name: "Nightdrive", has_snapshot: true, tracks };
+  return { session_id: sessionId, name: "Nightdrive", has_snapshot: true, signature_numerator: 4, signature_denominator: 4, meter_changed: false, tracks };
 }
 
 const currentChanges = [

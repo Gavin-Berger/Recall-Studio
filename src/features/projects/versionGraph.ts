@@ -356,6 +356,24 @@ function pickParent(
   const observed = observedParent(child, earlier, saves);
   if (observed) return { parent: observed, basis: "observed" };
 
+  // RECALL WAS NOT THERE WHEN THIS ONE APPEARED.
+  //
+  // The activity rule reads "you were working in X when Y appeared", and that
+  // sentence is only true if Recall watched Y appear. For a file older than the
+  // first capture on it — anything made before the install, or before capture
+  // was switched on — Y did not appear at all; it was already sitting on disk.
+  //
+  // A real case stated the lineage backwards because of this: two files created
+  // an hour apart on Aug 01, both first seen on Aug 11 sixty seconds apart, and
+  // the graph made the LATER file the parent of the earlier one.
+  //
+  // The filename is still fair evidence — it is a claim the producer made, not
+  // one Recall invented — so only the activity inference is withheld.
+  if (child.version.predatesCapture) {
+    const named = filenameParent(child, earlier);
+    return named ? { parent: named, basis: "filename" } : null;
+  }
+
   const worked = recentlyWorked(child, earlier);
   const named = filenameParent(child, earlier);
 

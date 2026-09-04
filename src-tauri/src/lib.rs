@@ -14,7 +14,7 @@ use planner::PlannerTask;
 use protocol::RecallEvent;
 use schema_projection::{
     CreativeMoment, CreativeMomentTarget, NoteEdit, ObservedSave, ParameterChange, ProjectSchema,
-    TimelineClipEvent,
+    TimelineClipEvent, VersionBundle,
 };
 use session::{
     ProjectFolderMetadata, SavedProject, SavedSession, SavedSessionMetadata, SessionState,
@@ -2060,6 +2060,79 @@ fn get_note_edits(state: State<'_, AppState>, session_id: String) -> Result<Vec<
     storage.get_note_edits(&session_id)
 }
 
+/// When each `.als` was actually made, straight off the filesystem.
+///
+/// WHY THIS EXISTS. A version's "birth" was the moment Recall's first capture on
+/// it began, which is only a birth date if Recall was watching when the file was
+/// created. For a set that predates the install — or predates the day capture
+/// was switched on — it is just "when I first met this file".
+///
+/// A real case: `Breaking Point.als` was created Aug 01 at 01:06 and
+/// `Breaking Point v2 mixdown.als` at 02:05, an hour later. Recall met both on
+/// Aug 11, seeing v2 at 20:14 and the original at 20:15, and concluded from that
+/// one minute that v2 was the PARENT of the file it was saved from. The graph
+/// stated the lineage backwards, and the producer knew it was wrong.
+///
+/// The filesystem holds the answer and never moved. Read live rather than
+/// stored: a file's age is a fact about the disk, and copying or restoring a set
+/// changes it, so a cached copy would go stale silently.
+/// A set file's own timestamps. Absent when the file has been moved or deleted,
+/// which is a fact worth reporting rather than papering over.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct AlsFileTimes {
+    pub path: String,
+    pub created_ms: Option<u64>,
+    pub modified_ms: Option<u64>,
+}
+
+#[tauri::command]
+fn get_als_file_times(
+    state: State<'_, AppState>,
+    paths: Vec<String>,
+) -> Result<Vec<AlsFileTimes>, String> {
+    // Only files Recall already knows about.
+    //
+    // The command takes whatever the webview sends and stats it. In a local app
+    // the webview is trusted, but an unconstrained filesystem stat is a general
+    // existence-and-timestamp oracle reachable from page script, and the caller
+    // only ever asks about paths that came out of `sessions.als_path`. Holding
+    // it to that costs nothing and removes the surface.
+    let known: std::collections::HashSet<String> = {
+        let storage = state.storage.lock().expect("Storage state lock failed");
+        storage
+            .list_saved_sessions()?
+            .into_iter()
+            .filter_map(|session| session.als_path)
+            .collect()
+    };
+
+    Ok(paths
+        .into_iter()
+        .filter(|path| known.contains(path))
+        .map(|path| {
+            let stamps = std::fs::metadata(&path).ok().map(|meta| {
+                let to_ms = |time: std::io::Result<std::time::SystemTime>| {
+                    time.ok()
+                        .and_then(|value| value.duration_since(std::time::UNIX_EPOCH).ok())
+                        .map(|since| since.as_millis() as u64)
+                };
+                (to_ms(meta.created()), to_ms(meta.modified()))
+            });
+            let (created_ms, modified_ms) = stamps.unwrap_or((None, None));
+            AlsFileTimes { path, created_ms, modified_ms }
+        })
+        .collect())
+}
+
+#[tauri::command]
+fn load_version_bundle(
+    state: State<'_, AppState>,
+    session_ids: Vec<String>,
+) -> Result<VersionBundle, String> {
+    let storage = state.storage.lock().expect("Storage state lock failed");
+    storage.load_version_bundle(&session_ids)
+}
+
 #[tauri::command]
 fn get_observed_saves(
     state: State<'_, AppState>,
@@ -2404,6 +2477,8 @@ pub fn run() {
             get_note_edits,
             get_timeline_clip_events,
             get_observed_saves,
+            load_version_bundle,
+            get_als_file_times,
             list_creative_moments,
             create_creative_moment,
             update_creative_moment,

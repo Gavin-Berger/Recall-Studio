@@ -2,12 +2,13 @@ import {
   getNoteEdits,
   getParameterChanges,
   getProjectSchema,
-  getObservedSaves,
   getTimelineClipEvents,
+  loadVersionBundleRows,
   listCreativeMoments,
   loadSessionEvents,
   materializeSessionSchema,
 } from "../../lib/schema/api";
+import type { StoredCaptureBundle } from "../../lib/schema/api";
 import {
   buildVersionReport,
   type SessionReport,
@@ -19,6 +20,24 @@ import {
   reportPreviewInput,
 } from "./sessionReportPreview";
 import { buildVersionDepth, type VersionDepth } from "./versionDepth";
+
+/**
+ * Rename only.
+ *
+ * The bundle's fields are snake_case because they cross from Rust; the report
+ * model is camelCase. Nothing is dropped, defaulted or reshaped — a batch read
+ * that also trims is how a read path quietly starts losing information.
+ */
+function asReportInput(capture: StoredCaptureBundle): SessionReportInput {
+  return {
+    session: capture.session,
+    schema: capture.schema,
+    changes: capture.changes,
+    noteEdits: capture.note_edits,
+    clipEvents: capture.clip_events,
+    moments: capture.moments,
+  };
+}
 
 async function loadCapture(sessionId: string): Promise<SessionReportInput> {
   await materializeSessionSchema(sessionId);
@@ -68,17 +87,27 @@ export async function loadVersionDepth(
     });
   }
 
-  const [captures, parentCapture, saves] = await Promise.all([
-    Promise.all(sessionIds.map(loadCapture)),
-    parent?.sessionId ? loadCapture(parent.sessionId) : Promise.resolve(null),
-    // One query for the whole version rather than one per sitting: the rows
-    // carry their own session_id, so the split happens in the model.
-    getObservedSaves(sessionIds).catch(() => []),
+  // Two crossings for the whole version: its own captures, and the parent's
+  // final sitting for the diff. It was six per capture plus one — 71 for a
+  // nine-capture version, each with its own serialize, bridge hop and parse.
+  const [bundle, parentBundle] = await Promise.all([
+    loadVersionBundleRows(sessionIds),
+    parent?.sessionId
+      ? loadVersionBundleRows([parent.sessionId])
+      : Promise.resolve(null),
   ]);
 
   return buildVersionDepth({
-    captures,
-    parent: parent ? { name: parent.name, capture: parentCapture } : null,
-    saves: saves.map((save) => ({ sessionId: save.session_id, savedAtMs: save.saved_at_ms })),
+    captures: bundle.captures.map(asReportInput),
+    parent: parent
+      ? {
+          name: parent.name,
+          capture: parentBundle?.captures[0] ? asReportInput(parentBundle.captures[0]) : null,
+        }
+      : null,
+    saves: bundle.saves.map((save) => ({
+      sessionId: save.session_id,
+      savedAtMs: save.saved_at_ms,
+    })),
   });
 }

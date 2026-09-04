@@ -137,3 +137,52 @@ def test_project_save_requires_the_same_als_file_to_change(tmp_path):
     assert emitted[0][0] == "project_saved"
     assert emitted[0][1]["project_path"].endswith("Hit.als")
     assert emitted[0][1]["save_detection"] == "als_file_modified"
+
+
+def test_reading_notes_actually_returns_notes():
+    """THE REGRESSION THIS PINS.
+
+    `_read_notes` was a @staticmethod when read-timing instrumentation was added
+    to it, so every `self._record_note_read(...)` raised NameError. The broad
+    `except Exception` around each API generation swallowed it, all three read
+    paths fell through, and the method returned None for every clip on earth.
+
+    No fingerprint, no note edits, no error in any log. MIDI capture — the core
+    of the product — was silently dead for a whole session before a live test
+    caught it. The unit test that existed only exercised `_record_note_read`
+    directly and never went through `_read_notes`, which is exactly how the
+    breakage got past it.
+    """
+    recall = Recall.__new__(Recall)
+    recall._slowest_note_read_ms = 0.0
+    recall._slowest_note_read_count = 0
+
+    class Clip:
+        length = 4.0
+
+        def get_all_notes_extended(self):
+            return [(60, 0.0, 1.0, 100, False)]
+
+    notes = recall._read_notes(Clip())
+
+    assert notes is not None, "a readable clip must never read as no notes at all"
+    assert len(notes) == 1
+    assert notes[0]["pitch"] == 60
+
+
+def test_a_clip_with_no_notes_reads_as_empty_not_as_failure():
+    """Empty and unreadable are different facts. Returning None for an empty
+    clip would make "you deleted every note" indistinguishable from "the read
+    broke".
+    """
+    recall = Recall.__new__(Recall)
+    recall._slowest_note_read_ms = 0.0
+    recall._slowest_note_read_count = 0
+
+    class Empty:
+        length = 4.0
+
+        def get_all_notes_extended(self):
+            return []
+
+    assert recall._read_notes(Empty()) == []

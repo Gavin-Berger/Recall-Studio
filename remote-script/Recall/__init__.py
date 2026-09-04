@@ -258,12 +258,31 @@ def _is_automatic_track_number_adjustment(
     current_number = int(after.group(1))
     if previous_number == current_number:
         return False
-    if previous_index is None or current_index is None:
+
+    # WAS THE PREFIX A POSITION AT ALL?
+    #
+    # That is the real question, and it is answered by the name the track HAD.
+    # "10-Serum 2" sitting tenth is Live's numbering; "808 Bass" sitting fifth is
+    # a sound with a number in its name, and renaming it to "909 Bass" is a
+    # producer decision that must survive.
+    #
+    # Requiring BOTH indices to line up was too strict and cost real accuracy:
+    # 318 of 386 captured renames in the live library changed only the leading
+    # number — "14-MIDI" to "3-MIDI" — and were emitted as producer renames
+    # because the NEW index could not be confirmed. The caller leaves
+    # `current_index` at its old value whenever it cannot re-find the track,
+    # which is exactly the moment Live renumbers: a lane above was removed or
+    # moved.
+    #
+    # So the old position is the evidence, and the new one is corroboration when
+    # it is available.
+    if previous_index is None:
         return False
-    return (
-        previous_number == int(previous_index) + 1
-        and current_number == int(current_index) + 1
-    )
+    if previous_number != int(previous_index) + 1:
+        return False
+    if current_index is not None and current_index != previous_index:
+        return current_number == int(current_index) + 1
+    return True
 
 
 def _track_structure_events(previous, current):
@@ -501,6 +520,19 @@ THAW_SETTLE_SEC = 0.5
 # "before" instead of a pre-load reading.
 MIXER_SETTLE_SEC = 2.5
 
+# The same idea for the song's own properties, for the same reason.
+#
+# Live reports `groove_amount` as 1.0 when the context listeners attach and then
+# settles it to the set's real 0.0 a moment later. That reads as a producer
+# change, and it is not: every one of the 29 `groove_changed` events in a real
+# library is the identical 1.0 -> 0.0, none of them anything else, all within
+# seconds of the bridge attaching or reattaching. Scale, meter and swing arrive
+# the same way.
+#
+# The seed is still kept current through the window, so the producer's first
+# real change still reports a true "before".
+SONG_CONTEXT_SETTLE_SEC = 2.5
+
 # One Live operation touching every channel at once is not seven decisions.
 #
 # The settle window above only covers bursts that follow a listener rebuild.
@@ -612,13 +644,33 @@ ROUTING_PROPERTIES = (
 # 0.7.2 ignores transient Python identities for routing-channel objects. A
 # listener refresh must not turn an unchanged set-wide routing snapshot into
 # dozens of claimed producer actions.
+# 0.11.3 gives the song's own properties the settle window the channel strip
+# already had: Live reports groove_amount as 1.0 on attach and settles it to
+# the real value, which produced 29 identical 1.0 -> 0.0 'groove changed'
+# events in a real library and not one genuine one.
+# 0.11.2 restores MIDI note capture. 0.11.1 added read timing to _read_notes
+# while it was still a @staticmethod, so every self. call raised NameError, the
+# per-generation except swallowed it, and the method returned None for every
+# clip — no note edits at all, and nothing in any log to say so.
+# 0.11.1 counts a mixer fan-out by DISTINCT CONTROLS, not by callbacks: the
+# first cut of that guard silenced a real fader ride after six callbacks and
+# reported a value the fader never landed on (0.0 -> 0.25 for a ride to 0.95).
+# 0.11.0 carries parameter_is_quantized on automation writes (the majority of
+# captured control changes had no way to say whether a value was a mode or a
+# magnitude). Stops one automation lane being reported as created over and over —
+# Live's automation_state reads NONE between writes on some plugin parameters,
+# and one control in the real library claimed 51 creations. Also stops Live renumbering a lane from reading as a producer rename
+# when the index lookup fails, which is exactly when Live renumbers. And stops a
+# mixer fan-out landing after the settle window from reading as
+# dozens of producer decisions all stamped with the same clock time: the cascade
+# guard now covers volume, pan and sends, not only routing and mixer properties.
 # 0.10.0 finishes the freeze story (unfreeze and flatten were silent, and a
 # thaw's verdict now settles a tick later so Live's half-rebuilt chain is not
 # mistaken for a flatten), lifts the parameter cap 128 -> 1024 because Serum's
 # knobs past the 128th were never observed, stops discarding half of every note
 # read, and reports the slowest note read on the heartbeat so MAX_NOTES_READ can
 # be sized from evidence.
-SCRIPT_VERSION = "0.10.0"
+SCRIPT_VERSION = "0.11.3"
 
 
 class Recall(ControlSurface):
@@ -650,6 +702,11 @@ class Recall(ControlSurface):
         self._mixer_automation_listeners = []
         self._automation_states = {}
         self._automation_writes = {}
+        # Parameters whose lane has already been reported as created, so a
+        # second 'creation' of the same lane cannot be claimed.
+        # Lanes already reported as created, keyed on the same stable identity
+        # the projection uses — never on id(), which is reused after collection.
+        self._automation_lanes_created = set()
         self._automation_recently_changed = {}
         # Mixer listeners survive selected-track changes: selection scopes
         # plugin parameters, but mixing is project-wide.
@@ -688,6 +745,8 @@ class Recall(ControlSurface):
         self._cue_points_listener_attached = False
         self._song_context_listeners = []
         self._song_context = {}
+        # A rebuild re-arms the window: the values arrive again afterwards.
+        self._song_context_settling_until = 0.0
         self._recording_active = False
         self._clip_prints = {}
         # clipId -> bounded note snapshot matching _clip_prints. Scoped to the
@@ -1276,6 +1335,9 @@ class Recall(ControlSurface):
 
     def _attach_song_context_listeners(self):
         self._song_context = self._song_context_snapshot()
+        # Everything Live sends in the next couple of seconds is the set
+        # arriving, not the producer changing it.
+        self._song_context_settling_until = time.time() + SONG_CONTEXT_SETTLE_SEC
         self._recording_active = bool(self._song_context.get("recording_active"))
         for name in (
             "signature_numerator",
@@ -1306,11 +1368,24 @@ class Recall(ControlSurface):
                 pass
         self._song_context_listeners = []
         self._song_context = {}
+        # A rebuild re-arms the window: the values arrive again afterwards.
+        self._song_context_settling_until = 0.0
+
+    def _is_song_context_settling(self):
+        """True while the song's own properties are still arriving from a load."""
+        return time.time() < getattr(self, "_song_context_settling_until", 0.0)
 
     def _on_song_context_changed(self):
         previous = self._song_context
         current = self._song_context_snapshot()
         self._song_context = current
+
+        # The set arriving, not the producer working. Seed kept current above so
+        # the first real change still reports a true "before"; `_recording_active`
+        # too, or the next genuine record would report the wrong transition.
+        if self._is_song_context_settling():
+            self._recording_active = bool(current.get("recording_active"))
+            return
 
         previous_meter = (
             previous.get("signature_numerator"),
@@ -2031,6 +2106,36 @@ class Recall(ControlSurface):
         run[1] += 1
         return run[1] > CASCADE_THRESHOLD
 
+    def _is_control_fan_out(self, kind, key):
+        """True once one Live operation is touching many DIFFERENT controls.
+
+        `_is_cascade` counts callbacks in a family, which is the right question
+        for routing and mixer properties — those fire once per track — and the
+        wrong one for a value listener. Dragging a single fader fires it
+        continuously, so counting callbacks silenced a real gesture after six of
+        them and reported a value the fader never landed on: a ride from 0.0 to
+        0.95 emitted "0.0 -> 0.25".
+
+        What actually separates a set load from a producer is how many distinct
+        controls moved. One fader moved two hundred times is a gesture; forty
+        faders moved once each inside a millisecond is Live.
+
+        The run resets after a quiet CASCADE_WINDOW_SEC, so a fan-out never
+        accumulates across ordinary work.
+        """
+        now = time.time()
+        runs = getattr(self, "_fan_out_runs", None)
+        if runs is None:
+            runs = {}
+            self._fan_out_runs = runs
+        run = runs.get(kind)
+        if run is None or now - run[0] > CASCADE_WINDOW_SEC:
+            runs[kind] = [now, {key}]
+            return False
+        run[0] = now
+        run[1].add(key)
+        return len(run[1]) > CASCADE_THRESHOLD
+
     def _watch_mixer_property(self, track, mixer, name, event_type):
         key = (id(mixer), name)
         try:
@@ -2175,6 +2280,10 @@ class Recall(ControlSurface):
         """Open a write action; it remains silent until a value actually moves."""
         try:
             current = parameter.value
+            # Captured here, inside the guard that already exists, because the
+            # parameter is known live at this moment and may not be when the
+            # write finishes.
+            is_quantized = bool(getattr(parameter, "is_quantized", False))
         except Exception:  # noqa: BLE001 - parameter died with its device
             return
 
@@ -2186,9 +2295,29 @@ class Recall(ControlSurface):
             "device_id": device_id,
             "parameter_name": parameter_name,
             # Live reports no automation before a new lane, otherwise this is
-            # an edit to an existing lane. This is the only classification here.
-            "event_type": _automation_event_type(previous_state, AUTOMATION_STATE_RECORDING)
-            or "automation_edited",
+            # an edit to an existing lane.
+            #
+            # A LANE CAN ONLY BE CREATED ONCE. Live's `automation_state` is not
+            # reliable on every parameter — plugin parameters in particular can
+            # keep reading NONE between writes — and when it does, every single
+            # write reads as a brand-new lane. One control in the live library
+            # reported "created" 51 times, which is not a thing that can happen.
+            #
+            # So the state proposes and this disposes: after the first creation
+            # of a given parameter's lane, later writes are edits whatever the
+            # state says. Nothing is lost — the write is still captured, with its
+            # points and its range — only the claim that it was the first one.
+            "event_type": self._automation_event_type_for(
+                # NOT id(parameter): that is unique only among LIVE objects, and
+                # parameters are released whenever listeners are rebuilt on a
+                # track change. A recycled address would make a genuine first
+                # lane on a different control read as an edit, losing the
+                # creation silently and permanently.
+                (self._safe_id(track), device_id, parameter_name),
+                _automation_event_type(previous_state, AUTOMATION_STATE_RECORDING)
+                or "automation_edited",
+            ),
+            "is_quantized": is_quantized,
             "start_value": self._last_values.get(key, current),
             "start_display_value": self._display(
                 parameter, self._last_values.get(key, current)
@@ -2201,6 +2330,22 @@ class Recall(ControlSurface):
             "points": [],
             "last_value_at": None,
         }
+
+    def _automation_event_type_for(self, key, proposed):
+        """Downgrade a repeat "creation" of the same lane to an edit.
+
+        See the note at the call site: `automation_state` reading NONE between
+        writes turns every write into a creation. Remembering which parameters
+        have already reported one is enough to stop it, and it can never be
+        wrong in the other direction — a lane genuinely created twice would mean
+        it had been deleted in between, which arrives as its own event.
+        """
+        if proposed != "automation_created":
+            return proposed
+        if key in self._automation_lanes_created:
+            return "automation_edited"
+        self._automation_lanes_created.add(key)
+        return proposed
 
     def _record_automation_value(
         self, track, parameter, device_name, device_id, parameter_name
@@ -2286,6 +2431,20 @@ class Recall(ControlSurface):
             "previous_parameter_value_percent": write["start_percent"],
             "parameter_display_value": write["last_display_value"],
             "previous_parameter_display_value": write["start_display_value"],
+            # Whether the control is a list of named options rather than a
+            # continuous value. Settled gestures have always carried this; writes
+            # never did, and automation is the majority of captured control
+            # changes in a real library — so most of the record could not say
+            # whether a value was a mode or a magnitude. The app draws a range
+            # bar for one and two names for the other, and drawing a bar on a
+            # mode states a distance that does not exist.
+            # Read at the START of the write, not here. `getattr`'s default only
+            # swallows AttributeError, and Live's LOM raises RuntimeError on an
+            # object whose device has been deleted — which a producer can do
+            # while a write is open. That raise would escape into
+            # `_on_automation_state`, a listener registered with no guard, which
+            # is the failure class behind the 0.20.1 rollback (commit 886856c).
+            "parameter_is_quantized": write["is_quantized"],
             "automation_state": current_state,
             "automation_start_ms": write["start_ms"],
             "automation_start_position": write["start_position"],
@@ -3354,8 +3513,14 @@ class Recall(ControlSurface):
             return None
         return "{}{}".format(NOTE_NAMES[int(pitch) % 12], (int(pitch) // 12) - 2)
 
-    @staticmethod
-    def _read_notes(clip):
+    # NOT a @staticmethod, and that is load-bearing: the timing below reports
+    # through `self`. It was static when the instrumentation was added, so every
+    # `self._record_note_read(...)` raised NameError, the broad `except` around
+    # each read generation swallowed it, all three fell through, and this
+    # returned None for every clip on earth. No fingerprint, no note edits, no
+    # error — MIDI capture was silently dead for a whole session before a live
+    # test caught it. Both call sites already use `self._read_notes(...)`.
+    def _read_notes(self, clip):
         """Every readable note as a JSON-safe recreation record.
 
         Two API generations: get_notes_extended is the Live 11+ call and the only
@@ -3953,7 +4118,27 @@ class Recall(ControlSurface):
             # so the producer's first real move reports a true "before", and
             # emit nothing. Checked before _moves_seen so the counter stays a
             # count of real moves.
-            if settles_with_mixer and self._is_mixer_settling():
+            # Two ways one Live operation reaches every channel at once, and
+            # both have to be caught here or they read as producer decisions.
+            #
+            # The settle window covers the set arriving right after a listener
+            # rebuild. It does not cover a fan-out that lands later: a real
+            # library produced 39 volume moves and 9 pans inside a SINGLE
+            # millisecond, well past the window, and every one of them was
+            # stamped with the same clock time in the Timeline. Nobody rides
+            # forty faders in one millisecond.
+            #
+            # The guard counts DISTINCT CONTROLS, not callbacks. Counting
+            # callbacks silenced a real fader ride after six of them and
+            # reported a value the fader never landed on — see
+            # `_is_control_fan_out`, which exists because of that.
+            #
+            # Either way the seed is kept current, so the producer's first real
+            # move still reports a true "before". Checked before _moves_seen so
+            # the counter stays a count of real moves.
+            if settles_with_mixer and (
+                self._is_mixer_settling() or self._is_control_fan_out(event_type, key)
+            ):
                 try:
                     self._last_values[key] = parameter.value
                 except Exception:  # noqa: BLE001 - channel gone mid-load

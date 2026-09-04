@@ -245,3 +245,138 @@ def test_the_cascade_run_is_per_family():
         assert harness._is_cascade("track_routing_changed") in (True, False)
     assert harness._is_cascade("track_routing_changed") is True
     assert harness._is_cascade("volume_changed") is False
+
+
+def test_a_fan_out_after_the_settle_window_is_not_forty_decisions():
+    """Measured on the live library: 39 volume moves and 9 pans inside a SINGLE
+    millisecond, past the settle window, every one stamped with the same clock
+    time in the Timeline. Nobody rides forty faders in one millisecond.
+
+    The settle window only covers the set arriving right after a listener
+    rebuild. `_is_cascade` is the guard for a fan-out that lands later, and it
+    was wired to routing and to mixer properties but never to volume, pan or
+    sends — which is the hole this closes.
+    """
+    harness = settling_harness()
+    harness._mixer_settling_until = 0.0  # the window is long closed
+
+    for index in range(12):
+        parameter = Parameter(0.5)
+        listener = harness._make_value_listener(
+            Track("Track {}".format(index)),
+            parameter,
+            "volume_changed",
+            "Mixer",
+            "mixer-{}".format(index),
+            "Volume",
+            settles_with_mixer=True,
+        )
+        harness._last_values[id(parameter)] = 0.5
+        parameter.value = 0.25
+        listener()
+
+    assert harness._moves_seen <= CASCADE_THRESHOLD + 1, (
+        "a fan-out across every channel is one Live operation, not twelve "
+        "producer decisions"
+    )
+
+
+def test_riding_one_fader_reports_where_it_landed():
+    """THE REGRESSION THIS PINS. The fan-out guard first counted CALLBACKS, and
+    a producer dragging one fader fires the value listener continuously — so it
+    fell silent after six of them and emitted a value the fader never held.
+    Measured before the fix: a ride from 0.0 to 0.95 emitted "0.0 -> 0.25".
+
+    A fan-out is many DIFFERENT controls at once. One control moved two hundred
+    times is a gesture, and the whole point of the gesture system is reporting
+    where it landed.
+    """
+    import time as _time
+
+    harness = settling_harness()
+    harness._mixer_settling_until = 0.0
+    harness._automation_writes = {}
+
+    parameter = Parameter(0.0)
+    listener = harness._make_value_listener(
+        Track("Bass"), parameter, "volume_changed", "Mixer", "m1", "Volume",
+        settles_with_mixer=True,
+    )
+    harness._last_values[id(parameter)] = 0.0
+
+    for step in range(20):
+        parameter.value = round(step * 0.05, 2)
+        listener()
+        _time.sleep(0.004)
+    harness._flush_settled_gestures(force=True)
+
+    landed = [
+        payload.get("parameter_value")
+        for event_type, payload in harness.emitted
+        if event_type == "volume_changed"
+    ]
+    assert landed, "a continuous ride must not be silenced as a fan-out"
+    assert landed[-1] == parameter.value, (
+        "the emitted value must be where the fader landed, not where the guard "
+        "stopped watching"
+    )
+
+
+def test_a_producer_riding_one_fader_is_still_a_real_move():
+    """The guard must not silence real work. One channel moved is a gesture,
+    not a fan-out: the cascade counter tracks a run of emissions across the
+    family, and one move never reaches the threshold.
+    """
+    harness = settling_harness()
+    harness._mixer_settling_until = 0.0
+
+    parameter = Parameter(0.5)
+    listener = harness._make_value_listener(
+        Track("Bass"), parameter, "volume_changed", "Mixer", "mixer-bass", "Volume",
+        settles_with_mixer=True,
+    )
+    harness._last_values[id(parameter)] = 0.2
+    parameter.value = 0.7
+    listener()
+
+    assert harness._moves_seen == 1
+
+
+def test_the_set_loading_is_not_a_groove_change():
+    """Every one of the 29 `groove_changed` events in a real library is the
+    identical 1.0 -> 0.0, none of them anything else, all within seconds of the
+    bridge attaching. Live reports groove_amount as 1.0 when the context
+    listeners attach and settles it to the set's real value a moment later.
+
+    Same shape as the channel strip arriving on load, and song properties had no
+    settle window at all.
+    """
+    recall = Recall.__new__(Recall)
+    recall.emitted = []
+    recall._emit = lambda event_type, payload: recall.emitted.append((event_type, payload))
+    recall._recording_active = False
+    recall._song_context = {"groove_amount": 1.0}
+    recall._song_context_settling_until = time.time() + 5.0
+    recall._song_context_snapshot = lambda: {"groove_amount": 0.0}
+
+    recall._on_song_context_changed()
+
+    assert recall.emitted == [], "the set arriving is not a producer decision"
+    assert recall._song_context["groove_amount"] == 0.0, "the seed still tracks the real value"
+
+
+def test_a_real_groove_change_after_the_set_settles_is_reported():
+    """The guard must not silence real work — only the load."""
+    recall = Recall.__new__(Recall)
+    recall.emitted = []
+    recall._emit = lambda event_type, payload: recall.emitted.append((event_type, payload))
+    recall._recording_active = False
+    recall._song_context = {"groove_amount": 0.0}
+    recall._song_context_settling_until = 0.0  # long settled
+    recall._song_context_snapshot = lambda: {"groove_amount": 0.5}
+
+    recall._on_song_context_changed()
+
+    assert [event_type for event_type, _ in recall.emitted] == ["groove_changed"]
+    assert recall.emitted[0][1]["groove_amount"] == 0.5
+    assert recall.emitted[0][1]["previous_groove_amount"] == 0.0

@@ -652,18 +652,88 @@ fn update_open_file(normalized_json: &Value, state: &Arc<Mutex<ConnectionState>>
     let path = normalized_json
         .get("project_path")
         .and_then(Value::as_str)
+        .filter(|path| path.to_lowercase().ends_with(".als"))
         .map(str::to_string);
-    let Some(path) = path else {
-        return;
-    };
-    if !path.to_lowercase().ends_with(".als") {
+
+    // ONLY A HEARTBEAT CAN SAY "NO FILE IS OPEN".
+    //
+    // Creative events do not carry project_path at all, so an absence there
+    // means "this packet did not mention it" — clearing on that would wipe the
+    // anchor on every parameter move. The heartbeat is different: the bridge
+    // stamps `project_path: self._open_set_path()` on every one, so a heartbeat
+    // reporting nothing is Live telling us the open set has no file on disk.
+    //
+    // THE BUG THIS FIXES: that distinction was not made, so an unsaved set left
+    // `open_als_path` pointing at the last SAVED project. Recall then showed
+    // "Ableton: sound design sesh 3_7_26" while the producer had an untitled set
+    // in front of them, and kept the take anchored to that file. The chip
+    // already has a correct "Ableton · unsaved set" state; it could never fire.
+    let from_heartbeat =
+        normalized_json.get("event_type").and_then(Value::as_str) == Some("heartbeat");
+    if path.is_none() && !from_heartbeat {
         return;
     }
 
     let mut connection = state.lock().expect("Connection state lock failed");
-    if connection.open_als_path.as_deref() != Some(path.as_str()) {
-        connection.open_als_path = Some(path);
+    if connection.open_als_path != path {
+        connection.open_als_path = path;
     }
+}
+
+/// Close a take anchored to a file when Ableton no longer has any file open.
+///
+/// The producer opened an untitled set. Their work is real and must be captured,
+/// but it does not belong to the `.als` the previous take is anchored to — and
+/// leaving that take active meant the moves landed there, silently, filed under
+/// a song they were not working on.
+///
+/// An unsaved set has nothing durable to anchor to, which is why this closes the
+/// old take and lets the next event open a fresh unanchored one rather than
+/// trying to invent an identity for the untitled set. That is the honest half of
+/// the problem; giving unsaved work a lasting home is a separate decision.
+///
+/// Fires once: after this the active take has no anchor and `open_als_path` is
+/// None, so nothing here matches again until a real file is opened.
+fn release_take_when_no_file_is_open(
+    state: &Arc<Mutex<ConnectionState>>,
+    session: &Arc<Mutex<SessionState>>,
+    storage: &Arc<Mutex<StorageState>>,
+    metrics: &Arc<BridgeMetrics>,
+) {
+    {
+        let connection = state.lock().expect("Connection state lock failed");
+        // Only when Live has told us there is no file AND the take still thinks
+        // it is covering one.
+        if connection.open_als_path.is_some() || connection.session_als_path.is_none() {
+            return;
+        }
+    }
+
+    let previous_status = {
+        let mut session = session.lock().expect("Session state lock failed");
+        if !session.status().active {
+            return;
+        }
+        session.stop()
+    };
+
+    {
+        let storage = storage.lock().expect("Storage state lock failed");
+        if let Err(error) = storage.save_session_stopped(&previous_status) {
+            log::error!("UNSAVED-SET: failed to persist the anchored take -> {}", error);
+            metrics.set_last_error(error);
+        }
+    }
+
+    {
+        let mut connection = state.lock().expect("Connection state lock failed");
+        connection.session_als_path = None;
+    }
+
+    println!(
+        "UNSAVED-SET: released take {:?} because Ableton has no file open",
+        previous_status.session_id
+    );
 }
 
 // Auto-rotate the active session when Ableton switches to a different project.
@@ -1717,6 +1787,9 @@ fn process_packet(
     // Switch takes if Ableton has moved to a different project. Runs BEFORE
     // assignment so this event lands on the take for the file that is open now.
     rotate_session_if_project_changed(state, session, storage, events, metrics);
+    // And the inverse of a project change: Ableton has no file open at all, so
+    // an anchored take must stop claiming this work.
+    release_take_when_no_file_is_open(state, session, storage, metrics);
     let is_heartbeat =
         normalized_json.get("event_type").and_then(Value::as_str) == Some("heartbeat");
     if is_heartbeat {
@@ -2170,6 +2243,141 @@ mod tests {
             open_als_path: None,
             session_als_path: None,
         }))
+    }
+
+    // ── An untitled set is not the last saved project (issue #6) ──────────
+    //
+    // Reported live: an untitled set open in Ableton, and Recall's chip reading
+    // "Ableton: sound design sesh 3_7_26" — last night's work. `open_als_path`
+    // held the last SAVED path because an unsaved set sends no project_path, and
+    // the absence was treated as "no news" rather than "no file".
+
+    fn heartbeat_with_path(path: Option<&str>) -> Value {
+        let mut payload = serde_json::Map::new();
+        payload.insert("bridge_version".into(), Value::String("0.11.1".into()));
+        if let Some(path) = path {
+            payload.insert("project_path".into(), Value::String(path.into()));
+        }
+        Value::Object(normalized(json!({
+            "protocol": "recall.v2",
+            "source": "control_surface",
+            "event_type": "heartbeat",
+            "timestamp_ms": 1_700_000_000_000u64,
+            "payload": Value::Object(payload),
+        })))
+    }
+
+    #[test]
+    fn a_heartbeat_with_no_file_clears_the_last_saved_path() {
+        let state = fresh_connection_state();
+        update_open_file(&heartbeat_with_path(Some("M:/Ableton/Night EP.als")), &state);
+        assert_eq!(
+            state.lock().unwrap().open_als_path.as_deref(),
+            Some("M:/Ableton/Night EP.als")
+        );
+
+        // The producer opens an untitled set. The bridge stamps
+        // `project_path: self._open_set_path()` on every heartbeat, so a
+        // heartbeat with none is Live saying the open set has no file.
+        update_open_file(&heartbeat_with_path(None), &state);
+
+        assert_eq!(
+            state.lock().unwrap().open_als_path, None,
+            "an untitled set must not read as the last saved project"
+        );
+    }
+
+    #[test]
+    fn a_creative_event_without_a_path_does_not_clear_the_anchor() {
+        // Creative events never carry project_path. Treating their silence as
+        // "no file" would wipe the anchor on every parameter move.
+        let state = fresh_connection_state();
+        update_open_file(&heartbeat_with_path(Some("M:/Ableton/Night EP.als")), &state);
+
+        let move_event = Value::Object(normalized(json!({
+            "protocol": "recall.v2",
+            "source": "control_surface",
+            "event_type": "parameter_changed",
+            "timestamp_ms": 1_700_000_000_001u64,
+            "payload": { "track_name": "Bass" }
+        })));
+        update_open_file(&move_event, &state);
+
+        assert_eq!(
+            state.lock().unwrap().open_als_path.as_deref(),
+            Some("M:/Ableton/Night EP.als"),
+            "an event that never mentions the path says nothing about it"
+        );
+    }
+
+    #[test]
+    fn an_anchored_take_is_released_when_no_file_is_open() {
+        // Leaving the anchored take active meant an untitled set's moves landed
+        // in the previous song's take, silently.
+        const SET: &str = "M:/Ableton/Night EP.als";
+        let (storage, db_path) = temp_storage_state();
+
+        let started = {
+            let storage = storage.lock().unwrap();
+            let status = storage
+                .activate_take_for_open_file(None, Some(SET))
+                .expect("activate a take");
+            storage.save_session_started(&status).expect("persist it");
+            status
+        };
+        let anchored_id = started.session_id.clone().expect("an id");
+
+        let session = Arc::new(Mutex::new(SessionState::new()));
+        {
+            let mut live = session.lock().unwrap();
+            let at = started.started_at_ms.expect("a start");
+            live.restore_active(anchored_id.clone(), at, at);
+        }
+
+        let state = fresh_connection_state();
+        {
+            let mut connection = state.lock().unwrap();
+            connection.open_als_path = None; // untitled set
+            connection.session_als_path = Some(SET.into());
+        }
+
+        let metrics = Arc::new(BridgeMetrics::default());
+        release_take_when_no_file_is_open(&state, &session, &storage, &metrics);
+
+        assert!(
+            !session.lock().unwrap().status().active,
+            "the take anchored to a file must stop claiming work done in an untitled set"
+        );
+        assert_eq!(state.lock().unwrap().session_als_path, None);
+
+        let _ = std::fs::remove_file(&db_path);
+        let _ = std::fs::remove_file(db_path.with_extension("sqlite-wal"));
+        let _ = std::fs::remove_file(db_path.with_extension("sqlite-shm"));
+    }
+
+    #[test]
+    fn a_take_covering_the_open_file_is_left_alone() {
+        // The guard must only fire on the no-file case, never on ordinary work.
+        let state = fresh_connection_state();
+        {
+            let mut connection = state.lock().unwrap();
+            connection.open_als_path = Some("M:/Ableton/Night EP.als".into());
+            connection.session_als_path = Some("M:/Ableton/Night EP.als".into());
+        }
+
+        let session = Arc::new(Mutex::new(SessionState::new()));
+        {
+            let mut live = session.lock().unwrap();
+            live.restore_active("take-live".into(), 1_000, 1_000);
+        }
+
+        let (storage, db_path) = temp_storage_state();
+        let metrics = Arc::new(BridgeMetrics::default());
+        release_take_when_no_file_is_open(&state, &session, &storage, &metrics);
+
+        assert!(session.lock().unwrap().status().active);
+
+        let _ = std::fs::remove_file(&db_path);
     }
 
     // ── Adopting instead of splitting (issue #25) ─────────────────────────
